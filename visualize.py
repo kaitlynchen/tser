@@ -34,7 +34,6 @@ def main():
         so2_monthly.append(date.mean())
 
     so2_list.append(np.mean(so2_monthly))
-    print(len(ym_list))
     so2_series = pd.Series(data=so2_list, index=ym_list)
 
     # assert len(day_list) == len(so2_list)
@@ -48,9 +47,9 @@ def main():
     #                   legend='full', lw=3)
     ax = sns.lineplot(data=so2_series)
 
-    # ax.xaxis.set_major_locator(ticker.MultipleLocator(4))
-    # plt.legend(bbox_to_anchor=(1, 1))
-    plt.ylabel('PM2.5 (µg/m3)')
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(4))
+    plt.legend(bbox_to_anchor=(1, 1))
+    plt.ylabel('SO2 (µg/m3)')
     plt.xlabel('Year-Month')
     plt.show()
 
