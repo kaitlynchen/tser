@@ -38,13 +38,13 @@ def graph_time_series(dim_name, units=""):
 
     ax = sns.lineplot(data=dim_series)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(4))
-    dim_name = dim_name.capitalize()
+    plt.legend()
     plt.ylabel(dim_name + ' (' + units + ')')
     plt.xlabel('Year-Month')
-    plt.title(dim_name)
+    plt.title(dim_name + " Concentration")
     plt.savefig('graphs/' + dim_name + '.png')
     plt.close()
 
 
 if __name__ == "__main__":
-    graph_time_series("windspeed")
+    graph_time_series("CO", "µg/m3")

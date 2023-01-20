@@ -6,8 +6,8 @@ from utils.tools import create_directory
 
 module = "RegressionExperiment"
 data_path = "data/"
-problems = ["Sample"]       # see data_loader.regression_datasets
-regressors = ["xgboost"]    # see regressor_tools.all_models
+problems = ["BeijingPM25Quality"]       # see data_loader.regression_datasets
+regressors = ["resnet"]    # see regressor_tools.all_models
 iterations = [1]
 norm = "none"               # none, standard, minmax
 
@@ -22,7 +22,7 @@ if __name__ == '__main__':
         print("[{}] Problem: {}".format(module, problem))
 
         # set data folder, train & test
-        data_folder = data_path + problem + "/"
+        data_folder = data_path + "/"
         train_file = data_folder + problem + "_TRAIN.ts"
         test_file = data_folder + problem + "_TEST.ts"
 
