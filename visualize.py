@@ -5,6 +5,16 @@ import seaborn as sns
 import matplotlib.ticker as ticker
 
 from utils.data_loader import load_from_tsfile_to_dataframe
+from utils.constants import Time
+
+
+def shape(path):
+    df, labels = load_from_tsfile_to_dataframe(path, True)
+    nlabels = len(labels)
+    nrows = len(df) * Time.HOURS_IN_A_DAY
+    ncols = len(df.columns)
+
+    return nrows, ncols, nlabels
 
 
 def graph_time_series(dim_name, units=""):
@@ -132,11 +142,4 @@ def normalize(path):
 
 
 if __name__ == "__main__":
-    # graph_time_series("CO", "µg/m3")
-    # graph_all_time_series("data/PRSA_Data_merged.csv")
-    # mean, std = find_day_mean_and_std("data/PRSA_Data_merged.csv", "SO2", 3, 1)
-    # print("Mean: ", mean)
-    # print("Standard deviation: ", std)
-
-    normalized = normalize("data/PRSA_Data_merged.csv")
-    graph_time_series(normalized, "PM2.5", units="µg/m3")
+    df_normalized_test = pd.read_csv('data/PRSA_Data_normalized_TEST.csv')
