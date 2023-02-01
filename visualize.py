@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.ticker as ticker
+from datetime import datetime
 
 from utils.data_loader import load_from_tsfile_to_dataframe
 from utils.constants import Time
@@ -141,5 +142,97 @@ def normalize(path):
     return df_normalized
 
 
+def normalize_ts(path):
+    return None
+
+
+def normalized_to_csv():
+    SO2_list, NO2_list, CO_list, O3_list, temperature_list, pressure_list, dewpoint_list, rainfall_list, windspeed_list, PM_list = [
+    ], [], [], [], [], [], [], [], [], []
+    d_range = pd.date_range('2016-06-01',
+                            '2017-02-28', freq='D')
+    df_normalized = pd.read_csv('data/PRSA_Data_normalized_TEST.csv')
+    for date in d_range:
+        h_range = pd.date_range(date, periods=24, freq='H')
+        rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
+            df_normalized['month'] == date.month) & (df_normalized['day'] == date.day)]
+        SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
+        NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
+        CO_list.append(pd.Series(rows['CO'].values, index=h_range))
+        O3_list.append(pd.Series(rows['O3'].values, index=h_range))
+        temperature_list.append(pd.Series(rows['TEMP'].values, index=h_range))
+        pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
+        dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
+        rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
+        windspeed_list.append(pd.Series(rows['WSPM'].values, index=h_range))
+        PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
+
+    dict = {'SO2': SO2_list, 'NO2': NO2_list, 'CO': CO_list, 'O3': O3_list, 'TEMP': temperature_list,
+            'PRES': pressure_list, 'DEWP': dewpoint_list, 'RAIN': rainfall_list, 'WSPM': windspeed_list, 'PM2.5': PM_list}
+    df = pd.DataFrame(data=dict)
+
+    pd.set_option('display.max_columns', None)
+    print(df.head())
+    df.to_csv('data/PRSA_Data_TEST2.csv', index=False)
+
+
+def get_normalized_train():
+    SO2_list, NO2_list, CO_list, O3_list, temperature_list, pressure_list, dewpoint_list, rainfall_list, windspeed_list, PM_list = [
+    ], [], [], [], [], [], [], [], [], []
+    d_range = pd.date_range('2013-03-01',
+                            '2016-05-31', freq='D')
+    df_normalized = pd.read_csv('data/PRSA_Data_normalized_TRAIN.csv')
+    for date in d_range:
+        h_range = pd.date_range(date, periods=24, freq='H')
+        rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
+            df_normalized['month'] == date.month) & (df_normalized['day'] == date.day)]
+        SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
+        NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
+        CO_list.append(pd.Series(rows['CO'].values, index=h_range))
+        O3_list.append(pd.Series(rows['O3'].values, index=h_range))
+        temperature_list.append(
+            pd.Series(rows['TEMP'].values, index=h_range))
+        pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
+        dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
+        rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
+        windspeed_list.append(
+            pd.Series(rows['WSPM'].values, index=h_range))
+        PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
+
+    dict = {'SO2': SO2_list, 'NO2': NO2_list, 'CO': CO_list, 'O3': O3_list, 'TEMP': temperature_list,
+            'PRES': pressure_list, 'DEWP': dewpoint_list, 'RAIN': rainfall_list, 'WSPM': windspeed_list, 'PM2.5': PM_list}
+    return pd.DataFrame(data=dict)
+
+
+def get_normalized_test():
+    SO2_list, NO2_list, CO_list, O3_list, temperature_list, pressure_list, dewpoint_list, rainfall_list, windspeed_list, PM_list = [
+    ], [], [], [], [], [], [], [], [], []
+    d_range = pd.date_range('2016-06-01',
+                            '2017-02-28', freq='D')
+    df_normalized = pd.read_csv('data/PRSA_Data_normalized_TEST.csv')
+    for date in d_range:
+        h_range = pd.date_range(date, periods=24, freq='H')
+        rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
+            df_normalized['month'] == date.month) & (df_normalized['day'] == date.day)]
+        SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
+        NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
+        CO_list.append(pd.Series(rows['CO'].values, index=h_range))
+        O3_list.append(pd.Series(rows['O3'].values, index=h_range))
+        temperature_list.append(
+            pd.Series(rows['TEMP'].values, index=h_range))
+        pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
+        dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
+        rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
+        windspeed_list.append(
+            pd.Series(rows['WSPM'].values, index=h_range))
+        PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
+
+    dict = {'SO2': SO2_list, 'NO2': NO2_list, 'CO': CO_list, 'O3': O3_list, 'TEMP': temperature_list,
+            'PRES': pressure_list, 'DEWP': dewpoint_list, 'RAIN': rainfall_list, 'WSPM': windspeed_list, 'PM2.5': PM_list}
+    return pd.DataFrame(data=dict)
+
+
 if __name__ == "__main__":
-    df_normalized_test = pd.read_csv('data/PRSA_Data_normalized_TEST.csv')
+    # df = pd.read_csv('data/PRSA_Data_merged.csv')
+    # df = df.groupby(['year', 'month', 'day', 'hour'])
+    print("hello")

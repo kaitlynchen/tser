@@ -102,8 +102,7 @@ def create_regressor(regressor_name, input_shape, output_directory, verbose=1, i
         return LinearRegressor(output_directory, kwargs, type=regressor_name)
     if regressor_name == "ridge":
         from models.classical_models import LinearRegressor
-        kwargs = {"fit_intercept": True,
-                  "normalize": False}
+        kwargs = {"fit_intercept": True}
         return LinearRegressor(output_directory, kwargs, type=regressor_name)
 
 
