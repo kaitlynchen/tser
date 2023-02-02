@@ -466,10 +466,6 @@ class LinearRegressor(Regressor):
 
         self.cv(x_train, y_train)
 
-        print("x_train type: ", type(x_train))
-        print("y_train type: ", type(y_train))
-        print("x_train shape: ", x_train.shape)
-        print("y_train shape: ", y_train.shape)
         self.model.fit(x_train, y_train)
 
         self.train_duration = time.perf_counter() - start_time
