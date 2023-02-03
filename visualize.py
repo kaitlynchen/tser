@@ -132,12 +132,15 @@ def normalize(path):
                 'std', numeric_only=True)[col]
 
     df_normalized = df.copy()
+
     for col in df_daily_mean.columns:
         if col not in ['No', 'year', 'month', 'day', 'hour', 'wd', 'Station']:
             df_normalized[col] = (
                 df[col] - df_daily_mean[col])/df_daily_std[col]
 
     df_normalized = df_normalized.fillna(0.0)
+    df_normalized = df_normalized.sort_values(
+        by=['year', 'month', 'day', 'hour'])
 
     return df_normalized
 
@@ -181,23 +184,29 @@ def get_normalized_train():
     ], [], [], [], [], [], [], [], [], []
     d_range = pd.date_range('2013-03-01',
                             '2016-05-31', freq='D')
-    df_normalized = pd.read_csv('data/PRSA_Data_normalized_TRAIN.csv')
-    for date in d_range:
-        h_range = pd.date_range(date, periods=24, freq='H')
-        rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
-            df_normalized['month'] == date.month) & (df_normalized['day'] == date.day)]
-        SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
-        NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
-        CO_list.append(pd.Series(rows['CO'].values, index=h_range))
-        O3_list.append(pd.Series(rows['O3'].values, index=h_range))
-        temperature_list.append(
-            pd.Series(rows['TEMP'].values, index=h_range))
-        pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
-        dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
-        rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
-        windspeed_list.append(
-            pd.Series(rows['WSPM'].values, index=h_range))
-        PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
+    df_normalized = pd.read_csv(
+        'data/BeijingPM25Quality/PRSA_normalized_TRAIN.csv')
+    df_normalized = df_normalized.sort_values(
+        by=['Station', 'year', 'month', 'day', 'hour'])
+    stations = df_normalized['Station'].unique()
+
+    for station in stations:
+        for date in d_range:
+            h_range = pd.date_range(date, periods=24, freq='H')
+            rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
+                df_normalized['month'] == date.month) & (df_normalized['day'] == date.day) & (df_normalized['Station'] == station)]
+            SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
+            NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
+            CO_list.append(pd.Series(rows['CO'].values, index=h_range))
+            O3_list.append(pd.Series(rows['O3'].values, index=h_range))
+            temperature_list.append(
+                pd.Series(rows['TEMP'].values, index=h_range))
+            pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
+            dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
+            rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
+            windspeed_list.append(
+                pd.Series(rows['WSPM'].values, index=h_range))
+            PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
 
     dict = {'SO2': SO2_list, 'NO2': NO2_list, 'CO': CO_list, 'O3': O3_list, 'TEMP': temperature_list,
             'PRES': pressure_list, 'DEWP': dewpoint_list, 'RAIN': rainfall_list, 'WSPM': windspeed_list, 'PM2.5': PM_list}
@@ -209,23 +218,29 @@ def get_normalized_test():
     ], [], [], [], [], [], [], [], [], []
     d_range = pd.date_range('2016-06-01',
                             '2017-02-28', freq='D')
-    df_normalized = pd.read_csv('data/PRSA_Data_normalized_TEST.csv')
-    for date in d_range:
-        h_range = pd.date_range(date, periods=24, freq='H')
-        rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
-            df_normalized['month'] == date.month) & (df_normalized['day'] == date.day)]
-        SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
-        NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
-        CO_list.append(pd.Series(rows['CO'].values, index=h_range))
-        O3_list.append(pd.Series(rows['O3'].values, index=h_range))
-        temperature_list.append(
-            pd.Series(rows['TEMP'].values, index=h_range))
-        pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
-        dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
-        rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
-        windspeed_list.append(
-            pd.Series(rows['WSPM'].values, index=h_range))
-        PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
+    df_normalized = pd.read_csv(
+        'data/BeijingPM25Quality/PRSA_normalized_TEST.csv')
+    df_normalized = df_normalized.sort_values(
+        by=['Station', 'year', 'month', 'day', 'hour'])
+    stations = df_normalized['Station'].unique()
+
+    for station in stations:
+        for date in d_range:
+            h_range = pd.date_range(date, periods=24, freq='H')
+            rows = df_normalized.loc[(df_normalized['year'] == date.year) & (
+                df_normalized['month'] == date.month) & (df_normalized['day'] == date.day) & (df_normalized['Station'] == station)]
+            SO2_list.append(pd.Series(rows['SO2'].values, index=h_range))
+            NO2_list.append(pd.Series(rows['NO2'].values, index=h_range))
+            CO_list.append(pd.Series(rows['CO'].values, index=h_range))
+            O3_list.append(pd.Series(rows['O3'].values, index=h_range))
+            temperature_list.append(
+                pd.Series(rows['TEMP'].values, index=h_range))
+            pressure_list.append(pd.Series(rows['PRES'].values, index=h_range))
+            dewpoint_list.append(pd.Series(rows['DEWP'].values, index=h_range))
+            rainfall_list.append(pd.Series(rows['RAIN'].values, index=h_range))
+            windspeed_list.append(
+                pd.Series(rows['WSPM'].values, index=h_range))
+            PM_list.append(pd.Series(rows['PM2.5'].values, index=h_range))
 
     dict = {'SO2': SO2_list, 'NO2': NO2_list, 'CO': CO_list, 'O3': O3_list, 'TEMP': temperature_list,
             'PRES': pressure_list, 'DEWP': dewpoint_list, 'RAIN': rainfall_list, 'WSPM': windspeed_list, 'PM2.5': PM_list}
@@ -233,6 +248,10 @@ def get_normalized_test():
 
 
 if __name__ == "__main__":
-    # df = pd.read_csv('data/PRSA_Data_merged.csv')
-    # df = df.groupby(['year', 'month', 'day', 'hour'])
-    print("hello")
+    df = pd.read_csv('data/BeijingPM25Quality/normalized.csv')
+    df_train = df.iloc[:342144, :]
+    df_test = df.iloc[342144:, :]
+    df_train.to_csv(
+        'data/BeijingPM25Quality/PRSA_normalized_TRAIN.csv', index=False)
+    df_test.to_csv(
+        'data/BeijingPM25Quality/PRSA_normalized_TEST.csv', index=False)

@@ -8,7 +8,7 @@ from utils.tools import create_directory
 
 module = "RegressionExperiment"
 data_path = "data/"
-problems = ["PRSA_Data"]       # see data_loader.regression_datasets
+problems = ["BeijingPM25Quality"]       # see data_loader.regression_datasets
 regressors = ["ridge"]    # see regressor_tools.all_models
 iterations = [1]
 norm = "none"               # none, standard, minmax
@@ -25,8 +25,8 @@ if __name__ == '__main__':
 
         # set data folder, train & test
         data_folder = data_path + "/"
-        train_file = data_folder + problem + "_TRAIN.csv"
-        test_file = data_folder + problem + "_TEST.csv"
+        train_file = data_folder + problem + "/PRSA_normalized_TRAIN.csv"
+        test_file = data_folder + problem + "/PRSA_normalized_TEST.csv"
 
         # loading the data. X_train and X_test are dataframe of N x n_dim
         print("[{}] Loading data".format(module))

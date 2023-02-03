@@ -7,7 +7,7 @@ from utils.tools import create_directory
 module = "RegressionExperiment"
 data_path = "data/"
 problems = ["BeijingPM25Quality"]       # see data_loader.regression_datasets
-regressors = ["ridge"]    # see regressor_tools.all_models
+regressors = ["rocket"]    # see regressor_tools.all_models
 iterations = [1]
 norm = "none"               # none, standard, minmax
 
