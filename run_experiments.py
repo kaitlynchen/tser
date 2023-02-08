@@ -6,12 +6,13 @@ from utils.tools import create_directory
 
 module = "RegressionExperiment"
 data_path = "data/"
-problems = ["BeijingPM25Quality"]       # see data_loader.regression_datasets
-regressors = ["rocket"]    # see regressor_tools.all_models
+# see data_loader.regression_datasets
+problems = ["LiveFuelMoistureContent"]
+regressors = ["svr"]    # see regressor_tools.all_models
 iterations = [1]
 norm = "none"               # none, standard, minmax
 
-output_path = "output/regression/"
+output_path = "output/regression/LiveFuelMoistureContent"
 if __name__ == '__main__':
     # for each problem
     for problem in problems:
@@ -22,7 +23,7 @@ if __name__ == '__main__':
         print("[{}] Problem: {}".format(module, problem))
 
         # set data folder, train & test
-        data_folder = data_path + "/"
+        data_folder = data_path + problem + "/"
         train_file = data_folder + problem + "_TRAIN.ts"
         test_file = data_folder + problem + "_TEST.ts"
 

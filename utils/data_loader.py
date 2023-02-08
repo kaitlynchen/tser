@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 name = "DataLoader"
 
-regression_datasets = ["BeijingPM25Quality"]
+regression_datasets = ["LiveFuelMoistureContent"]
 
 
 # The following code is adapted from the python package sktime to read .ts file.

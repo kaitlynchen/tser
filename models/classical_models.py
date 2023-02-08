@@ -186,6 +186,7 @@ class SVRRegressor(Regressor):
             search.fit(x_train, y_train)
             best_param = search.best_params_
             best_param_score = search.best_score_
+            print("finished fitting")
 
         if best_param is not None:
             print("Best Param: {}, with scores: {}".format(

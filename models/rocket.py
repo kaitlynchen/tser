@@ -126,6 +126,7 @@ class RocketRegressor(TimeSeriesRegressor):
                  n_kernels: int = 10000):
         """
         Initialise the Rocket model
+
         Inputs:
             output_directory: path to store results/models
             n_kernels: number of random kernels
@@ -135,7 +136,8 @@ class RocketRegressor(TimeSeriesRegressor):
         self.name = name
         self.n_kernels = n_kernels
         self.kernels = None
-        self.regressor = RidgeCV(alphas=np.logspace(-3, 3, 10))
+        self.regressor = RidgeCV(alphas=np.logspace(-3, 3, 10),
+                                 normalize=True)
 
     def fit(self,
             x_train: np.array,
@@ -144,6 +146,7 @@ class RocketRegressor(TimeSeriesRegressor):
             y_val: np.array = None):
         """
         Fit Rocket
+
         Inputs:
             x_train: training data (num_examples, num_timestep, num_channels)
             y_train: training target
@@ -170,6 +173,7 @@ class RocketRegressor(TimeSeriesRegressor):
     def predict(self, x: np.array):
         """
         Do prediction with Rocket
+
         Inputs:
             x: data for prediction (num_examples, num_timestep, num_channels)
         Outputs:
