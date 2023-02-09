@@ -1,14 +1,18 @@
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
 
 from utils.data_loader import load_from_tsfile_to_dataframe
 from utils.regressor_tools import process_data, fit_regressor, calculate_regression_metrics
 from utils.tools import create_directory
+from visualize import plot_scatter_labels
 
 module = "RegressionExperiment"
 data_path = "data/"
 # see data_loader.regression_datasets
 problems = ["LiveFuelMoistureContent"]
-regressors = ["svr"]    # see regressor_tools.all_models
+regressors = ["ridge"]    # see regressor_tools.all_models
 iterations = [1]
 norm = "none"               # none, standard, minmax
 
@@ -74,6 +78,8 @@ if __name__ == '__main__':
                 # fit the regressor
                 regressor = fit_regressor(
                     output_directory, regressor_name, x_train, y_train, x_test, y_test, itr=itr)
+                coefficients = regressor.coefs
+                alphas = regressor.alphas
 
                 # start testing
                 y_pred = regressor.predict(x_test)
@@ -81,6 +87,23 @@ if __name__ == '__main__':
 
                 print(df_metrics)
 
+                # plot coefficients over time
+                print("Alphas: ", alphas)
+                coefficients = np.reshape(coefficients, (365, 7))
+                df_coefficients = pd.DataFrame(coefficients, columns=[
+                                               'Band 1', 'Band 2', 'Band 3', 'Band 4', 'Band 5', 'Band 6', 'Band 7'])
+
+                for i in range(3, 8):
+                    ax = sns.lineplot(data=df_coefficients['Band ' + str(i)],
+                                      dashes=False)
+                    plt.ylabel('Coefficient')
+                    plt.xlabel('Day')
+                    plt.title(
+                        'Coefficients of Ridge Regression for Band ' + str(i) + ' Over Time')
+                    plt.savefig(
+                        'graphs/LiveFuelMoistureContent/ridge_band_' + str(i) + '_coefficients.png')
+                    plt.close()
+
                 # save the outputs
-                df_metrics.to_csv(output_directory +
-                                  'regression_experiment.csv', index=False)
+                # df_metrics.to_csv(output_directory +
+                #                   'regression_experiment.csv', index=False)

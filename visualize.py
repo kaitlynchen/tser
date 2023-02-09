@@ -145,8 +145,17 @@ def normalize(path):
     return df_normalized
 
 
-def normalize_ts(path):
-    return None
+def plot_scatter_labels(actual, predicted, x_label, y_label, title, path, colors=['b', 'r']):
+    assert len(colors) == 2
+    plt.scatter(x=range(len(actual)), y=actual,
+                c=colors[0], marker='.', edgecolors='black')
+    plt.scatter(x=range(len(actual)), y=predicted,
+                c=colors[1], marker='.', edgecolors='black')
+    plt.ylabel(y_label)
+    plt.xlabel(x_label)
+    plt.title(title)
+    plt.savefig(path)
+    plt.close()
 
 
 def normalized_to_csv():

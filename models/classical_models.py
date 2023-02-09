@@ -22,6 +22,8 @@ class Regressor:
         self.train_duration = None
         self.model = None
         self.params = None
+        self.coefs = None
+        self.alphas = None
 
     def summary(self):
         """
@@ -51,6 +53,8 @@ class Regressor:
         self.cv(x_train, y_train)
 
         self.model.fit(x_train, y_train)
+        self.coefs = self.model.coef_
+        self.alphas = self.model.alpha_
 
         self.train_duration = time.perf_counter() - start_time
 
@@ -173,6 +177,7 @@ class SVRRegressor(Regressor):
             search = GridSearchCV(SVR(**params), search_params, n_jobs=-1, cv=3,
                                   scoring="neg_mean_squared_error", verbose=1)
             search.fit(x_train, y_train)
+            self.coefs = self.model.coef_
 
             best_param = search.best_params_
             best_param_score = search.best_score_
@@ -184,6 +189,7 @@ class SVRRegressor(Regressor):
                                         random_state=1234,
                                         scoring="neg_mean_squared_error", verbose=1)
             search.fit(x_train, y_train)
+            self.coefs = self.model.coef_
             best_param = search.best_params_
             best_param_score = search.best_score_
             print("finished fitting")
@@ -366,6 +372,7 @@ class XGBoostRegressor(Regressor):
             search = GridSearchCV(XGBRegressor(**params), search_params, n_jobs=1, cv=3,
                                   scoring="neg_mean_squared_error", verbose=True)
             search.fit(x_train, y_train, **fit_params)
+            self.coefs = self.model.coef_
             best_param = search.best_params_
             best_param_score = search.best_score_
         elif hpo == "random":
@@ -378,6 +385,7 @@ class XGBoostRegressor(Regressor):
                                         random_state=1234,
                                         scoring="neg_mean_squared_error", verbose=True)
             search.fit(x_train, y_train, **fit_params)
+            self.coefs = self.model.coef_
             best_param = search.best_params_
             best_param_score = search.best_score_
 
@@ -468,6 +476,8 @@ class LinearRegressor(Regressor):
         self.cv(x_train, y_train)
 
         self.model.fit(x_train, y_train)
+        self.coefs = self.model.coef_
+        self.alphas = self.model.alpha_
 
         self.train_duration = time.perf_counter() - start_time
 
