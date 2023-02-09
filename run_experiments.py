@@ -93,15 +93,16 @@ if __name__ == '__main__':
                 df_coefficients = pd.DataFrame(coefficients, columns=[
                                                'Band 1', 'Band 2', 'Band 3', 'Band 4', 'Band 5', 'Band 6', 'Band 7'])
 
-                for i in range(3, 8):
-                    ax = sns.lineplot(data=df_coefficients['Band ' + str(i)],
-                                      dashes=False)
+                for i in range(1, 8):
+                    band = 'Band ' + str(i)
+                    plt.scatter(x=range(
+                        df_coefficients.shape[0]), y=df_coefficients[band], c='b', marker='.', edgecolors='black')
                     plt.ylabel('Coefficient')
                     plt.xlabel('Day')
                     plt.title(
                         'Coefficients of Ridge Regression for Band ' + str(i) + ' Over Time')
                     plt.savefig(
-                        'graphs/LiveFuelMoistureContent/ridge_band_' + str(i) + '_coefficients.png')
+                        'graphs/LiveFuelMoistureContent/scatter_ridge_band_' + str(i) + '_coefficients.png')
                     plt.close()
 
                 # save the outputs
