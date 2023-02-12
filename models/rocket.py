@@ -136,8 +136,7 @@ class RocketRegressor(TimeSeriesRegressor):
         self.name = name
         self.n_kernels = n_kernels
         self.kernels = None
-        self.regressor = RidgeCV(alphas=np.logspace(-3, 3, 10),
-                                 normalize=True)
+        self.regressor = RidgeCV(alphas=np.logspace(-3, 3, 10))
 
     def fit(self,
             x_train: np.array,
