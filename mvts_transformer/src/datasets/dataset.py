@@ -31,7 +31,8 @@ class ImputationDataset(Dataset):
             ID: ID of sample
         """
 
-        X = self.feature_df.loc[self.IDs[ind]].values  # (seq_length, feat_dim) array
+        # (seq_length, feat_dim) array
+        X = self.feature_df.loc[self.IDs[ind]].values
         mask = noise_mask(X, self.masking_ratio, self.mean_mask_length, self.mode, self.distribution,
                           self.exclude_feats)  # (seq_length, feat_dim) boolean array
 
@@ -54,9 +55,12 @@ class TransductionDataset(Dataset):
         self.IDs = indices  # list of data IDs, but also mapping between integer index and ID
         self.feature_df = self.data.feature_df.loc[self.IDs]
 
-        self.mask_feats = mask_feats  # list/array of indices corresponding to features to be masked
-        self.start_hint = start_hint  # proportion at beginning of time series which will not be masked
-        self.end_hint = end_hint  # end_hint: proportion at the end of time series which will not be masked
+        # list/array of indices corresponding to features to be masked
+        self.mask_feats = mask_feats
+        # proportion at beginning of time series which will not be masked
+        self.start_hint = start_hint
+        # end_hint: proportion at the end of time series which will not be masked
+        self.end_hint = end_hint
 
     def __getitem__(self, ind):
         """
@@ -69,7 +73,8 @@ class TransductionDataset(Dataset):
             ID: ID of sample
         """
 
-        X = self.feature_df.loc[self.IDs[ind]].values  # (seq_length, feat_dim) array
+        # (seq_length, feat_dim) array
+        X = self.feature_df.loc[self.IDs[ind]].values
         mask = transduct_mask(X, self.mask_feats, self.start_hint,
                               self.end_hint)  # (seq_length, feat_dim) boolean array
 
@@ -104,10 +109,12 @@ def collate_superv(data, max_len=None):
     features, labels, IDs = zip(*data)
 
     # Stack and pad features and masks (convert 2D to 3D tensors, i.e. add batch dimension)
-    lengths = [X.shape[0] for X in features]  # original sequence length for each time series
+    # original sequence length for each time series
+    lengths = [X.shape[0] for X in features]
     if max_len is None:
         max_len = max(lengths)
-    X = torch.zeros(batch_size, max_len, features[0].shape[-1])  # (batch_size, padded_length, feat_dim)
+    # (batch_size, padded_length, feat_dim)
+    X = torch.zeros(batch_size, max_len, features[0].shape[-1])
     for i in range(batch_size):
         end = min(lengths[i], max_len)
         X[i, :end, :] = features[i][:end, :]
@@ -142,7 +149,8 @@ class ClassiregressionDataset(Dataset):
             ID: ID of sample
         """
 
-        X = self.feature_df.loc[self.IDs[ind]].values  # (seq_length, feat_dim) array
+        # (seq_length, feat_dim) array
+        X = self.feature_df.loc[self.IDs[ind]].values
         y = self.labels_df.loc[self.IDs[ind]].values  # (num_labels,) array
 
         return torch.from_numpy(X), torch.from_numpy(y), self.IDs[ind]
@@ -184,9 +192,11 @@ def compensate_masking(X, mask):
     """
 
     # number of unmasked elements of feature vector for each time step
-    num_active = torch.sum(mask, dim=-1).unsqueeze(-1)  # (batch_size, seq_length, 1)
+    # (batch_size, seq_length, 1)
+    num_active = torch.sum(mask, dim=-1).unsqueeze(-1)
     # to avoid division by 0, set the minimum to 1
-    num_active = torch.max(num_active, torch.ones(num_active.shape, dtype=torch.int16))  # (batch_size, seq_length, 1)
+    num_active = torch.max(num_active, torch.ones(
+        num_active.shape, dtype=torch.int16))  # (batch_size, seq_length, 1)
     return X.shape[-1] * X / num_active
 
 
@@ -210,10 +220,12 @@ def collate_unsuperv(data, max_len=None, mask_compensation=False):
     features, masks, IDs = zip(*data)
 
     # Stack and pad features and masks (convert 2D to 3D tensors, i.e. add batch dimension)
-    lengths = [X.shape[0] for X in features]  # original sequence length for each time series
+    # original sequence length for each time series
+    lengths = [X.shape[0] for X in features]
     if max_len is None:
         max_len = max(lengths)
-    X = torch.zeros(batch_size, max_len, features[0].shape[-1])  # (batch_size, padded_length, feat_dim)
+    # (batch_size, padded_length, feat_dim)
+    X = torch.zeros(batch_size, max_len, features[0].shape[-1])
     target_masks = torch.zeros_like(X,
                                     dtype=torch.bool)  # (batch_size, padded_length, feat_dim) masks related to objective
     for i in range(batch_size):
@@ -226,7 +238,9 @@ def collate_unsuperv(data, max_len=None, mask_compensation=False):
     if mask_compensation:
         X = compensate_masking(X, target_masks)
 
-    padding_masks = padding_mask(torch.tensor(lengths, dtype=torch.int16), max_len=max_len)  # (batch_size, padded_length) boolean tensor, "1" means keep
+    # (batch_size, padded_length) boolean tensor, "1" means keep
+    padding_masks = padding_mask(torch.tensor(
+        lengths, dtype=torch.int16), max_len=max_len)
     target_masks = ~target_masks  # inverse logic: 0 now means ignore, 1 means predict
     return X, targets, target_masks, padding_masks, IDs
 
@@ -253,13 +267,27 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
         exclude_feats = set(exclude_feats)
 
     if distribution == 'geometric':  # stateful (Markov chain)
-        if mode == 'separate':  # each variable (feature) is independent
-            mask = np.ones(X.shape, dtype=bool)
-            for m in range(X.shape[1]):  # feature dimension
-                if exclude_feats is None or m not in exclude_feats:
-                    mask[:, m] = geom_noise_mask_single(X.shape[0], lm, masking_ratio)  # time dimension
-        else:  # replicate across feature dimension (mask all variables at the same positions concurrently)
-            mask = np.tile(np.expand_dims(geom_noise_mask_single(X.shape[0], lm, masking_ratio), 1), X.shape[1])
+        mask = np.ones(X.shape, dtype=bool)
+        if np.random.rand() < 0.5:
+            for m in range(X.shape[1]):
+                mask[:, m] = geom_noise_mask_timestep_or_variable(
+                    X.shape[0], masking_ratio)
+        else:
+            for m in range(X.shape[0]):
+                mask[m, :] = geom_noise_mask_timestep_or_variable(
+                    X.shape[1], masking_ratio)
+
+        # TODO: uncomment the next 10 lines for original code
+        # if mode == 'separate':  # each variable (feature) is independent
+        #     mask = np.ones(X.shape, dtype=bool)
+        #     for m in range(X.shape[1]):  # feature dimension
+        #         if exclude_feats is None or m not in exclude_feats:
+        #             mask[:, m] = geom_noise_mask_single(
+        #                 X.shape[0], lm, masking_ratio)  # time dimension
+        # # replicate across feature dimension (mask all variables at the same positions concurrently)
+        # else:
+        #     mask = np.tile(np.expand_dims(geom_noise_mask_single(
+        #         X.shape[0], lm, masking_ratio), 1), X.shape[1])
     else:  # each position is independent Bernoulli with p = 1 - masking_ratio
         if mode == 'separate':
             mask = np.random.choice(np.array([True, False]), size=X.shape, replace=True,
@@ -269,6 +297,14 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
                                             p=(1 - masking_ratio, masking_ratio)), X.shape[1])
 
     return mask
+
+
+def geom_noise_mask_timestep_or_variable(L, masking_ratio):
+    keep_mask = np.ones(L, dtype=bool)
+    if np.random.rand() < masking_ratio:
+        keep_mask = np.zeros(L, dtype=bool)
+
+    return keep_mask
 
 
 def geom_noise_mask_single(L, lm, masking_ratio):
@@ -284,14 +320,18 @@ def geom_noise_mask_single(L, lm, masking_ratio):
         (L,) boolean numpy array intended to mask ('drop') with 0s a sequence of length L
     """
     keep_mask = np.ones(L, dtype=bool)
-    p_m = 1 / lm  # probability of each masking sequence stopping. parameter of geometric distribution.
-    p_u = p_m * masking_ratio / (1 - masking_ratio)  # probability of each unmasked sequence stopping. parameter of geometric distribution.
+    # probability of each masking sequence stopping. parameter of geometric distribution.
+    p_m = 1 / lm
+    # probability of each unmasked sequence stopping. parameter of geometric distribution.
+    p_u = p_m * masking_ratio / (1 - masking_ratio)
     p = [p_m, p_u]
 
     # Start in state 0 with masking_ratio probability
-    state = int(np.random.rand() > masking_ratio)  # state 0 means masking, 1 means not masking
+    # state 0 means masking, 1 means not masking
+    state = int(np.random.rand() > masking_ratio)
     for i in range(L):
-        keep_mask[i] = state  # here it happens that state and masking value corresponding to state are identical
+        # here it happens that state and masking value corresponding to state are identical
+        keep_mask[i] = state
         if np.random.rand() < p[state]:
             state = 1 - state
 
@@ -304,8 +344,16 @@ def padding_mask(lengths, max_len=None):
     where 1 means keep element at this position (time step)
     """
     batch_size = lengths.numel()
-    max_len = max_len or lengths.max_val()  # trick works because of overloading of 'or' operator for non-boolean types
+    # trick works because of overloading of 'or' operator for non-boolean types
+    max_len = max_len or lengths.max_val()
     return (torch.arange(0, max_len, device=lengths.device)
             .type_as(lengths)
             .repeat(batch_size, 1)
             .lt(lengths.unsqueeze(1)))
+
+
+if __name__ == "__main__":
+    X = np.random.rand(4, 6)
+    mask = noise_mask(X, 0.15, lm=3, mode='separate',
+                      distribution='geometric', exclude_feats=None)
+    print("Mask: ", mask)
