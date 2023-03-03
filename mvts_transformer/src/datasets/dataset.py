@@ -269,11 +269,11 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
     if distribution == 'geometric':  # stateful (Markov chain)
         mask = np.ones(X.shape, dtype=bool)
         if np.random.rand() < 0.5:
-            for m in range(X.shape[1]):
+            for m in range(X.shape[1]):  # mask variable
                 mask[:, m] = geom_noise_mask_timestep_or_variable(
                     X.shape[0], masking_ratio)
         else:
-            for m in range(X.shape[0]):
+            for m in range(X.shape[0]):  # mask timestep
                 mask[m, :] = geom_noise_mask_timestep_or_variable(
                     X.shape[1], masking_ratio)
 

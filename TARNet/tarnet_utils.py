@@ -918,7 +918,11 @@ def training(model, optimizer, criterion_tar, criterion_task, best_model, best_o
 
         tar_loss_masked_arr.append(tar_loss_masked)
         tar_loss_unmasked_arr.append(tar_loss_unmasked)
-        tar_loss = tar_loss_masked + tar_loss_unmasked
+        tar_loss = tar_loss_masked
+
+        # TODO: uncomment the below line for original loss
+        # tar_loss = tar_loss_masked + tar_loss_unmasked
+
         tar_loss_arr.append(tar_loss)
         task_loss_arr.append(task_loss)
         print('Epoch: ' + str(epoch) + ', TAR Loss: ' +
