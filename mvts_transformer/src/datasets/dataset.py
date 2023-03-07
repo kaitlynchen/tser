@@ -245,7 +245,7 @@ def collate_unsuperv(data, max_len=None, mask_compensation=False):
     return X, targets, target_masks, padding_masks, IDs
 
 
-def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric', exclude_feats=None):
+def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='early', exclude_feats=None):
     """
     Creates a random boolean mask of the same shape as X, with 0s at places where a feature should be masked.
     Args:
@@ -266,7 +266,9 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
     if exclude_feats is not None:
         exclude_feats = set(exclude_feats)
 
-    if distribution == 'geometric':  # stateful (Markov chain)
+    if distribution == 'early':
+        mask = early_prediction_mask(X.shape, 0.25)
+    elif distribution == 'geometric':  # stateful (Markov chain)
         mask = np.ones(X.shape, dtype=bool)
         if np.random.rand() < 0.5:
             for m in range(X.shape[1]):  # mask variable
@@ -296,6 +298,13 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
             mask = np.tile(np.random.choice(np.array([True, False]), size=(X.shape[0], 1), replace=True,
                                             p=(1 - masking_ratio, masking_ratio)), X.shape[1])
 
+    return mask
+
+
+def early_prediction_mask(shape, proportion):
+    mask = np.ones(shape, dtype=bool)
+    index = int(proportion * shape[1])
+    mask[:, index:] = False
     return mask
 
 
