@@ -61,15 +61,19 @@ if __name__ == '__main__':
         print("[{}] X_train: {}".format(module, x_train.shape))
         print("[{}] X_test: {}".format(module, x_test.shape))
 
+        test_avg = np.mean(x_test, axis=1)
+        test_avg = np.expand_dims(test_avg, axis=1)
+        print("[{}] X_test average: {}".format(module, test_avg.shape))
+
         # split data for baseline 1
         proportions = [0.25, 0.5, 0.75, 1]
-        rmses = []
+        rmses_rocket = []
+        rmses_inception = []
+
         for proportion in proportions:
-            print("[{}] Splitting data".format(module))
-            train_length = int(x_train.shape[1] * proportion)
-            test_length = int(x_test.shape[1] * proportion)
-            x_train = x_train[:, :train_length, :]
-            x_test = x_test[:, :test_length, :]
+            print("[{}] Replacing data with historical average".format(module))
+            test_index = int(x_test.shape[1] * proportion)
+            x_test[:, test_index:, :] = test_avg
             print("[{}] X_train: {}".format(module, x_train.shape))
             print("[{}] X_test: {}".format(module, x_test.shape))
 
@@ -97,15 +101,19 @@ if __name__ == '__main__':
                     df_metrics = calculate_regression_metrics(y_test, y_pred)
 
                     print(df_metrics)
-                    rmses.append(df_metrics['rmse'])
+                    if regressor_name == 'rocket':
+                        rmses_rocket.append(df_metrics['rmse'])
+                    else:
+                        rmses_inception.append(df_metrics['rmse'])
 
                     # save the outputs
                     # df_metrics.to_csv(output_directory +
                     #                   'regression_experiment.csv', index=False)
 
-        plt.scatter(x=proportions, y=rmses)
+        plt.scatter(x=proportions, y=rmses_rocket)
+        plt.scatter(x=proportions, y=rmses_inception)
         plt.ylabel('RMSE')
         plt.xlabel('Proportion of data')
-        plt.title('Baseline 1 Accuracies')
-        plt.savefig('graphs/LiveFuelMoistureContent/baseline1.png')
+        plt.title('Baseline 2 Accuracies')
+        plt.savefig('graphs/LiveFuelMoistureContent/baseline2.png')
         plt.close()

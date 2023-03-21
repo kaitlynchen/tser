@@ -11,6 +11,7 @@ from models.loss import get_loss_module
 from models.ts_transformer import model_factory
 from datasets.datasplit import split_dataset
 from datasets.data import data_factory, Normalizer
+from datasets.utils import process_data
 from utils import utils
 from running import setup, pipeline_factory, validate, check_progress, NEG_METRICS
 from options import Options
@@ -24,6 +25,8 @@ import time
 import sys
 import os
 import logging
+import numpy as np
+import pandas as pd
 
 logging.basicConfig(
     format='%(asctime)s | %(levelname)s : %(message)s', level=logging.INFO)
@@ -66,6 +69,19 @@ def main(config):
     my_data = data_class(config['data_dir'], pattern=config['pattern'],
                          n_proc=config['n_proc'], limit_size=config['limit_size'], config=config)
     feat_dim = my_data.feature_df.shape[1]  # dimensionality of data features
+
+    # Trim data for early prediction
+    proportion = 1
+    # TODO: uncomment below for baseline 1
+    # trimmed_train_data = my_data.feature_df.iloc[:int(proportion * 365)]
+    # # every group of 365
+    # for i in range(1, int(my_data.feature_df.shape[0] / 365)):
+    #     trimmed_train_data = pd.concat(
+    #         [trimmed_train_data, my_data.feature_df.iloc[i * 365:int((i + proportion) * 365)]])
+
+    # my_data.all_df = trimmed_train_data
+    # my_data.feature_df = trimmed_train_data
+
     if config['task'] == 'classification':
         validation_method = 'StratifiedShuffleSplit'
         labels = my_data.labels_df.values.flatten()
@@ -96,6 +112,21 @@ def main(config):
     if config['val_pattern']:  # used if val data come from different files / file patterns
         val_data = data_class(
             config['data_dir'], pattern=config['val_pattern'], n_proc=-1, config=config)
+        trimmed_val_data = None
+
+        # every group of 365
+        for i in range(int(val_data.feature_df.shape[0] / 365)):
+            mean_per_loc = val_data.feature_df.iloc[i *
+                                                    365:(i + 1) * 365].mean(axis=0)
+            nrows = int((i + proportion) * 365) - i * 365
+            mean_replicated = pd.DataFrame(
+                np.repeat(np.reshape(mean_per_loc.values, (1, 7)), 365 - nrows, axis=0))
+            mean_replicated.columns = val_data.feature_df.columns
+            trimmed_val_data = pd.concat(
+                [trimmed_val_data, val_data.feature_df.iloc[i * 365:int((i + proportion) * 365)], mean_replicated])
+
+        val_data.all_df = trimmed_val_data
+        val_data.feature_df = trimmed_val_data
         val_indices = val_data.all_IDs
 
     # Note: currently a validation set must exist, either with `val_pattern` or `val_ratio`

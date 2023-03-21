@@ -245,7 +245,7 @@ def collate_unsuperv(data, max_len=None, mask_compensation=False):
     return X, targets, target_masks, padding_masks, IDs
 
 
-def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='early', exclude_feats=None):
+def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric', exclude_feats=None):
     """
     Creates a random boolean mask of the same shape as X, with 0s at places where a feature should be masked.
     Args:
@@ -267,29 +267,29 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='early', ex
         exclude_feats = set(exclude_feats)
 
     if distribution == 'early':
-        mask = early_prediction_mask(X.shape, 0.25)
+        mask = early_prediction_mask(X.shape, 0.75)
     elif distribution == 'geometric':  # stateful (Markov chain)
-        mask = np.ones(X.shape, dtype=bool)
-        if np.random.rand() < 0.5:
-            for m in range(X.shape[1]):  # mask variable
-                mask[:, m] = geom_noise_mask_timestep_or_variable(
-                    X.shape[0], masking_ratio)
-        else:
-            for m in range(X.shape[0]):  # mask timestep
-                mask[m, :] = geom_noise_mask_timestep_or_variable(
-                    X.shape[1], masking_ratio)
+        # mask = np.ones(X.shape, dtype=bool)
+        # if np.random.rand() < 0.5:
+        #     for m in range(X.shape[1]):  # mask variable
+        #         mask[:, m] = geom_noise_mask_timestep_or_variable(
+        #             X.shape[0], masking_ratio)
+        # else:
+        #     for m in range(X.shape[0]):  # mask timestep
+        #         mask[m, :] = geom_noise_mask_timestep_or_variable(
+        #             X.shape[1], masking_ratio)
 
         # TODO: uncomment the next 10 lines for original code
-        # if mode == 'separate':  # each variable (feature) is independent
-        #     mask = np.ones(X.shape, dtype=bool)
-        #     for m in range(X.shape[1]):  # feature dimension
-        #         if exclude_feats is None or m not in exclude_feats:
-        #             mask[:, m] = geom_noise_mask_single(
-        #                 X.shape[0], lm, masking_ratio)  # time dimension
-        # # replicate across feature dimension (mask all variables at the same positions concurrently)
-        # else:
-        #     mask = np.tile(np.expand_dims(geom_noise_mask_single(
-        #         X.shape[0], lm, masking_ratio), 1), X.shape[1])
+        if mode == 'separate':  # each variable (feature) is independent
+            mask = np.ones(X.shape, dtype=bool)
+            for m in range(X.shape[1]):  # feature dimension
+                if exclude_feats is None or m not in exclude_feats:
+                    mask[:, m] = geom_noise_mask_single(
+                        X.shape[0], lm, masking_ratio)  # time dimension
+        # replicate across feature dimension (mask all variables at the same positions concurrently)
+        else:
+            mask = np.tile(np.expand_dims(geom_noise_mask_single(
+                X.shape[0], lm, masking_ratio), 1), X.shape[1])
     else:  # each position is independent Bernoulli with p = 1 - masking_ratio
         if mode == 'separate':
             mask = np.random.choice(np.array([True, False]), size=X.shape, replace=True,
