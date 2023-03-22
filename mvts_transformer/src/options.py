@@ -9,11 +9,11 @@ class Options(object):
         self.parser = argparse.ArgumentParser(
             description='Run a complete training pipeline. Optionally, a JSON configuration file can be used, to overwrite command-line arguments.')
 
-        ## Run from config file
+        # Run from config file
         self.parser.add_argument('--config', dest='config_filepath',
                                  help='Configuration .json file (optional). Overwrites existing command-line args!')
 
-        ## Run from command-line arguments
+        # Run from command-line arguments
         # I/O
         self.parser.add_argument('--output_dir', default='./output',
                                  help='Root output directory. Must exist. Time-stamped directories will be created inside.')
@@ -29,7 +29,8 @@ class Options(object):
                                  help='If set, will save model weights (and optimizer state) for every epoch; otherwise just latest')
         self.parser.add_argument('--name', dest='experiment_name', default='',
                                  help='A string identifier/name for the experiment to be run - it will be appended to the output directory name, before the timestamp')
-        self.parser.add_argument('--comment', type=str, default='', help='A comment/description of the experiment')
+        self.parser.add_argument(
+            '--comment', type=str, default='', help='A comment/description of the experiment')
         self.parser.add_argument('--no_timestamp', action='store_true',
                                  help='If set, a timestamp will not be appended to the output directory name')
         self.parser.add_argument('--records_file', default='./records.xls',
@@ -74,7 +75,8 @@ class Options(object):
                                  help="""Regex pattern used to select files contained in `data_dir` exclusively for the test set.
                             If None, `test_ratio`, if specified, will be used to reserve part of the common data set.""")
         self.parser.add_argument('--normalization',
-                                 choices={'standardization', 'minmax', 'per_sample_std', 'per_sample_minmax'},
+                                 choices={'standardization', 'minmax',
+                                          'per_sample_std', 'per_sample_minmax'},
                                  default='standardization',
                                  help='If specified, will apply normalization on the input features of a dataset.')
         self.parser.add_argument('--norm_from',
@@ -82,6 +84,10 @@ class Options(object):
                             The columns correspond to features, rows correspond to mean, std or min, max.""")
         self.parser.add_argument('--subsample_factor', type=int,
                                  help='Sub-sampling factor used for long sequences: keep every kth sample')
+        self.parser.add_argument('--baseline', type=int,
+                                 help='Test a specific baseline for early prediction')
+        self.parser.add_argument('--proportion', type=float,
+                                 help='Proportion of dataset used for early prediction')
         # Training process
         self.parser.add_argument('--task', choices={"imputation", "transduction", "classification", "regression"},
                                  default="imputation",
@@ -115,7 +121,8 @@ class Options(object):
                                  help='Number of training epochs')
         self.parser.add_argument('--val_interval', type=int, default=2,
                                  help='Evaluate on validation set every this many epochs. Must be >= 1.')
-        self.parser.add_argument('--optimizer', choices={"Adam", "RAdam"}, default="Adam", help="Optimizer")
+        self.parser.add_argument(
+            '--optimizer', choices={"Adam", "RAdam"}, default="Adam", help="Optimizer")
         self.parser.add_argument('--lr', type=float, default=1e-3,
                                  help='learning rate (default holds for batch size 64)')
         self.parser.add_argument('--lr_step', type=str, default='1000000',
@@ -175,7 +182,8 @@ class Options(object):
             args.lr_factor), "You must specify as many values in `lr_step` as in `lr_factors`"
 
         if args.exclude_feats is not None:
-            args.exclude_feats = [int(i) for i in args.exclude_feats.split(',')]
+            args.exclude_feats = [int(i)
+                                  for i in args.exclude_feats.split(',')]
         args.mask_feats = [int(i) for i in args.mask_feats.split(',')]
 
         if args.val_pattern is not None:

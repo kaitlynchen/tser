@@ -32,7 +32,9 @@ def model_factory(config, data):
                                         norm=config['normalization_layer'], freeze=config['freeze'])
 
     if (task == "classification") or (task == "regression"):
-        num_labels = len(data.class_names) if task == "classification" else data.labels_df.shape[1]  # dimensionality of labels
+        # dimensionality of labels
+        num_labels = len(
+            data.class_names) if task == "classification" else data.labels_df.shape[1]
         if config['model'] == 'LINEAR':
             return DummyTSTransformerEncoderClassiregressor(feat_dim, max_seq_len, config['d_model'],
                                                             config['num_heads'],
@@ -43,14 +45,15 @@ def model_factory(config, data):
                                                             norm=config['normalization_layer'], freeze=config['freeze'])
         elif config['model'] == 'transformer':
             return TSTransformerEncoderClassiregressor(feat_dim, max_seq_len, config['d_model'],
-                                                        config['num_heads'],
-                                                        config['num_layers'], config['dim_feedforward'],
-                                                        num_classes=num_labels,
-                                                        dropout=config['dropout'], pos_encoding=config['pos_encoding'],
-                                                        activation=config['activation'],
-                                                        norm=config['normalization_layer'], freeze=config['freeze'])
+                                                       config['num_heads'],
+                                                       config['num_layers'], config['dim_feedforward'],
+                                                       num_classes=num_labels,
+                                                       dropout=config['dropout'], pos_encoding=config['pos_encoding'],
+                                                       activation=config['activation'],
+                                                       norm=config['normalization_layer'], freeze=config['freeze'])
     else:
-        raise ValueError("Model class for task '{}' does not exist".format(task))
+        raise ValueError(
+            "Model class for task '{}' does not exist".format(task))
 
 
 def _get_activation_fn(activation):
@@ -58,7 +61,8 @@ def _get_activation_fn(activation):
         return F.relu
     elif activation == "gelu":
         return F.gelu
-    raise ValueError("activation should be relu/gelu, not {}".format(activation))
+    raise ValueError(
+        "activation should be relu/gelu, not {}".format(activation))
 
 
 # From https://github.com/pytorch/examples/blob/master/word_language_model/model.py
@@ -83,11 +87,13 @@ class FixedPositionalEncoding(nn.Module):
 
         pe = torch.zeros(max_len, d_model)  # positional encoding
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(torch.arange(
+            0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = scale_factor * pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)  # this stores the variable in the state_dict (used for non-trainable variables)
+        # this stores the variable in the state_dict (used for non-trainable variables)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
         r"""Inputs of forward function
@@ -109,7 +115,8 @@ class LearnablePositionalEncoding(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         # Each position gets its own embedding
         # Since indices are always 0 ... max_len, we don't have to do a look-up
-        self.pe = nn.Parameter(torch.empty(max_len, 1, d_model))  # requires_grad automatically set to True
+        # requires_grad automatically set to True
+        self.pe = nn.Parameter(torch.empty(max_len, 1, d_model))
         nn.init.uniform_(self.pe, -0.02, 0.02)
 
     def forward(self, x):
@@ -131,7 +138,8 @@ def get_pos_encoder(pos_encoding):
     elif pos_encoding == "fixed":
         return FixedPositionalEncoding
 
-    raise NotImplementedError("pos_encoding should be 'learnable'/'fixed', not '{}'".format(pos_encoding))
+    raise NotImplementedError(
+        "pos_encoding should be 'learnable'/'fixed', not '{}'".format(pos_encoding))
 
 
 class TransformerBatchNormEncoderLayer(nn.modules.Module):
@@ -155,7 +163,8 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         self.dropout = Dropout(dropout)
         self.linear2 = Linear(dim_feedforward, d_model)
 
-        self.norm1 = BatchNorm1d(d_model, eps=1e-5)  # normalizes each feature across batch samples and time steps
+        # normalizes each feature across batch samples and time steps
+        self.norm1 = BatchNorm1d(d_model, eps=1e-5)
         self.norm2 = BatchNorm1d(d_model, eps=1e-5)
         self.dropout1 = Dropout(dropout)
         self.dropout2 = Dropout(dropout)
@@ -205,14 +214,18 @@ class TSTransformerEncoder(nn.Module):
         self.n_heads = n_heads
 
         self.project_inp = nn.Linear(feat_dim, d_model)
-        self.pos_enc = get_pos_encoder(pos_encoding)(d_model, dropout=dropout*(1.0 - freeze), max_len=max_len)
+        self.pos_enc = get_pos_encoder(pos_encoding)(
+            d_model, dropout=dropout * (1.0 - freeze), max_len=max_len)
 
         if norm == 'LayerNorm':
-            encoder_layer = TransformerEncoderLayer(d_model, self.n_heads, dim_feedforward, dropout*(1.0 - freeze), activation=activation)
+            encoder_layer = TransformerEncoderLayer(
+                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
         else:
-            encoder_layer = TransformerBatchNormEncoderLayer(d_model, self.n_heads, dim_feedforward, dropout*(1.0 - freeze), activation=activation)
+            encoder_layer = TransformerBatchNormEncoderLayer(
+                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
 
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers)
 
         self.output_layer = nn.Linear(d_model, feat_dim)
 
@@ -237,12 +250,16 @@ class TSTransformerEncoder(nn.Module):
             self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
         # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
-        output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)  # (seq_length, batch_size, d_model)
-        output = self.act(output)  # the output transformer encoder/decoder embeddings don't include non-linearity
+        # (seq_length, batch_size, d_model)
+        output = self.transformer_encoder(
+            inp, src_key_padding_mask=~padding_masks)
+        # the output transformer encoder/decoder embeddings don't include non-linearity
+        output = self.act(output)
         output = output.permute(1, 0, 2)  # (batch_size, seq_length, d_model)
         output = self.dropout1(output)
         # Most probably defining a Linear(d_model,feat_dim) vectorizes the operation over (seq_length, batch_size).
-        output = self.output_layer(output)  # (batch_size, seq_length, feat_dim)
+        # (batch_size, seq_length, feat_dim)
+        output = self.output_layer(output)
 
         return output
 
@@ -262,14 +279,18 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         self.n_heads = n_heads
 
         self.project_inp = nn.Linear(feat_dim, d_model)
-        self.pos_enc = get_pos_encoder(pos_encoding)(d_model, dropout=dropout*(1.0 - freeze), max_len=max_len)
+        self.pos_enc = get_pos_encoder(pos_encoding)(
+            d_model, dropout=dropout * (1.0 - freeze), max_len=max_len)
 
         if norm == 'LayerNorm':
-            encoder_layer = TransformerEncoderLayer(d_model, self.n_heads, dim_feedforward, dropout*(1.0 - freeze), activation=activation)
+            encoder_layer = TransformerEncoderLayer(
+                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
         else:
-            encoder_layer = TransformerBatchNormEncoderLayer(d_model, self.n_heads, dim_feedforward, dropout*(1.0 - freeze), activation=activation)
+            encoder_layer = TransformerBatchNormEncoderLayer(
+                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
 
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers)
 
         self.act = _get_activation_fn(activation)
 
@@ -277,7 +298,8 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         self.feat_dim = feat_dim
         self.num_classes = num_classes
-        self.output_layer = self.build_output_module(d_model, max_len, num_classes)
+        self.output_layer = self.build_output_module(
+            d_model, max_len, num_classes)
 
     def build_output_module(self, d_model, max_len, num_classes):
         output_layer = nn.Linear(d_model * max_len, num_classes)
@@ -300,15 +322,19 @@ class TSTransformerEncoderClassiregressor(nn.Module):
             self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
         # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
-        output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)  # (seq_length, batch_size, d_model)
-        output = self.act(output)  # the output transformer encoder/decoder embeddings don't include non-linearity
+        # (seq_length, batch_size, d_model)
+        output = self.transformer_encoder(
+            inp, src_key_padding_mask=~padding_masks)
+        # the output transformer encoder/decoder embeddings don't include non-linearity
+        output = self.act(output)
         output = output.permute(1, 0, 2)  # (batch_size, seq_length, d_model)
         output = self.dropout1(output)
 
         # Output
-        output = output * padding_masks.unsqueeze(-1)  # zero-out padding embeddings
-        output = output.reshape(output.shape[0], -1)  # (batch_size, seq_length * d_model)
+        # zero-out padding embeddings
+        output = output * padding_masks.unsqueeze(-1)
+        # (batch_size, seq_length * d_model)
+        output = output.reshape(output.shape[0], -1)
         output = self.output_layer(output)  # (batch_size, num_classes)
 
         return output
-

@@ -136,7 +136,7 @@ def normalize(path):
     for col in df_daily_mean.columns:
         if col not in ['No', 'year', 'month', 'day', 'hour', 'wd', 'Station']:
             df_normalized[col] = (
-                df[col] - df_daily_mean[col])/df_daily_std[col]
+                df[col] - df_daily_mean[col]) / df_daily_std[col]
 
     df_normalized = df_normalized.fillna(0.0)
     df_normalized = df_normalized.sort_values(
@@ -257,10 +257,43 @@ def get_normalized_test():
 
 
 if __name__ == "__main__":
-    df = pd.read_csv('data/BeijingPM25Quality/normalized.csv')
-    df_train = df.iloc[:342144, :]
-    df_test = df.iloc[342144:, :]
-    df_train.to_csv(
-        'data/BeijingPM25Quality/PRSA_normalized_TRAIN.csv', index=False)
-    df_test.to_csv(
-        'data/BeijingPM25Quality/PRSA_normalized_TEST.csv', index=False)
+    proportions = [0.25, 0.5, 0.75, 1]
+    rmses_no_pretraining_1 = [42.4472803, 42.6318382, 43.3170565, 42.6606499]
+    rmses_pretraining_1 = [43.3491006, 43.6713389, 44.1703348, 42.16658]
+    rmses_rocket_1 = [57.308713, 52.272791, 52.785942, 51.281]
+    rmses_inception_1 = [45.129963, 45.616317, 46.319049, 42.329537]
+    rmses_no_pretraining_2 = [89.3165696, 69.3319426, 51.5949835, 42.6606499]
+    rmses_pretraining_2 = [90.4339594, 63.5026868, 51.1927873, 42.16658]
+    rmses_rocket_2 = [51.144059, 51.196274, 50.455204, 59.640815]
+    rmses_inception_2 = [41.794344, 41.372103, 42.281523, 42.27738]
+    rmses_autoregressive = [42.6969597, 44.0265464, 43.2854782, 43.0921429]
+
+    rmses = np.array([rmses_no_pretraining_1, rmses_pretraining_1, rmses_rocket_1, rmses_inception_1,
+                      rmses_no_pretraining_2, rmses_pretraining_2, rmses_rocket_2, rmses_inception_2, rmses_autoregressive])
+    df = pd.DataFrame(rmses, columns=['25%', '50%', '75%', '100%'])
+
+    plt.plot(proportions, rmses_no_pretraining_1,
+             label='Baseline 1 transformer no pretraining', marker='o')
+    plt.plot(proportions, rmses_pretraining_1,
+             label='Baseline 1 transformer with pretraining', marker='o')
+    plt.plot(proportions, rmses_rocket_1,
+             label='Baseline 1 ROCKET', marker='o')
+    plt.plot(proportions, rmses_inception_1,
+             label='Baseline 1 inception', marker='o')
+    plt.plot(proportions, rmses_no_pretraining_2,
+             label='Baseline 2 transformer no pretraining', marker='o')
+    plt.plot(proportions, rmses_pretraining_2,
+             label='Baseline 2 transformer with pretraining', marker='o')
+    plt.plot(proportions, rmses_rocket_2,
+             label='Baseline 2 ROCKET', marker='o')
+    plt.plot(proportions, rmses_inception_2,
+             label='Baseline 2 inception', marker='o')
+    plt.plot(proportions, rmses_autoregressive,
+             label='Baseline 3 autoregressive', marker='o')
+    plt.legend(['Baseline 1 transformer no pretraining', 'Baseline 1 transformer with pretraining', 'Baseline 1 ROCKET',
+               'Baseline 1 inception', 'Baseline 2 transformer no pretraining', 'Baseline 2 transformer with pretraining', 'Baseline 2 ROCKET', 'Baseline 2 inception', 'Baseline 3 autoregressive'])
+    plt.ylabel('RMSE')
+    plt.xlabel('Proportion of data')
+    plt.title('Baseline Accuracies')
+    plt.savefig('graphs/LiveFuelMoistureContent/early_prediction.png')
+    plt.close()
