@@ -72,12 +72,13 @@ def main(config):
 
     # Trim data for early prediction
     proportion = config['proportion']
+    length = 240
     if config['baseline'] == 1 and config['proportion']:
-        trimmed_train_data = my_data.feature_df.iloc[:int(proportion * 365)]
+        trimmed_train_data = my_data.feature_df.iloc[:int(proportion * length)]
         # every group of 365
-        for i in range(1, int(my_data.feature_df.shape[0] / 365)):
+        for i in range(1, int(my_data.feature_df.shape[0] / length)):
             trimmed_train_data = pd.concat(
-                [trimmed_train_data, my_data.feature_df.iloc[i * 365:int((i + proportion) * 365)]])
+                [trimmed_train_data, my_data.feature_df.iloc[i * length:int((i + proportion) * length)]])
 
         my_data.all_df = trimmed_train_data
         my_data.feature_df = trimmed_train_data
@@ -116,15 +117,15 @@ def main(config):
             trimmed_val_data = None
 
             # every group of 365
-            for i in range(int(val_data.feature_df.shape[0] / 365)):
+            for i in range(int(val_data.feature_df.shape[0] / length)):
                 mean_per_loc = val_data.feature_df.iloc[i *
-                                                        365:(i + 1) * 365].mean(axis=0)
-                nrows = int((i + proportion) * 365) - i * 365
+                                                        length:(i + 1) * length].mean(axis=0)
+                nrows = int((i + proportion) * length) - i * length
                 mean_replicated = pd.DataFrame(
-                    np.repeat(np.reshape(mean_per_loc.values, (1, 7)), 365 - nrows, axis=0))
+                    np.repeat(np.reshape(mean_per_loc.values, (1, 8)), length - nrows, axis=0))
                 mean_replicated.columns = val_data.feature_df.columns
                 trimmed_val_data = pd.concat(
-                    [trimmed_val_data, val_data.feature_df.iloc[i * 365:int((i + proportion) * 365)], mean_replicated])
+                    [trimmed_val_data, val_data.feature_df.iloc[i * length:int((i + proportion) * length)], mean_replicated])
 
             val_data.all_df = trimmed_val_data
             val_data.feature_df = trimmed_val_data

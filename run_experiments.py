@@ -11,12 +11,13 @@ from visualize import plot_scatter_labels
 module = "RegressionExperiment"
 data_path = "data/"
 # see data_loader.regression_datasets
-problems = ["LiveFuelMoistureContent"]
-regressors = ["rocket"]    # see regressor_tools.all_models
+problems = ["BenzeneConcentration"]
+# see regressor_tools.all_models
+regressors = ["rocket", "inception", "ridge"]
 iterations = [1]
 norm = "standard"               # none, standard, minmax
 
-output_path = "output/regression/LiveFuelMoistureContent"
+output_path = "output/regression/BenzeneConcentration"
 if __name__ == '__main__':
     # for each problem
     for problem in problems:
@@ -61,21 +62,24 @@ if __name__ == '__main__':
         print("[{}] X_train: {}".format(module, x_train.shape))
         print("[{}] X_test: {}".format(module, x_test.shape))
 
-        test_avg = np.mean(x_test, axis=1)
+        test_avg = np.mean(x_test, axis=1, dtype=np.float32)
         test_avg = np.expand_dims(test_avg, axis=1)
         print("[{}] X_test average: {}".format(module, test_avg.shape))
 
         # split data for baseline 1
         proportions = [0.25, 0.5, 0.75, 1]
-        rmses_rocket = []
-        rmses_inception = []
+        rmses = []
 
         for proportion in proportions:
             print("[{}] Replacing data with historical average".format(module))
+            # train_index = int(x_train.shape[1] * proportion)
             test_index = int(x_test.shape[1] * proportion)
-            x_test[:, test_index:, :] = test_avg
+            # reshaped_x_train = x_train[:, :train_index, :]
+            # reshaped_x_test = x_test[:, :test_index, :]
+            reshaped_x_test = np.copy(x_test)
+            reshaped_x_test[:, test_index:, :] = test_avg
             print("[{}] X_train: {}".format(module, x_train.shape))
-            print("[{}] X_test: {}".format(module, x_test.shape))
+            print("[{}] X_test: {}".format(module, reshaped_x_test.shape))
 
             for regressor_name in regressors:
                 print("[{}] Regressor: {}".format(module, regressor_name))
@@ -94,26 +98,17 @@ if __name__ == '__main__':
 
                     # fit the regressor
                     regressor = fit_regressor(
-                        output_directory, regressor_name, x_train, y_train, x_test, y_test, itr=itr)
+                        output_directory, regressor_name, x_train, y_train, reshaped_x_test, y_test, itr=itr)
 
                     # start testing
-                    y_pred = regressor.predict(x_test)
+                    y_pred = regressor.predict(reshaped_x_test)
                     df_metrics = calculate_regression_metrics(y_test, y_pred)
 
                     print(df_metrics)
-                    if regressor_name == 'rocket':
-                        rmses_rocket.append(df_metrics['rmse'])
-                    else:
-                        rmses_inception.append(df_metrics['rmse'])
+                    rmses.append(df_metrics['rmse'])
 
                     # save the outputs
                     # df_metrics.to_csv(output_directory +
-                    #                   'regression_experiment.csv', index=False)
+                    #                   'regression_experiment.csv', index=False)]
 
-        plt.scatter(x=proportions, y=rmses_rocket)
-        plt.scatter(x=proportions, y=rmses_inception)
-        plt.ylabel('RMSE')
-        plt.xlabel('Proportion of data')
-        plt.title('Baseline 2 Accuracies')
-        plt.savefig('graphs/LiveFuelMoistureContent/baseline2.png')
-        plt.close()
+        print("RMSEs: ", rmses)
