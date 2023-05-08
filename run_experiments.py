@@ -11,13 +11,13 @@ from visualize import plot_scatter_labels
 module = "RegressionExperiment"
 data_path = "data/"
 # see data_loader.regression_datasets
-problems = ["BenzeneConcentration"]
+problems = ["AppliancesEnergy"]
 # see regressor_tools.all_models
-regressors = ["rocket", "inception", "ridge"]
+regressors = ["ridge"]
 iterations = [1]
 norm = "standard"               # none, standard, minmax
 
-output_path = "output/regression/BenzeneConcentration"
+output_path = "output/regression_standard/AppliancesEnergy"
 if __name__ == '__main__':
     # for each problem
     for problem in problems:
@@ -72,13 +72,18 @@ if __name__ == '__main__':
 
         for proportion in proportions:
             print("[{}] Replacing data with historical average".format(module))
-            # train_index = int(x_train.shape[1] * proportion)
+            # baseline 1
+            train_index = int(x_train.shape[1] * proportion)
             test_index = int(x_test.shape[1] * proportion)
-            # reshaped_x_train = x_train[:, :train_index, :]
-            # reshaped_x_test = x_test[:, :test_index, :]
-            reshaped_x_test = np.copy(x_test)
-            reshaped_x_test[:, test_index:, :] = test_avg
-            print("[{}] X_train: {}".format(module, x_train.shape))
+            reshaped_x_train = x_train[:, :train_index, :]
+            reshaped_x_test = x_test[:, :test_index, :]
+
+            # baseline 2
+            # reshaped_x_train = x_train
+            # reshaped_x_test = np.copy(x_test)
+            # reshaped_x_test[:, test_index:, :] = test_avg
+
+            print("[{}] X_train: {}".format(module, reshaped_x_train.shape))
             print("[{}] X_test: {}".format(module, reshaped_x_test.shape))
 
             for regressor_name in regressors:
@@ -98,7 +103,7 @@ if __name__ == '__main__':
 
                     # fit the regressor
                     regressor = fit_regressor(
-                        output_directory, regressor_name, x_train, y_train, reshaped_x_test, y_test, itr=itr)
+                        output_directory, regressor_name, reshaped_x_train, y_train, reshaped_x_test, y_test, itr=itr)
 
                     # start testing
                     y_pred = regressor.predict(reshaped_x_test)

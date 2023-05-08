@@ -27,6 +27,7 @@ import os
 import logging
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 logging.basicConfig(
     format='%(asctime)s | %(levelname)s : %(message)s', level=logging.INFO)
@@ -72,7 +73,7 @@ def main(config):
 
     # Trim data for early prediction
     proportion = config['proportion']
-    length = 240
+    length = 144
     if config['baseline'] == 1 and config['proportion']:
         trimmed_train_data = my_data.feature_df.iloc[:int(proportion * length)]
         # every group of 365
@@ -122,7 +123,7 @@ def main(config):
                                                         length:(i + 1) * length].mean(axis=0)
                 nrows = int((i + proportion) * length) - i * length
                 mean_replicated = pd.DataFrame(
-                    np.repeat(np.reshape(mean_per_loc.values, (1, 8)), length - nrows, axis=0))
+                    np.repeat(np.reshape(mean_per_loc.values, (1, 24)), length - nrows, axis=0))
                 mean_replicated.columns = val_data.feature_df.columns
                 trimmed_val_data = pd.concat(
                     [trimmed_val_data, val_data.feature_df.iloc[i * length:int((i + proportion) * length)], mean_replicated])
@@ -301,6 +302,27 @@ def main(config):
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
         aggr_metrics_train = trainer.train_epoch(epoch)
+        if epoch == config["epochs"]:
+            aggr_metrics_train, predictions, targets = trainer.train_epoch(
+                epoch, keep_predictions=True)
+            # TODO: replace placeholders
+            example = 1
+            dimension = 1
+            time_to_forecast = 50
+            predictions = predictions[0].cpu().detach().numpy()
+            targets = targets[0].cpu().detach().numpy()
+            predictions = predictions[example, :, dimension]
+            targets = targets[example, :, dimension]
+
+            plt.plot(predictions, label='Predictions', marker='o')
+            plt.plot(targets, label='Targets', marker='o')
+            plt.legend(['Predictions', 'Targets'])
+            plt.ylabel('Feature values')
+            plt.xlabel('Time step')
+            plt.title('Forecast accuracy of autoregressive transformers')
+            plt.savefig('graphs/AppliancesEnergy/forecast_accuracy.png')
+            plt.close()
+
         epoch_runtime = time.time() - epoch_start_time
         print()
         print_str = 'Epoch {} Training Summary: '.format(epoch)

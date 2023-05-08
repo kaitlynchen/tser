@@ -34,12 +34,19 @@ def pipeline_factory(config):
     Dataset class, collate function and Runner class."""
 
     task = config['task']
+    baseline = config['baseline']
 
     if task == "imputation":
-        return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
-                       masking_ratio=config['masking_ratio'], mode=config['mask_mode'],
-                       distribution=config['mask_distribution'], exclude_feats=config['exclude_feats']),\
-            collate_unsuperv, UnsupervisedRunner
+        if baseline == 3:
+            return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
+                           masking_ratio=config['proportion'], mode=config['mask_mode'],
+                           distribution='early', exclude_feats=config['exclude_feats']),\
+                collate_unsuperv, UnsupervisedRunner
+        else:
+            return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
+                           masking_ratio=config['masking_ratio'], mode=config['mask_mode'],
+                           distribution=config['mask_distribution'], exclude_feats=config['exclude_feats']),\
+                collate_unsuperv, UnsupervisedRunner
     if task == "transduction":
         return partial(TransductionDataset, mask_feats=config['mask_feats'],
                        start_hint=config['start_hint'], end_hint=config['end_hint']), collate_unsuperv, UnsupervisedRunner
@@ -201,13 +208,16 @@ def evaluate(evaluator):
     return aggr_metrics, per_batch
 
 
-def validate(val_evaluator, tensorboard_writer, config, best_metrics, best_value, epoch):
+def validate(val_evaluator, tensorboard_writer, config, best_metrics, best_value, epoch, keep_predictions=False):
     """Run an evaluation on the validation set while logging metrics, and handle outcome"""
 
     logger.info("Evaluating on validation set ...")
     eval_start_time = time.time()
     with torch.no_grad():
         aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True)
+        if keep_predictions:
+            aggr_metrics, per_batch, predictions, targets = val_evaluator.evaluate(
+                epoch, keep_predictions=True, keep_all=True)
     eval_runtime = time.time() - eval_start_time
     logger.info("Validation runtime: {} hours, {} minutes, {} seconds\n".format(
         *utils.readable_time(eval_runtime)))
@@ -243,6 +253,9 @@ def validate(val_evaluator, tensorboard_writer, config, best_metrics, best_value
         pred_filepath = os.path.join(config['pred_dir'], 'best_predictions')
         np.savez(pred_filepath, **per_batch)
 
+    if keep_predictions:
+        return aggr_metrics, best_metrics, best_value, predictions, targets
+
     return aggr_metrics, best_metrics, best_value
 
 
@@ -269,10 +282,10 @@ class BaseRunner(object):
 
         self.epoch_metrics = OrderedDict()
 
-    def train_epoch(self, epoch_num=None):
+    def train_epoch(self, epoch_num=None, keep_predictions=False):
         raise NotImplementedError('Please override in child class')
 
-    def evaluate(self, epoch_num=None, keep_all=True):
+    def evaluate(self, epoch_num=None, keep_predictions=False, keep_all=True):
         raise NotImplementedError('Please override in child class')
 
     def print_callback(self, i_batch, metrics, prefix=''):
@@ -292,12 +305,15 @@ class BaseRunner(object):
 
 class UnsupervisedRunner(BaseRunner):
 
-    def train_epoch(self, epoch_num=None):
+    def train_epoch(self, epoch_num=None, keep_predictions=False):
 
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
         total_active_elements = 0  # total unmasked elements in epoch
+
+        all_predictions, all_targets = [], []
+
         for i, batch in enumerate(self.dataloader):
 
             X, targets, target_masks, padding_masks, IDs = batch
@@ -308,6 +324,8 @@ class UnsupervisedRunner(BaseRunner):
 
             # (batch_size, padded_length, feat_dim)
             predictions = self.model(X.to(self.device), padding_masks)
+            all_predictions.append(predictions)
+            all_targets.append(targets)
 
             # Cascade noise masks (batch_size, padded_length, feat_dim) and padding masks (batch_size, padded_length)
             target_masks = target_masks * padding_masks.unsqueeze(-1)
@@ -345,9 +363,12 @@ class UnsupervisedRunner(BaseRunner):
         epoch_loss = epoch_loss / total_active_elements
         self.epoch_metrics['epoch'] = epoch_num
         self.epoch_metrics['loss'] = epoch_loss
+
+        if keep_predictions:
+            return self.epoch_metrics, all_predictions, all_targets
         return self.epoch_metrics
 
-    def evaluate(self, epoch_num=None, keep_all=True):
+    def evaluate(self, epoch_num=None, keep_predictions=False, keep_all=True):
 
         self.model = self.model.eval()
 
@@ -423,12 +444,13 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
 
-    def train_epoch(self, epoch_num=None):
+    def train_epoch(self, epoch_num=None, keep_predictions=False):
 
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
+        all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
 
@@ -437,6 +459,8 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
             predictions = self.model(X.to(self.device), padding_masks)
+            all_predictions.append(predictions)
+            all_targets.append(targets)
 
             # (batch_size,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
@@ -472,14 +496,15 @@ class SupervisedRunner(BaseRunner):
         epoch_loss = epoch_loss / total_samples
         self.epoch_metrics['epoch'] = epoch_num
         self.epoch_metrics['loss'] = epoch_loss
+
         return self.epoch_metrics
 
-    def evaluate(self, epoch_num=None, keep_all=True):
-
+    def evaluate(self, epoch_num=None, keep_predictions=False, keep_all=True):
         self.model = self.model.eval()
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
+        all_predictions, all_targets = [], []
 
         per_batch = {'target_masks': [], 'targets': [],
                      'predictions': [], 'metrics': [], 'IDs': []}
@@ -490,6 +515,9 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
             predictions = self.model(X.to(self.device), padding_masks)
+            print("Shape of predictions: ", predictions.size())
+            all_predictions.append(predictions)
+            all_targets.append(targets)
 
             # (batch_size,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
@@ -543,6 +571,9 @@ class SupervisedRunner(BaseRunner):
                 prec, rec, _ = sklearn.metrics.precision_recall_curve(
                     targets, probs[:, 1])
                 self.epoch_metrics['AUPRC'] = sklearn.metrics.auc(rec, prec)
+
+        if keep_predictions:
+            return self.epoch_metrics, per_batch, all_predictions, all_targets
 
         if keep_all:
             return self.epoch_metrics, per_batch

@@ -267,7 +267,7 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
         exclude_feats = set(exclude_feats)
 
     if distribution == 'early':
-        mask = early_prediction_mask(X.shape, 1)
+        mask = early_prediction_mask(X.shape, masking_ratio)
     elif distribution == 'geometric':  # stateful (Markov chain)
         # mask = np.ones(X.shape, dtype=bool)
         # if np.random.rand() < 0.5:
