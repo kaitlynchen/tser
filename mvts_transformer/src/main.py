@@ -8,7 +8,8 @@ Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery and Data Mi
 
 from optimizers import get_optimizer
 from models.loss import get_loss_module
-from models.ts_transformer import model_factory
+# from models.ts_transformer import model_factory
+from models.ts_swin import model_factory
 from datasets.datasplit import split_dataset
 from datasets.data import data_factory, Normalizer
 from datasets.utils import process_data
@@ -194,6 +195,7 @@ def main(config):
                 test_data.feature_df.loc[test_indices])
 
     # Create model
+    print("my_data shape: ", my_data.feature_df.shape)
     logger.info("Creating model ...")
     model = model_factory(config, my_data)
 
@@ -302,26 +304,31 @@ def main(config):
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
         aggr_metrics_train = trainer.train_epoch(epoch)
-        if epoch == config["epochs"]:
-            aggr_metrics_train, predictions, targets = trainer.train_epoch(
-                epoch, keep_predictions=True)
-            # TODO: replace placeholders
-            example = 1
-            dimension = 1
-            time_to_forecast = 50
-            predictions = predictions[0].cpu().detach().numpy()
-            targets = targets[0].cpu().detach().numpy()
-            predictions = predictions[example, :, dimension]
-            targets = targets[example, :, dimension]
+        
+        # TODO: uncomment for early prediction
+        # if epoch == config["epochs"]:
+        #     aggr_metrics_train, predictions = trainer.train_epoch(
+        #         epoch, keep_predictions=True)
+            # aggr_metrics_train, predictions, targets = trainer.train_epoch(
+            #     epoch, keep_predictions=True)
 
-            plt.plot(predictions, label='Predictions', marker='o')
-            plt.plot(targets, label='Targets', marker='o')
-            plt.legend(['Predictions', 'Targets'])
-            plt.ylabel('Feature values')
-            plt.xlabel('Time step')
-            plt.title('Forecast accuracy of autoregressive transformers')
-            plt.savefig('graphs/AppliancesEnergy/forecast_accuracy.png')
-            plt.close()
+            
+            # example = 1
+            # dimension = 1
+            # time_to_forecast = 50
+            # predictions = predictions[0].cpu().detach().numpy()
+            # targets = targets[0].cpu().detach().numpy()
+            # predictions = predictions[example, :, dimension]
+            # targets = targets[example, :, dimension]
+
+            # plt.plot(predictions, label='Predictions', marker='o')
+            # plt.plot(targets, label='Targets', marker='o')
+            # plt.legend(['Predictions', 'Targets'])
+            # plt.ylabel('Feature values')
+            # plt.xlabel('Time step')
+            # plt.title('Forecast accuracy of autoregressive transformers')
+            # plt.savefig('graphs/AppliancesEnergy/forecast_accuracy.png')
+            # plt.close()
 
         epoch_runtime = time.time() - epoch_start_time
         print()

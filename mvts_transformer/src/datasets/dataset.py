@@ -359,10 +359,3 @@ def padding_mask(lengths, max_len=None):
             .type_as(lengths)
             .repeat(batch_size, 1)
             .lt(lengths.unsqueeze(1)))
-
-
-if __name__ == "__main__":
-    X = np.random.rand(4, 6)
-    mask = noise_mask(X, 0.15, lm=3, mode='separate',
-                      distribution='geometric', exclude_feats=None)
-    print("Mask: ", mask)

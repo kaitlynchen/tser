@@ -323,7 +323,9 @@ class UnsupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
 
             # (batch_size, padded_length, feat_dim)
+            # TODO: removed padding_masks for Swin Transformer
             predictions = self.model(X.to(self.device), padding_masks)
+            # predictions = self.model(X.to(self.device))
             all_predictions.append(predictions)
             all_targets.append(targets)
 
@@ -396,10 +398,14 @@ class UnsupervisedRunner(BaseRunner):
 
             # (batch_size, padded_length, feat_dim)
             predictions = self.model(X.to(self.device), padding_masks)
+            # predictions = self.model(X.to(self.device))
 
             # Cascade noise masks (batch_size, padded_length, feat_dim) and padding masks (batch_size, padded_length)
             target_masks = target_masks * padding_masks.unsqueeze(-1)
             # (num_active,) individual loss (square error per element) for each active value in batch
+            print("Predictions shape: ", predictions.shape)
+            print("Targets shape: ", targets.shape)
+            print("Target_masks shape: ", target_masks.shape)
             loss = self.loss_module(predictions, targets, target_masks)
             batch_loss = torch.sum(loss).cpu().item()
             # mean loss (over active elements) used for optimization the batch
@@ -459,6 +465,7 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
             predictions = self.model(X.to(self.device), padding_masks)
+            # predictions = self.model(X.to(self.device))
             all_predictions.append(predictions)
             all_targets.append(targets)
 
@@ -514,8 +521,9 @@ class SupervisedRunner(BaseRunner):
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
+            # TODO: removed padding_masks for Swin Transformer
             predictions = self.model(X.to(self.device), padding_masks)
-            print("Shape of predictions: ", predictions.size())
+            # predictions = self.model(X.to(self.device))
             all_predictions.append(predictions)
             all_targets.append(targets)
 
