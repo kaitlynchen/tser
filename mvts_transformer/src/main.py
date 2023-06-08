@@ -8,8 +8,6 @@ Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery and Data Mi
 
 from optimizers import get_optimizer
 from models.loss import get_loss_module
-# from models.ts_transformer import model_factory
-from models.ts_swin import model_factory
 from datasets.datasplit import split_dataset
 from datasets.data import data_factory, Normalizer
 from datasets.utils import process_data
@@ -66,6 +64,11 @@ def main(config):
         logger.info("Device index: {}".format(torch.cuda.current_device()))
 
     # Build data
+    if config['model'] is not None and config['model'] == 'swin':
+        from models.ts_swin import model_factory
+    else:
+        from models.ts_transformer import model_factory
+
     logger.info("Loading and preprocessing data ...")
     data_class = data_factory[config['data_class']]
     my_data = data_class(config['data_dir'], pattern=config['pattern'],
@@ -195,7 +198,6 @@ def main(config):
                 test_data.feature_df.loc[test_indices])
 
     # Create model
-    print("my_data shape: ", my_data.feature_df.shape)
     logger.info("Creating model ...")
     model = model_factory(config, my_data)
 
@@ -239,6 +241,8 @@ def main(config):
 
     loss_module = get_loss_module(config)
 
+    require_padding = config['model'] is None or config['model'] == 'transformer'
+
     if config['test_only'] == 'testset':  # Only evaluate and skip training
         dataset_class, collate_fn, runner_class = pipeline_factory(config)
         test_dataset = dataset_class(test_data, test_indices)
@@ -252,7 +256,7 @@ def main(config):
         test_evaluator = runner_class(model, test_loader, device, loss_module,
                                       print_interval=config['print_interval'], console=config['console'])
         aggr_metrics_test, per_batch_test = test_evaluator.evaluate(
-            keep_all=True)
+            keep_all=True, require_padding=require_padding)
         print_str = 'Test Summary: '
         for k, v in aggr_metrics_test.items():
             print_str += '{}: {:8f} | '.format(k, v)
@@ -294,7 +298,7 @@ def main(config):
 
     # Evaluate on validation before training
     aggr_metrics_val, best_metrics, best_value = validate(val_evaluator, tensorboard_writer, config, best_metrics,
-                                                          best_value, epoch=0)
+                                                          best_value, epoch=0, require_padding=require_padding)
     metrics_names, metrics_values = zip(*aggr_metrics_val.items())
     metrics.append(list(metrics_values))
 
@@ -303,32 +307,33 @@ def main(config):
         mark = epoch if config['save_all'] else 'last'
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train = trainer.train_epoch(epoch)
+        aggr_metrics_train = trainer.train_epoch(epoch, require_padding=require_padding)
         
-        # TODO: uncomment for early prediction
-        # if epoch == config["epochs"]:
-        #     aggr_metrics_train, predictions = trainer.train_epoch(
-        #         epoch, keep_predictions=True)
-            # aggr_metrics_train, predictions, targets = trainer.train_epoch(
-            #     epoch, keep_predictions=True)
+        if config['baseline'] is not None:
+          # early prediction
+          if epoch == config["epochs"]:
+              aggr_metrics_train, predictions = trainer.train_epoch(
+                  epoch, keep_predictions=True)
+              aggr_metrics_train, predictions, targets = trainer.train_epoch(
+                  epoch, keep_predictions=True)
 
-            
-            # example = 1
-            # dimension = 1
-            # time_to_forecast = 50
-            # predictions = predictions[0].cpu().detach().numpy()
-            # targets = targets[0].cpu().detach().numpy()
-            # predictions = predictions[example, :, dimension]
-            # targets = targets[example, :, dimension]
+              
+              example = 1
+              dimension = 1
+              time_to_forecast = 50
+              predictions = predictions[0].cpu().detach().numpy()
+              targets = targets[0].cpu().detach().numpy()
+              predictions = predictions[example, :, dimension]
+              targets = targets[example, :, dimension]
 
-            # plt.plot(predictions, label='Predictions', marker='o')
-            # plt.plot(targets, label='Targets', marker='o')
-            # plt.legend(['Predictions', 'Targets'])
-            # plt.ylabel('Feature values')
-            # plt.xlabel('Time step')
-            # plt.title('Forecast accuracy of autoregressive transformers')
-            # plt.savefig('graphs/AppliancesEnergy/forecast_accuracy.png')
-            # plt.close()
+              plt.plot(predictions, label='Predictions', marker='o')
+              plt.plot(targets, label='Targets', marker='o')
+              plt.legend(['Predictions', 'Targets'])
+              plt.ylabel('Feature values')
+              plt.xlabel('Time step')
+              plt.title('Forecast accuracy of autoregressive transformers')
+              plt.savefig('graphs/AppliancesEnergy/forecast_accuracy.png')
+              plt.close()
 
         epoch_runtime = time.time() - epoch_start_time
         print()
@@ -352,7 +357,7 @@ def main(config):
         # evaluate if first or last epoch or at specified interval
         if (epoch == config["epochs"]) or (epoch == start_epoch + 1) or (epoch % config['val_interval'] == 0):
             aggr_metrics_val, best_metrics, best_value = validate(val_evaluator, tensorboard_writer, config,
-                                                                  best_metrics, best_value, epoch)
+                                                                  best_metrics, best_value, epoch, require_padding=require_padding)
             metrics_names, metrics_values = zip(*aggr_metrics_val.items())
             metrics.append(list(metrics_values))
 

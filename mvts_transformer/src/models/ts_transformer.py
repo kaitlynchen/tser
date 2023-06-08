@@ -280,7 +280,10 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         self.project_inp = nn.Linear(feat_dim, d_model)
         self.pos_enc = get_pos_encoder(pos_encoding)(
-            d_model, dropout=dropout * (1.0 - freeze), max_len=max_len)
+            d_model, dropout=dropout * (1.0 - freeze), max_len=max_len+1)
+        
+        # Add a class token
+        self.class_token = nn.Parameter(torch.zeros(1, 1, feat_dim))
 
         if norm == 'LayerNorm':
             encoder_layer = TransformerEncoderLayer(
@@ -299,7 +302,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         self.feat_dim = feat_dim
         self.num_classes = num_classes
         self.output_layer = self.build_output_module(
-            d_model, max_len, num_classes)
+            d_model, max_len + 1, num_classes)
 
     def build_output_module(self, d_model, max_len, num_classes):
         output_layer = nn.Linear(d_model * max_len, num_classes)
@@ -316,6 +319,14 @@ class TSTransformerEncoderClassiregressor(nn.Module):
             output: (batch_size, num_classes)
         """
 
+        # Expand the class token to the full batch
+        n = X.shape[0] # batch_size
+        batch_class_token = self.class_token.expand(n, -1, -1)
+        X = torch.cat([batch_class_token, X], dim=1)
+        # FIXME: hard coded for cuda
+        pad_class_token = torch.ones((X.shape[0], 1), dtype=torch.bool).cuda()
+        padding_masks = torch.cat((padding_masks, pad_class_token), dim=1)
+
         # permute because pytorch convention for transformers is [seq_length, batch_size, feat_dim]. padding_masks [batch_size, feat_dim]
         inp = X.permute(1, 0, 2)
         inp = self.project_inp(inp) * math.sqrt(
@@ -325,10 +336,15 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         # (seq_length, batch_size, d_model)
         output = self.transformer_encoder(
             inp, src_key_padding_mask=~padding_masks)
+        
+        # Classifier "token" as used by standard language architectures
+        output = output[:, 0]
+
+        # TODO: comment below if not using classifier token
         # the output transformer encoder/decoder embeddings don't include non-linearity
-        output = self.act(output)
-        output = output.permute(1, 0, 2)  # (batch_size, seq_length, d_model)
-        output = self.dropout1(output)
+        # output = self.act(output)
+        # output = output.permute(1, 0, 2)  # (batch_size, seq_length, d_model)
+        # output = self.dropout1(output)
 
         # Output
         # zero-out padding embeddings

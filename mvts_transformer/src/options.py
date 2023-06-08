@@ -48,6 +48,7 @@ class Options(object):
                                  help='dataloader threads. 0 for single-thread.')
         self.parser.add_argument('--seed',
                                  help='Seed used for splitting sets. None by default, set to an integer for reproducibility')
+        
         # Dataset
         self.parser.add_argument('--limit_size', type=float, default=None,
                                  help="Limit  dataset to specified smaller random sample, e.g. for rapid debugging purposes. "
@@ -144,7 +145,7 @@ class Options(object):
                                  help='If set, freezes all layer parameters except for the output layer. Also removes dropout except before the output layer')
 
         # Model
-        self.parser.add_argument('--model', choices={"transformer", "LINEAR"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.

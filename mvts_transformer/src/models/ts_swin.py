@@ -50,7 +50,7 @@ def model_factory(config, data):
         # dimensionality of labels
         num_labels = len(
             data.class_names) if task == "classification" else data.labels_df.shape[1]
-        if config['model'] == 'transformer':
+        if config['model'] == 'swin':
             d_model = config['d_model']
             window_size = config['data_window_len']
             dropout = config['dropout']
@@ -81,7 +81,7 @@ def model_factory(config, data):
                                    norm_layer=norm,
                                    max_len=data.max_seq_len)
     elif task == 'imputation':
-        if config['model'] == 'transformer':
+        if config['model'] == 'swin':
             d_model = config['d_model']
             window_size = config['data_window_len']
             dropout = config['dropout']
@@ -165,6 +165,46 @@ def window_reverse(windows, window_size, T):
     x = x.contiguous().view(B, T, -1)
     return x
 
+class AttentionPool2d(nn.Module):
+    "Attention for Learned Aggregation."
+    def __init__(self, ni, bias=True, norm=nn.LayerNorm):
+        super().__init__()
+        self.norm = norm(ni)
+        self.q = nn.Linear(ni, ni, bias=bias)
+        self.k = nn.Linear(ni, ni, bias=bias)
+        self.v = nn.Linear(ni, ni, bias=bias)
+        self.vk = nn.Linear(ni, ni*2, bias=bias)
+        self.proj = nn.Linear(ni, ni)
+
+    def forward(self, x, cls_q):
+        """
+        Input shapes:
+            x: [batch, timesteps, channels]
+            cls_q: [channels]
+        Output shape: [batch, channels]
+        """
+
+        B, N, C = x.shape
+        x = x.transpose(1, 2) # B C N
+
+        # Copy query vector for each element in the batch
+        q = self.q(cls_q.expand(B, -1, -1))  # q: [B, 1, C]
+
+        # If keys/values come from the same feature vector
+        k, v = self.vk(x).reshape(B, N, 2, C).permute(2, 0, 1, 3).chunk(2, 0)  # k, v: [1, B, N, C]
+        k = k.squeeze(0).transpose(1, 2)  # k: [B, N, C]
+        v = v.squeeze(0).transpose(1, 2)  # v: [B, N, C]
+
+        # Compute attention scores: similarity between query vector and each pixel's key vector
+        attn = q @ k.transpose(-2, -1)  # attn: [B, 1, N]
+        
+        # TODO: as a variant, you can set attn scores of land pixels to -infinity here (turn into 0 after softmax)
+        attn = attn.softmax(dim=-1)  # attn: [B, 1, N]
+
+        # Aggregate pixels' value vectors according to the attention scores
+        x = (attn @ v).transpose(1, 2).flatten(1)  # x: [B, C]
+        return self.proj(x)
+
 
 class WindowAttention(nn.Module):
     r""" Window based multi-head self attention (W-MSA) module with relative position bias.
@@ -239,6 +279,7 @@ class WindowAttention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+
         return x
 
     def extra_repr(self) -> str:
@@ -280,8 +321,7 @@ class SwinTransformerBlock(nn.Module):
 
     def __init__(self, dim, input_resolution, num_heads, window_size=7, shift_size=0,
                  mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 fused_window_process=False):
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, fused_window_process=False):
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -289,6 +329,7 @@ class SwinTransformerBlock(nn.Module):
         self.window_size = window_size
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
+
         if min(self.input_resolution) <= self.window_size:
             # if window size is larger than input resolution, we don't partition windows
             self.shift_size = 0
@@ -297,6 +338,7 @@ class SwinTransformerBlock(nn.Module):
         assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
 
         self.norm1 = norm_layer(dim)
+
         self.attn = WindowAttention(
             dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
             qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -331,13 +373,17 @@ class SwinTransformerBlock(nn.Module):
         self.fused_window_process = fused_window_process
 
     def forward(self, x):
-        T = self.input_resolution[0]
+        T = self.input_resolution[0] 
+        if isinstance(x, tuple):
+            x = x[0]
+
         B, L, C = x.shape
         assert L == T, "input feature has wrong size"
 
         shortcut = x
         x = x.transpose(1, 2) # B C L
         x = self.norm1(x).transpose(1, 2) # B L C
+
         x = x.view(B, T, C)
 
         # cyclic shift
@@ -357,7 +403,7 @@ class SwinTransformerBlock(nn.Module):
         x_windows = x_windows.view(-1, self.window_size, C)  # nW*B, window_size, C
 
         # W-MSA/SW-MSA
-        attn_windows = self.attn(x_windows, mask=self.attn_mask)  # nW*B, window_size, C
+        attn_windows = self.attn(x_windows, mask=self.attn_mask)
 
         # merge windows
         attn_windows = attn_windows.view(-1, self.window_size, C)
@@ -372,6 +418,7 @@ class SwinTransformerBlock(nn.Module):
         else:
             shifted_x = window_reverse(attn_windows, self.window_size, T)  # B T C
             x = shifted_x
+
         x = x.view(B, T, C)
         x = shortcut + self.drop_path(x)
 
@@ -428,7 +475,6 @@ class PatchMerging(nn.Module):
 
         x = x.view(B, T, C)
 
-        # TODO: change to T
         x0 = x[:, 0::2, :]  # B T/2 C
         x1 = x[:, 1::2, :]  # B T/2 C
         x = torch.cat([x0, x1], -1)  # B T/2 T/2 2*C
@@ -438,7 +484,6 @@ class PatchMerging(nn.Module):
         x = self.norm(x)
         x = x.transpose(1, 2) # B T' C'
         # x = self.reduction(x)
-        # print("x shape after reduction: ", x.shape)
 
         return x
 
@@ -509,8 +554,10 @@ class BasicLayer(nn.Module):
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
+
         if self.downsample is not None:
             x = self.downsample(x)
+
         return x
 
     def extra_repr(self) -> str:
@@ -618,11 +665,14 @@ class SwinTransformer(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.max_len = max_len
 
+        # add a class token
+        self.class_token = nn.Parameter(torch.zeros(1, 1, int(embed_dim * 2 ** (self.num_layers - 1))))
+
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
             norm_layer=norm_layer if self.patch_norm else None)
-        num_patches = self.patch_embed.num_patches
+        num_patches = self.patch_embed.num_patches + 1
         patches_resolution = self.patch_embed.patches_resolution
         self.patches_resolution = patches_resolution
 
@@ -657,7 +707,11 @@ class SwinTransformer(nn.Module):
 
         self.norm = norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+
+        # Changed below to include classifier token
+        # self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+        ni = int(embed_dim * 2 ** (self.num_layers - 1))
+        self.head = AttentionPool2d(ni, bias=qkv_bias, norm=norm_layer)
 
         self.apply(self._init_weights)
 
@@ -689,13 +743,16 @@ class SwinTransformer(nn.Module):
 
         x = x.transpose(1, 2)
         x = self.norm(x)  # B C L
-        x = self.avgpool(x)  # B C 1
-        x = torch.flatten(x, 1)
+
+        # replaced avgpooling with attentionpool
+        # x = self.avgpool(x)  # B C 1
+        # x = torch.flatten(x, 1)
         return x
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.head(x)
+        x = self.head(x, self.class_token)
+
         return x
 
     def flops(self):
@@ -816,7 +873,6 @@ class PretrainedSwinTransformer(nn.Module):
 
     def forward_features(self, x, padding_masks):
         _B, T, _C = x.shape 
-        print("original x shape: ", x.shape)
         x = self.patch_embed(x)
 
         assert padding_masks is not None

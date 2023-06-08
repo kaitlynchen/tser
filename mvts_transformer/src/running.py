@@ -208,16 +208,16 @@ def evaluate(evaluator):
     return aggr_metrics, per_batch
 
 
-def validate(val_evaluator, tensorboard_writer, config, best_metrics, best_value, epoch, keep_predictions=False):
+def validate(val_evaluator, tensorboard_writer, config, best_metrics, best_value, epoch, keep_predictions=False, require_padding=False):
     """Run an evaluation on the validation set while logging metrics, and handle outcome"""
 
     logger.info("Evaluating on validation set ...")
     eval_start_time = time.time()
     with torch.no_grad():
-        aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True)
+        aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True, require_padding=require_padding)
         if keep_predictions:
             aggr_metrics, per_batch, predictions, targets = val_evaluator.evaluate(
-                epoch, keep_predictions=True, keep_all=True)
+                epoch, keep_predictions=True, require_padding=require_padding, keep_all=True)
     eval_runtime = time.time() - eval_start_time
     logger.info("Validation runtime: {} hours, {} minutes, {} seconds\n".format(
         *utils.readable_time(eval_runtime)))
@@ -282,10 +282,10 @@ class BaseRunner(object):
 
         self.epoch_metrics = OrderedDict()
 
-    def train_epoch(self, epoch_num=None, keep_predictions=False):
+    def train_epoch(self, epoch_num=None, keep_predictions=False, require_padding=False):
         raise NotImplementedError('Please override in child class')
 
-    def evaluate(self, epoch_num=None, keep_predictions=False, keep_all=True):
+    def evaluate(self, epoch_num=None, keep_predictions=False, require_padding=False, keep_all=True):
         raise NotImplementedError('Please override in child class')
 
     def print_callback(self, i_batch, metrics, prefix=''):
@@ -305,7 +305,7 @@ class BaseRunner(object):
 
 class UnsupervisedRunner(BaseRunner):
 
-    def train_epoch(self, epoch_num=None, keep_predictions=False):
+    def train_epoch(self, epoch_num=None, keep_predictions=False, require_padding=False):
 
         self.model = self.model.train()
 
@@ -323,9 +323,11 @@ class UnsupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
 
             # (batch_size, padded_length, feat_dim)
-            # TODO: removed padding_masks for Swin Transformer
-            predictions = self.model(X.to(self.device), padding_masks)
-            # predictions = self.model(X.to(self.device))
+            if require_padding:
+                predictions = self.model(X.to(self.device), padding_masks)
+            else:
+                predictions = self.model(X.to(self.device))
+
             all_predictions.append(predictions)
             all_targets.append(targets)
 
@@ -370,7 +372,7 @@ class UnsupervisedRunner(BaseRunner):
             return self.epoch_metrics, all_predictions, all_targets
         return self.epoch_metrics
 
-    def evaluate(self, epoch_num=None, keep_predictions=False, keep_all=True):
+    def evaluate(self, epoch_num=None, keep_predictions=False, require_padding=False, keep_all=True):
 
         self.model = self.model.eval()
 
@@ -388,24 +390,15 @@ class UnsupervisedRunner(BaseRunner):
             target_masks = target_masks.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
 
-            # TODO: for debugging
-            # input_ok = utils.check_tensor(X, verbose=False, zero_thresh=1e-8, inf_thresh=1e4)
-            # if not input_ok:
-            #     print("Input problem!")
-            #     ipdb.set_trace()
-            #
-            # utils.check_model(self.model, verbose=False, stop_on_error=True)
-
             # (batch_size, padded_length, feat_dim)
-            predictions = self.model(X.to(self.device), padding_masks)
-            # predictions = self.model(X.to(self.device))
+            if require_padding: 
+                predictions = self.model(X.to(self.device), padding_masks)
+            else:
+                predictions = self.model(X.to(self.device))
 
             # Cascade noise masks (batch_size, padded_length, feat_dim) and padding masks (batch_size, padded_length)
             target_masks = target_masks * padding_masks.unsqueeze(-1)
             # (num_active,) individual loss (square error per element) for each active value in batch
-            print("Predictions shape: ", predictions.shape)
-            print("Targets shape: ", targets.shape)
-            print("Target_masks shape: ", target_masks.shape)
             loss = self.loss_module(predictions, targets, target_masks)
             batch_loss = torch.sum(loss).cpu().item()
             # mean loss (over active elements) used for optimization the batch
@@ -450,7 +443,7 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
 
-    def train_epoch(self, epoch_num=None, keep_predictions=False):
+    def train_epoch(self, epoch_num=None, keep_predictions=False, require_padding=False):
 
         self.model = self.model.train()
 
@@ -464,8 +457,12 @@ class SupervisedRunner(BaseRunner):
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
-            predictions = self.model(X.to(self.device), padding_masks)
-            # predictions = self.model(X.to(self.device))
+
+            if require_padding:
+                predictions = self.model(X.to(self.device), padding_masks)
+            else:
+                predictions = self.model(X.to(self.device))
+
             all_predictions.append(predictions)
             all_targets.append(targets)
 
@@ -506,7 +503,7 @@ class SupervisedRunner(BaseRunner):
 
         return self.epoch_metrics
 
-    def evaluate(self, epoch_num=None, keep_predictions=False, keep_all=True):
+    def evaluate(self, epoch_num=None, keep_predictions=False, require_padding=False, keep_all=True):
         self.model = self.model.eval()
 
         epoch_loss = 0  # total loss of epoch
@@ -521,9 +518,12 @@ class SupervisedRunner(BaseRunner):
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
-            # TODO: removed padding_masks for Swin Transformer
-            predictions = self.model(X.to(self.device), padding_masks)
-            # predictions = self.model(X.to(self.device))
+
+            if require_padding:
+                predictions = self.model(X.to(self.device), padding_masks)
+            else: 
+                predictions = self.model(X.to(self.device))
+
             all_predictions.append(predictions)
             all_targets.append(targets)
 
