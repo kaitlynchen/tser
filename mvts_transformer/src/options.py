@@ -88,7 +88,7 @@ class Options(object):
         self.parser.add_argument('--baseline', type=int,
                                  help='Test a specific baseline for early prediction')
         self.parser.add_argument('--proportion', type=float,
-                                 help='Proportion of dataset used for early prediction')
+                                 help='Proportion of dataset used for early prediction or autoregressive pretraining')
         # Training process
         self.parser.add_argument('--task', choices={"imputation", "transduction", "classification", "regression"},
                                  default="imputation",
@@ -103,7 +103,7 @@ class Options(object):
         self.parser.add_argument('--mask_mode', choices={'separate', 'concurrent'}, default='separate',
                                  help=("Imputation: whether each variable should be masked separately "
                                        "or all variables at a certain positions should be masked concurrently"))
-        self.parser.add_argument('--mask_distribution', choices={'geometric', 'bernoulli'}, default='geometric',
+        self.parser.add_argument('--mask_distribution', choices={'geometric', 'bernoulli', 'autoregressive', 'early'}, default='geometric',
                                  help=("Imputation: whether each mask sequence element is sampled independently at random"
                                        "or whether sampling follows a markov chain (stateful), resulting in "
                                        "geometric distributions of masked squences of a desired mean_mask_length"))

@@ -37,7 +37,7 @@ def pipeline_factory(config):
     baseline = config['baseline']
 
     if task == "imputation":
-        if baseline == 3:
+        if config['mask_distribution'] == 'early' or config['mask_distribution'] == 'autoregressive':
             return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
                            masking_ratio=config['proportion'], mode=config['mask_mode'],
                            distribution='early', exclude_feats=config['exclude_feats']),\

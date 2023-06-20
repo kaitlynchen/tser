@@ -107,6 +107,7 @@ def collate_superv(data, max_len=None):
 
     batch_size = len(data)
     features, labels, IDs = zip(*data)
+    # print("features length: ", len(features))
 
     # Stack and pad features and masks (convert 2D to 3D tensors, i.e. add batch dimension)
     # original sequence length for each time series
@@ -117,6 +118,8 @@ def collate_superv(data, max_len=None):
     X = torch.zeros(batch_size, max_len, features[0].shape[-1])
     for i in range(batch_size):
         end = min(lengths[i], max_len)
+        # print("feature tensor shape: ", features[i].shape)
+        # print("feature tensor: ", features)
         X[i, :end, :] = features[i][:end, :]
 
     targets = torch.stack(labels, dim=0)  # (batch_size, num_labels)
@@ -266,7 +269,7 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
     if exclude_feats is not None:
         exclude_feats = set(exclude_feats)
 
-    if distribution == 'early':
+    if distribution == 'early' or distribution == 'autoregressive':
         mask = early_prediction_mask(X.shape, masking_ratio)
     elif distribution == 'geometric':  # stateful (Markov chain)
         # mask = np.ones(X.shape, dtype=bool)
@@ -299,7 +302,6 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
                                             p=(1 - masking_ratio, masking_ratio)), X.shape[1])
 
     return mask
-
 
 def early_prediction_mask(shape, proportion):
     mask = np.ones(shape, dtype=bool)

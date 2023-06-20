@@ -241,7 +241,7 @@ def main(config):
 
     loss_module = get_loss_module(config)
 
-    require_padding = config['model'] is None or config['model'] == 'transformer'
+    require_padding = config['model'] is None or config['model'] == 'transformer' or (config['model'] == 'swin' and (config['task'] is None or config['task'] == 'imputation'))
 
     if config['test_only'] == 'testset':  # Only evaluate and skip training
         dataset_class, collate_fn, runner_class = pipeline_factory(config)

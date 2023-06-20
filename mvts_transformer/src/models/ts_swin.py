@@ -13,6 +13,8 @@ from typing import Optional, Any
 from torch.nn import functional as F
 from torch.nn.modules import MultiheadAttention, Linear, Dropout, BatchNorm1d, TransformerEncoderLayer
 from models.ts_transformer import TransformerBatchNormEncoderLayer
+import pandas as pd
+import numpy as np
 
 
 try:
@@ -64,16 +66,18 @@ def model_factory(config, data):
                 norm = nn.BatchNorm1d
 
             if data.feature_df.shape[0] % 365 == 0:
-                # TODO: fix
-                patch_size = 5
-                window_size = 73
-            elif data.feature_df.shape[0] % 24 == 0:
-                patch_size = 2
-                window_size = 3
+                padded_data = pad_data(data.feature_df, 365, 19)
+                data.feature_df = padded_data
+                data.all_df = padded_data
+                data.max_seq_len = 384
+
+            print("data shape after: ", data.feature_df.shape)
+            patch_size = 2
+            window_size = 3
 
             return SwinTransformer(img_size=data.max_seq_len, 
                                    patch_size=patch_size, 
-                                   embed_dim=72,
+                                   embed_dim=int(data.max_seq_len / patch_size),
                                    in_chans=feat_dim,
                                    num_classes=num_labels, 
                                    window_size=window_size,
@@ -94,17 +98,12 @@ def model_factory(config, data):
             elif config['normalization_layer'] == 'BatchNorm':
                 norm = nn.BatchNorm1d
 
-            if data.feature_df.shape[0] % 365 == 0:
-                # TODO: fix
-                patch_size = 5
-                window_size = 73
-            elif data.feature_df.shape[0] % 24 == 0:
-                patch_size = 2
-                window_size = 3
+            patch_size = 2
+            window_size = 3
 
             return PretrainedSwinTransformer(img_size=data.max_seq_len, 
                                    patch_size=patch_size, 
-                                   embed_dim=72,
+                                   embed_dim=int(data.max_seq_len / patch_size),
                                    in_chans=feat_dim,
                                    num_classes=0,
                                    window_size=window_size,
@@ -115,6 +114,14 @@ def model_factory(config, data):
         raise ValueError(
             "Model class for task '{}' does not exist".format(task))
 
+def pad_data(data, length, pad_amount):
+    padded_df = pd.DataFrame(columns=list(data.columns.values))
+
+    for i in range(int(data.shape[0] / length)):
+        zeros = pd.DataFrame([[0] * len(data.columns.values)] * pad_amount, columns=list(data.columns.values), dtype=np.float64)
+        padded_df = pd.concat([padded_df, data.iloc[i * length:(i + 1) * length], zeros], ignore_index=True)
+        
+    return padded_df
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -174,7 +181,7 @@ class AttentionPool2d(nn.Module):
         self.k = nn.Linear(ni, ni, bias=bias)
         self.v = nn.Linear(ni, ni, bias=bias)
         self.vk = nn.Linear(ni, ni*2, bias=bias)
-        self.proj = nn.Linear(ni, ni)
+        self.proj = nn.Linear(ni, 1)
 
     def forward(self, x, cls_q):
         """
@@ -648,9 +655,9 @@ class SwinTransformer(nn.Module):
         fused_window_process (bool, optional): If True, use one kernel to fused window shift & window partition for acceleration, similar for the reversed part. Default: False
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=1, num_classes=1000,
+    def __init__(self, img_size=224, patch_size=2, in_chans=1, num_classes=1000,
                  embed_dim=96, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24],
-                 window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 window_size=3, mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
                  use_checkpoint=False, fused_window_process=False, max_len=1024, **kwargs):
@@ -808,6 +815,10 @@ class PretrainedSwinTransformer(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.max_len = max_len
 
+        # transform back to the shape of the original time series
+        self.img_size = img_size
+        self.in_chans = in_chans
+
         self.mask_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
         trunc_normal_(self.mask_token, mean=0., std=.02)
 
@@ -847,6 +858,8 @@ class PretrainedSwinTransformer(nn.Module):
                                use_checkpoint=use_checkpoint,
                                fused_window_process=fused_window_process)
             self.layers.append(layer)
+
+        self.patch_unembed = nn.Linear(embed_dim ** 2, img_size * in_chans)
 
         self.norm = norm_layer(self.num_features)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
@@ -893,7 +906,9 @@ class PretrainedSwinTransformer(nn.Module):
 
         x = x.transpose(1, 2)
         x = self.norm(x).transpose(1, 2)  # B L C
-        # x = x.reshape(_B, T, _C)
+        x = torch.flatten(x, 1) # B L*C
+        x = self.patch_unembed(x)
+        x = x.reshape(_B, self.img_size, self.in_chans)
         return x
 
     def forward(self, x, padding_masks):

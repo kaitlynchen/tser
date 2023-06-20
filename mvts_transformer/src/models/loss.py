@@ -68,8 +68,6 @@ class MaskedMSELoss(nn.Module):
         """
 
         # for this particular loss, one may also elementwise multiply y_pred and y_true with the inverted mask
-        print("shape of y_pred: ", y_pred.shape)
-        print("shape of mask: ", mask.shape)
         masked_pred = torch.masked_select(y_pred, mask)
         masked_true = torch.masked_select(y_true, mask)
 
