@@ -14,20 +14,25 @@ import xlwt
 from xlutils.copy import copy
 
 import logging
-logging.basicConfig(format='%(asctime)s | %(levelname)s : %(message)s', level=logging.INFO)
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 
 def timer(func):
     """Print the runtime of the decorated function"""
+
     @functools.wraps(func)
     def wrapper_timer(*args, **kwargs):
-        start_time = time.perf_counter()    # 1
+        start_time = time.perf_counter()  # 1
         value = func(*args, **kwargs)
-        end_time = time.perf_counter()      # 2
-        run_time = end_time - start_time    # 3
+        end_time = time.perf_counter()  # 2
+        run_time = end_time - start_time  # 3
         print(f"Finished {func.__name__!r} in {run_time} secs")
         return value
+
     return wrapper_timer
 
 
@@ -36,39 +41,46 @@ def save_model(path, epoch, model, optimizer=None):
         state_dict = model.module.state_dict()
     else:
         state_dict = model.state_dict()
-    data = {'epoch': epoch,
-            'state_dict': state_dict}
+    data = {"epoch": epoch, "state_dict": state_dict}
     if not (optimizer is None):
-        data['optimizer'] = optimizer.state_dict()
+        data["optimizer"] = optimizer.state_dict()
     torch.save(data, path)
 
 
-def load_model(model, model_path, optimizer=None, resume=False, change_output=False,
-               lr=None, lr_step=None, lr_factor=None):
+def load_model(
+    model,
+    model_path,
+    optimizer=None,
+    resume=False,
+    change_output=False,
+    lr=None,
+    lr_step=None,
+    lr_factor=None,
+):
     start_epoch = 0
     checkpoint = torch.load(model_path, map_location=lambda storage, loc: storage)
-    state_dict = deepcopy(checkpoint['state_dict'])
+    state_dict = deepcopy(checkpoint["state_dict"])
     if change_output:
-        for key, val in checkpoint['state_dict'].items():
-            if key.startswith('output_layer'):
+        for key, val in checkpoint["state_dict"].items():
+            if key.startswith("output_layer"):
                 state_dict.pop(key)
     model.load_state_dict(state_dict, strict=False)
-    print('Loaded model from {}. Epoch: {}'.format(model_path, checkpoint['epoch']))
+    print("Loaded model from {}. Epoch: {}".format(model_path, checkpoint["epoch"]))
 
     # resume optimizer parameters
     if optimizer is not None and resume:
-        if 'optimizer' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            start_epoch = checkpoint['epoch']
+        if "optimizer" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            start_epoch = checkpoint["epoch"]
             start_lr = lr
             for i in range(len(lr_step)):
                 if start_epoch >= lr_step[i]:
                     start_lr *= lr_factor[i]
             for param_group in optimizer.param_groups:
-                param_group['lr'] = start_lr
-            print('Resumed optimizer with start lr', start_lr)
+                param_group["lr"] = start_lr
+            print("Resumed optimizer with start lr", start_lr)
         else:
-            print('No optimizer parameters in checkpoint.')
+            print("No optimizer parameters in checkpoint.")
     if optimizer is not None:
         return model, optimizer, start_epoch
     else:
@@ -104,7 +116,9 @@ def create_dirs(dirs):
         exit(-1)
 
 
-def export_performance_metrics(filepath, metrics_table, header, book=None, sheet_name="metrics"):
+def export_performance_metrics(
+    filepath, metrics_table, header, book=None, sheet_name="metrics"
+):
     """Exports performance metrics on the validation set for all epochs to an excel file"""
 
     if book is None:
@@ -151,7 +165,9 @@ def export_record(filepath, values):
     work_book.save(filepath)
 
 
-def register_record(filepath, timestamp, experiment_name, best_metrics, final_metrics=None, comment=''):
+def register_record(
+    filepath, timestamp, experiment_name, best_metrics, final_metrics=None, comment=""
+):
     """
     Adds the best and final metrics of a given experiment as a record in an excel sheet with other experiment records.
     Creates excel sheet if it doesn't exist.
@@ -170,7 +186,9 @@ def register_record(filepath, timestamp, experiment_name, best_metrics, final_me
         row_values += list(final_metrics_values)
 
     if not os.path.exists(filepath):  # Create a records file for the first time
-        logger.warning("Records file '{}' does not exist! Creating new file ...".format(filepath))
+        logger.warning(
+            "Records file '{}' does not exist! Creating new file ...".format(filepath)
+        )
         directory = os.path.dirname(filepath)
         if len(directory) and not os.path.exists(directory):
             os.makedirs(directory)
@@ -184,8 +202,14 @@ def register_record(filepath, timestamp, experiment_name, best_metrics, final_me
         try:
             export_record(filepath, row_values)
         except Exception as x:
-            alt_path = os.path.join(os.path.dirname(filepath), "record_" + experiment_name)
-            logger.error("Failed saving in: '{}'! Will save here instead: {}".format(filepath, alt_path))
+            alt_path = os.path.join(
+                os.path.dirname(filepath), "record_" + experiment_name
+            )
+            logger.error(
+                "Failed saving in: '{}'! Will save here instead: {}".format(
+                    filepath, alt_path
+                )
+            )
             export_record(alt_path, row_values)
             filepath = alt_path
 
@@ -196,7 +220,6 @@ class Printer(object):
     """Class for printing output by refreshing the same line in the console, e.g. for indicating progress of a process"""
 
     def __init__(self, console=True):
-
         if console:
             self.print = self.dyn_print
         else:
@@ -240,16 +263,25 @@ def readable_time(time_difference):
 #         print("Model Check: PROBLEM")
 
 
-def check_model(model, verbose=False, zero_thresh=1e-8, inf_thresh=1e6, stop_on_error=False):
+def check_model(
+    model, verbose=False, zero_thresh=1e-8, inf_thresh=1e6, stop_on_error=False
+):
     status_ok = True
     for name, param in model.named_parameters():
-        param_ok = check_tensor(param, verbose=verbose, zero_thresh=zero_thresh, inf_thresh=inf_thresh)
+        param_ok = check_tensor(
+            param, verbose=verbose, zero_thresh=zero_thresh, inf_thresh=inf_thresh
+        )
         if not param_ok:
             status_ok = False
             print("Parameter '{}' PROBLEM".format(name))
         grad_ok = True
         if param.grad is not None:
-            grad_ok = check_tensor(param.grad, verbose=verbose, zero_thresh=zero_thresh, inf_thresh=inf_thresh)
+            grad_ok = check_tensor(
+                param.grad,
+                verbose=verbose,
+                zero_thresh=zero_thresh,
+                inf_thresh=inf_thresh,
+            )
         if not grad_ok:
             status_ok = False
             print("Gradient of parameter '{}' PROBLEM".format(name))
@@ -263,7 +295,6 @@ def check_model(model, verbose=False, zero_thresh=1e-8, inf_thresh=1e6, stop_on_
 
 
 def check_tensor(X, verbose=True, zero_thresh=1e-8, inf_thresh=1e6):
-
     is_nan = torch.isnan(X)
     if is_nan.any():
         print("{}/{} nan".format(torch.sum(is_nan), X.numel()))
@@ -303,7 +334,7 @@ def count_parameters(model, trainable=False):
 
 
 def recursively_hook(model, hook_fn):
-    for name, module in model.named_children(): #model._modules.items():
+    for name, module in model.named_children():  # model._modules.items():
         if len(list(module.children())) > 0:  # if not leaf node
             for submodule in module.children():
                 recursively_hook(submodule, hook_fn)
@@ -311,10 +342,12 @@ def recursively_hook(model, hook_fn):
             module.register_forward_hook(hook_fn)
 
 
-def compute_loss(net: torch.nn.Module,
-                 dataloader: torch.utils.data.DataLoader,
-                 loss_function: torch.nn.Module,
-                 device: torch.device = 'cpu') -> torch.Tensor:
+def compute_loss(
+    net: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    loss_function: torch.nn.Module,
+    device: torch.device = "cpu",
+) -> torch.Tensor:
     """Compute the loss of a network on a given dataset.
 
     Does not compute gradient.
@@ -341,3 +374,50 @@ def compute_loss(net: torch.nn.Module,
             running_loss += loss_function(y, netout)
 
     return running_loss / len(dataloader)
+
+
+# from https://github.com/Bjarten/early-stopping-pytorch/blob/master/pytorchtools.py
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+
+    def __init__(
+        self, patience=7, verbose=False, delta=0, path="checkpoint.pt", trace_func=print
+    ):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 7
+            verbose (bool): If True, prints a message for each validation loss improvement.
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+            path (str): Path for the checkpoint to be saved to.
+                            Default: 'checkpoint.pt'
+            trace_func (function): trace print function.
+                            Default: print
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+        self.path = path
+        self.trace_func = trace_func
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            self.trace_func(
+                f"EarlyStopping counter: {self.counter} out of {self.patience}"
+            )
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0

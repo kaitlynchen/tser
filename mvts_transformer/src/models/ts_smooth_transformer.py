@@ -5,6 +5,8 @@ import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
 from torch.nn.modules import MultiheadAttention, Linear, Dropout, BatchNorm1d, TransformerEncoderLayer
+import copy
+import numpy as np
 
 
 def model_factory(config, data):
@@ -25,7 +27,7 @@ def model_factory(config, data):
                                              config['num_layers'], config['dim_feedforward'], dropout=config['dropout'],
                                              pos_encoding=config['pos_encoding'], activation=config['activation'],
                                              norm=config['normalization_layer'], freeze=config['freeze'])
-        elif config['model'] == 'transformer':
+        elif config['model'] == 'smooth':
             return TSTransformerEncoder(feat_dim, max_seq_len, config['d_model'], config['num_heads'],
                                         config['num_layers'], config['dim_feedforward'], dropout=config['dropout'],
                                         pos_encoding=config['pos_encoding'], activation=config['activation'],
@@ -43,7 +45,7 @@ def model_factory(config, data):
                                                             dropout=config['dropout'], pos_encoding=config['pos_encoding'],
                                                             activation=config['activation'],
                                                             norm=config['normalization_layer'], freeze=config['freeze'])
-        elif config['model'] == 'transformer':
+        elif config['model'] == 'smooth':
             return TSTransformerEncoderClassiregressor(feat_dim, max_seq_len, config['d_model'],
                                                        config['num_heads'],
                                                        config['num_layers'], config['dim_feedforward'],
@@ -188,8 +190,8 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         Shape:
             see the docs in Transformer class.
         """
-        src2 = self.self_attn(src, src, src, attn_mask=src_mask,
-                              key_padding_mask=src_key_padding_mask)[0]
+        src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
+                              key_padding_mask=src_key_padding_mask, average_attn_weights=False)
         src = src + self.dropout1(src2)  # (seq_len, batch_size, d_model)
         src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
         # src = src.reshape([src.shape[0], -1])  # (batch_size, seq_length * d_model)
@@ -200,8 +202,138 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
         src = self.norm2(src)
         src = src.permute(2, 0, 1)  # restore (seq_len, batch_size, d_model)
-        return src
+        return src, attn_output_weights
 
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
+class TransformerEncoder(nn.modules.Module):
+    r"""TransformerEncoder is a stack of N encoder layers. Users can build the
+    BERT(https://arxiv.org/abs/1810.04805) model with corresponding parameters.
+
+    Args:
+        encoder_layer: an instance of the TransformerEncoderLayer() class (required).
+        num_layers: the number of sub-encoder-layers in the encoder (required).
+        norm: the layer normalization component (optional).
+        enable_nested_tensor: if True, input will automatically convert to nested tensor
+            (and convert back on output). This will improve the overall performance of
+            TransformerEncoder when padding rate is high. Default: ``True`` (enabled).
+
+    Examples::
+        >>> encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
+        >>> transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+        >>> src = torch.rand(10, 32, 512)
+        >>> out = transformer_encoder(src)
+    """
+    __constants__ = ['norm']
+
+    def __init__(self, encoder_layer, num_layers, norm=None, enable_nested_tensor=True, mask_check=True):
+        super(TransformerEncoder, self).__init__()
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+        self.norm = norm
+        self.enable_nested_tensor = enable_nested_tensor
+        self.mask_check = mask_check
+
+    def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+        r"""Pass the input through the encoder layers in turn.
+
+        Args:
+            src: the sequence to the encoder (required).
+            mask: the mask for the src sequence (optional).
+            src_key_padding_mask: the mask for the src keys per batch (optional).
+
+        Shape:
+            see the docs in Transformer class.
+        """
+        if src_key_padding_mask is not None:
+            _skpm_dtype = src_key_padding_mask.dtype
+            if _skpm_dtype != torch.bool and not torch.is_floating_point(src_key_padding_mask):
+                raise AssertionError(
+                    "only bool and floating types of key_padding_mask are supported")
+        output = src
+        convert_to_nested = False
+        first_layer = self.layers[0]
+        src_key_padding_mask_for_layers = src_key_padding_mask
+        why_not_sparsity_fast_path = ''
+        str_first_layer = "self.layers[0]"
+        if not isinstance(first_layer, torch.nn.TransformerEncoderLayer):
+            why_not_sparsity_fast_path = f"{str_first_layer} was not TransformerEncoderLayer"
+        elif first_layer.norm_first :
+            why_not_sparsity_fast_path = f"{str_first_layer}.norm_first was True"
+        elif first_layer.training:
+            why_not_sparsity_fast_path = f"{str_first_layer} was in training mode"
+        elif not first_layer.self_attn.batch_first:
+            why_not_sparsity_fast_path = f" {str_first_layer}.self_attn.batch_first was not True"
+        elif not first_layer.self_attn._qkv_same_embed_dim:
+            why_not_sparsity_fast_path = f"{str_first_layer}.self_attn._qkv_same_embed_dim was not True"
+        elif not first_layer.activation_relu_or_gelu:
+            why_not_sparsity_fast_path = f" {str_first_layer}.activation_relu_or_gelu was not True"
+        elif not (first_layer.norm1.eps == first_layer.norm2.eps) :
+            why_not_sparsity_fast_path = f"{str_first_layer}.norm1.eps was not equal to {str_first_layer}.norm2.eps"
+        elif not src.dim() == 3:
+            why_not_sparsity_fast_path = f"input not batched; expected src.dim() of 3 but got {src.dim()}"
+        elif not self.enable_nested_tensor:
+            why_not_sparsity_fast_path = "enable_nested_tensor was not True"
+        elif src_key_padding_mask is None:
+            why_not_sparsity_fast_path = "src_key_padding_mask was None"
+        elif (((not hasattr(self, "mask_check")) or self.mask_check)
+                and not torch._nested_tensor_from_mask_left_aligned(src, src_key_padding_mask.logical_not())):
+            why_not_sparsity_fast_path = "mask_check enabled, and src and src_key_padding_mask was not left aligned"
+        elif output.is_nested:
+            why_not_sparsity_fast_path = "NestedTensor input is not supported"
+        elif mask is not None:
+            why_not_sparsity_fast_path = "src_key_padding_mask and mask were both supplied"
+        elif first_layer.self_attn.num_heads % 2 == 1:
+            why_not_sparsity_fast_path = "num_head is odd"
+        elif torch.is_autocast_enabled():
+            why_not_sparsity_fast_path = "autocast is enabled"
+
+        if not why_not_sparsity_fast_path:
+            tensor_args = (
+                src,
+                first_layer.self_attn.in_proj_weight,
+                first_layer.self_attn.in_proj_bias,
+                first_layer.self_attn.out_proj.weight,
+                first_layer.self_attn.out_proj.bias,
+                first_layer.norm1.weight,
+                first_layer.norm1.bias,
+                first_layer.norm2.weight,
+                first_layer.norm2.bias,
+                first_layer.linear1.weight,
+                first_layer.linear1.bias,
+                first_layer.linear2.weight,
+                first_layer.linear2.bias,
+            )
+
+            if torch.overrides.has_torch_function(tensor_args):
+                why_not_sparsity_fast_path = "some Tensor argument has_torch_function"
+            elif not (src.is_cuda or 'cpu' in str(src.device)):
+                why_not_sparsity_fast_path = "src is neither CUDA nor CPU"
+            elif torch.is_grad_enabled() and any(x.requires_grad for x in tensor_args):
+                why_not_sparsity_fast_path = ("grad is enabled and at least one of query or the "
+                                              "input/output projection weights or biases requires_grad")
+
+            if (not why_not_sparsity_fast_path) and (src_key_padding_mask is not None):
+                convert_to_nested = True
+                output = torch._nested_tensor_from_mask(output, src_key_padding_mask.logical_not(), mask_check=False)
+                src_key_padding_mask_for_layers = None
+
+        attn_weights_layers = None
+        for mod in self.layers:
+            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)
+            if attn_weights_layers is None:
+              attn_weights_layers = attn_weights
+            else:
+              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights))
+
+        if convert_to_nested:
+            output = output.to_padded_tensor(0.)
+
+        if self.norm is not None:
+            output = self.norm(output)
+
+        return output, attn_weights_layers
 
 class TSTransformerEncoder(nn.Module):
 
@@ -223,8 +355,8 @@ class TSTransformerEncoder(nn.Module):
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
                 d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
-
-        self.transformer_encoder = nn.TransformerEncoder(
+        
+        self.transformer_encoder = TransformerEncoder(
             encoder_layer, num_layers)
 
         self.output_layer = nn.Linear(d_model, feat_dim)
@@ -251,8 +383,7 @@ class TSTransformerEncoder(nn.Module):
         inp = self.pos_enc(inp)  # add positional encoding
         # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
         # (seq_length, batch_size, d_model)
-        output = self.transformer_encoder(
-            inp, src_key_padding_mask=~padding_masks)
+        output, attn_weights = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
         # the output transformer encoder/decoder embeddings don't include non-linearity
         output = self.act(output)
         output = output.permute(1, 0, 2)  # (batch_size, seq_length, d_model)
@@ -261,7 +392,7 @@ class TSTransformerEncoder(nn.Module):
         # (batch_size, seq_length, feat_dim)
         output = self.output_layer(output)
 
-        return output
+        return output, attn_weights
 
 
 class TSTransformerEncoderClassiregressor(nn.Module):
@@ -298,8 +429,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
             encoder_layer = TransformerBatchNormEncoderLayer(
                 d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
 
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers)
+        self.transformer_encoder = TransformerEncoder(encoder_layer, num_layers)
 
         self.act = _get_activation_fn(activation)
 
@@ -335,7 +465,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         inp = X.permute(1, 0, 2)
         inp = self.project_inp(inp) * math.sqrt(self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
-        output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
+        output, attn_weights = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
 
         if self.include_cls_token:
             # Classifier "token" as used by standard language architectures
@@ -347,7 +477,6 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         output = output * padding_masks.unsqueeze(-1) # zero-out padding embeddings          
         output = output.reshape(output.shape[0], -1) # (batch_size, seq_length * d_model)
-
         output = self.output_layer(output)  # (batch_size, num_classes)
 
-        return output
+        return output, attn_weights

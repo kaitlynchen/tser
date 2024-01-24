@@ -67,7 +67,7 @@ def model_factory(config, data):
             if task == "classification"
             else data.labels_df.shape[1]
         )
-        if config["model"] == "swin":
+        if config["model"] == "swin_pool":
             d_model = config["d_model"]
             window_size = config["data_window_len"]
             dropout = config["dropout"]
@@ -80,20 +80,32 @@ def model_factory(config, data):
             elif config["normalization_layer"] == "BatchNorm":
                 norm = nn.BatchNorm1d
 
+            print("data.feature_df shape before: ", data.feature_df.shape)
             if data.feature_df.shape[0] % 365 == 0:
                 padded_data = pad_data(data.feature_df, 365, 19)
                 data.feature_df = padded_data
                 data.all_df = padded_data
                 data.max_seq_len = 384
 
-            # print("data shape after: ", data.feature_df.shape)
+            # pad BenzeneConcentration data
+            if data.feature_df.shape[0] % 240 == 0:
+                padded_data = pad_data(data.feature_df, 240, 48)
+                data.feature_df = padded_data
+                data.all_df = padded_data
+                data.max_seq_len = 288
+                print("data.feature_df shape after: ", data.feature_df.shape)
+
             patch_size = 2
             window_size = 3
+            depths = [2, 6, 2]
+            num_heads = [3, 6, 12]
 
             return SwinTransformer(
                 img_size=data.max_seq_len,
                 patch_size=patch_size,
                 embed_dim=int(data.max_seq_len / patch_size),
+                depths=depths,
+                num_heads=num_heads,
                 in_chans=feat_dim,
                 num_classes=num_labels,
                 window_size=window_size,
@@ -103,7 +115,7 @@ def model_factory(config, data):
                 include_cls_token=config["class_token"]
             )
     elif task == "imputation":
-        if config["model"] == "swin":
+        if config["model"] == "swin_pool":
             d_model = config["d_model"]
             window_size = config["data_window_len"]
             dropout = config["dropout"]
@@ -117,7 +129,7 @@ def model_factory(config, data):
                 norm = nn.BatchNorm1d
 
             patch_size = 2
-            window_size = 3
+            window_size = 2
 
             return PretrainedSwinTransformer(
                 img_size=data.max_seq_len,
@@ -461,14 +473,12 @@ class SwinTransformerBlock(nn.Module):
                 img_mask[:, t, :] = cnt
                 cnt += 1
 
-            mask_windows = window_partition(
-                img_mask, self.window_size
-            )  # nW, window_size, 1
+            print("timesteps: ", timesteps)
+            print("window size: ", self.window_size)
+            mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, 1
             mask_windows = mask_windows.view(-1, self.window_size)
             attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-            attn_mask = attn_mask.masked_fill(
-                attn_mask != 0, float(-100.0)
-            ).masked_fill(attn_mask == 0, float(0.0))
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
         else:
             attn_mask = None
 
@@ -481,8 +491,8 @@ class SwinTransformerBlock(nn.Module):
             x = x[0]
 
         B, L, C = x.shape
-        # print("T: ", T)
-        # print("x shape: ", x.shape)
+        print("L: ", L)
+        print("T: ", T)
         assert L == T, "input feature has wrong size"
 
         shortcut = x
@@ -636,8 +646,6 @@ class MaxPoolMerging(nn.Module):
         assert L == T, "input feature has wrong size"
         assert T % 2 == 0, f"x size ({T}) is not even."
 
-        print("x shape before max pool merging: ", x.shape)
-
         x = x.view(B, T, C)
 
         x0 = x[:, 0::2, :]  # B T/2 C
@@ -645,13 +653,11 @@ class MaxPoolMerging(nn.Module):
         x = torch.cat([x0, x1], -1)  # B T/2 T/2 2*C
         x = x.view(B, -1, 2 * C)  # B T/2 2*C
 
-        print("x shape after concatenation before pooling: ", x.shape)
         x = x.transpose(1, 2)  # B 2*C T/2
         x = self.norm(x)
         x = self.maxpool(x)
         x = x.transpose(1, 2)  # B T/2 C
 
-        print("x shape after max pool merging: ", x.shape)
         return x
 
     def extra_repr(self) -> str:
@@ -864,7 +870,7 @@ class SwinTransformer(nn.Module):
         embed_dim=96,
         depths=[2, 2, 6, 2],
         num_heads=[3, 6, 12, 24],
-        window_size=3,
+        window_size=2,
         mlp_ratio=4.0,
         qkv_bias=True,
         qk_scale=None,
@@ -929,8 +935,8 @@ class SwinTransformer(nn.Module):
             layer = BasicLayer(
                 dim=int(embed_dim * 2**i_layer),
                 input_resolution=(
-                    patches_resolution[0] // (2**i_layer),
-                    patches_resolution[1] // (2**i_layer),
+                    patches_resolution[0] // (4**i_layer),
+                    patches_resolution[1] // (4**i_layer),
                 ),
                 depth=depths[i_layer],
                 num_heads=num_heads[i_layer],
@@ -942,7 +948,7 @@ class SwinTransformer(nn.Module):
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[sum(depths[:i_layer]) : sum(depths[: i_layer + 1])],
                 norm_layer=norm_layer,
-                downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
+                downsample=MaxPoolMerging if (i_layer < self.num_layers - 1) else None,
                 use_checkpoint=use_checkpoint,
                 fused_window_process=fused_window_process,
             )

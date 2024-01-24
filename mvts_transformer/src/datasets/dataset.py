@@ -1,7 +1,7 @@
 import numpy as np
 from torch.utils.data import Dataset
 import torch
-
+import random
 
 class ImputationDataset(Dataset):
     """Dynamically computes missingness (noise) mask for each sample"""
@@ -118,8 +118,6 @@ def collate_superv(data, max_len=None):
     X = torch.zeros(batch_size, max_len, features[0].shape[-1])
     for i in range(batch_size):
         end = min(lengths[i], max_len)
-        # print("feature tensor shape: ", features[i].shape)
-        # print("feature tensor: ", features)
         X[i, :end, :] = features[i][:end, :]
 
     targets = torch.stack(labels, dim=0)  # (batch_size, num_labels)
@@ -270,6 +268,9 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
         exclude_feats = set(exclude_feats)
 
     if distribution == 'early' or distribution == 'autoregressive':
+        if masking_ratio == None:
+            masking_ratio = random.random()
+            
         mask = early_prediction_mask(X.shape, masking_ratio)
     elif distribution == 'geometric':  # stateful (Markov chain)
         # mask = np.ones(X.shape, dtype=bool)
@@ -303,7 +304,7 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
 
     return mask
 
-def early_prediction_mask(shape, proportion):
+def early_prediction_mask(shape, proportion=None):
     mask = np.ones(shape, dtype=bool)
     index = int(proportion * shape[1])
     mask[:, index:] = False

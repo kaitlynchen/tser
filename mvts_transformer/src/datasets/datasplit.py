@@ -2,16 +2,13 @@ import numpy as np
 from sklearn import model_selection
 
 
-def split_dataset(data_indices, validation_method, n_splits, validation_ratio, test_set_ratio=0,
-                  test_indices=None,
+def split_dataset(data_indices, validation_method, n_splits, validation_ratio,
                   random_seed=1337, labels=None):
     """
     Splits dataset (i.e. the global datasets indices) into a test set and a training/validation set.
     The training/validation set is used to produce `n_splits` different configurations/splits of indices.
 
     Returns:
-        test_indices: numpy array containing the global datasets indices corresponding to the test set
-            (empty if test_set_ratio is 0 or None)
         train_indices: iterable of `n_splits` (num. of folds) numpy arrays,
             each array containing the global datasets indices corresponding to a fold's training set
         val_indices: iterable of `n_splits` (num. of folds) numpy arrays,
@@ -19,22 +16,14 @@ def split_dataset(data_indices, validation_method, n_splits, validation_ratio, t
     """
 
     # Set aside test set, if explicitly defined
-    if test_indices is not None:
-        data_indices = np.array([ind for ind in data_indices if ind not in set(test_indices)])  # to keep initial order
+    data_indices = np.array([ind for ind in data_indices])  # to keep initial order
 
     datasplitter = DataSplitter.factory(validation_method, data_indices, labels)  # DataSplitter object
 
-    # Set aside a random partition of all data as a test set
-    if test_indices is None:
-        if test_set_ratio:  # only if test set not explicitly defined
-            datasplitter.split_testset(test_ratio=test_set_ratio, random_state=random_seed)
-            test_indices = datasplitter.test_indices
-        else:
-            test_indices = []
     # Split train / validation sets
     datasplitter.split_validation(n_splits, validation_ratio, random_state=random_seed)
 
-    return datasplitter.train_indices, datasplitter.val_indices, test_indices
+    return datasplitter.train_indices, datasplitter.val_indices
 
 
 class DataSplitter(object):

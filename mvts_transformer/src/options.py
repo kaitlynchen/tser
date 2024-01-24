@@ -2,12 +2,9 @@ import argparse
 
 
 class Options(object):
-
     def __init__(self):
-
         # Handle command line arguments
-        self.parser = argparse.ArgumentParser(
-            description='Run a complete training pipeline. Optionally, a JSON configuration file can be used, to overwrite command-line arguments.')
+        self.parser = argparse.ArgumentParser(description="Run a complete training pipeline. Optionally, a JSON configuration file can be used, to overwrite command-line arguments.")
 
         # Run from config file
         self.parser.add_argument('--config', dest='config_filepath',
@@ -15,12 +12,9 @@ class Options(object):
 
         # Run from command-line arguments
         # I/O
-        self.parser.add_argument('--output_dir', default='./output',
-                                 help='Root output directory. Must exist. Time-stamped directories will be created inside.')
-        self.parser.add_argument('--data_dir', default='./data',
-                                 help='Data directory')
-        self.parser.add_argument('--load_model',
-                                 help='Path to pre-trained model.')
+        self.parser.add_argument("--output_dir", default="./output", help="Root output directory. Must exist. Time-stamped directories will be created inside.",)
+        self.parser.add_argument("--data_dir", default="./data", help="Data directory")
+        self.parser.add_argument("--load_model", help="Path to pre-trained model.")
         self.parser.add_argument('--resume', action='store_true',
                                  help='If set, will load `starting_epoch` and state of optimizer, besides model weights.')
         self.parser.add_argument('--change_output', action='store_true',
@@ -72,7 +66,7 @@ class Options(object):
         self.parser.add_argument('--val_pattern', type=str,
                                  help="""Regex pattern used to select files contained in `data_dir` exclusively for the validation set.
                             If None, a positive `val_ratio` will be used to reserve part of the common data set.""")
-        self.parser.add_argument('--test_pattern', type=str,
+        self.parser.add_argument('--test_pattern', type=str, default='TEST',
                                  help="""Regex pattern used to select files contained in `data_dir` exclusively for the test set.
                             If None, `test_ratio`, if specified, will be used to reserve part of the common data set.""")
         self.parser.add_argument('--normalization',
@@ -89,6 +83,7 @@ class Options(object):
                                  help='Test a specific baseline for early prediction')
         self.parser.add_argument('--proportion', type=float,
                                  help='Proportion of dataset used for early prediction or autoregressive pretraining')
+
         # Training process
         self.parser.add_argument('--task', choices={"imputation", "transduction", "classification", "regression"},
                                  default="imputation",
@@ -118,6 +113,7 @@ class Options(object):
         self.parser.add_argument('--harden', action='store_true',
                                  help='Makes training objective progressively harder, by masking more of the input')
 
+
         self.parser.add_argument('--epochs', type=int, default=400,
                                  help='Number of training epochs')
         self.parser.add_argument('--val_interval', type=int, default=2,
@@ -143,10 +139,17 @@ class Options(object):
                                  help='Metric used for defining best epoch')
         self.parser.add_argument('--freeze', action='store_true',
                                  help='If set, freezes all layer parameters except for the output layer. Also removes dropout except before the output layer')
+        self.parser.add_argument('--plot_accuracy', action='store_true',
+                                 help='If set, plots a scatterplot of predicted and expected values of regression')
+        self.parser.add_argument('--plot_loss', action='store_true',
+                                 help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
+
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax"}, default="transformer",
                                  help="Model class")
+        self.parser.add_argument('--reg_lambda', type=float, default=0,
+                                 help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
                                  If not provided, then the value defined inside the data class will be used.""")
@@ -170,22 +173,29 @@ class Options(object):
                                  help='Activation to be used in transformer encoder')
         self.parser.add_argument('--normalization_layer', choices={'BatchNorm', 'LayerNorm'}, default='BatchNorm',
                                  help='Normalization layer to be used internally in transformer encoder')
+        self.parser.add_argument('--class_token', action='store_true',
+                                 help='If set, will append class token to help predict global class')
+        self.parser.add_argument('--stride', type=int, default=0,
+                                 help='Stride between patches or convolutions')
+        self.parser.add_argument('--patch_length', type=int, default=64,
+                                 help='Number of time steps in each patch')
+        self.parser.add_argument('--num_decoder_layers', type=int, default=2,
+                                 help='Number of decoder layers')
 
     def parse(self):
-
         args = self.parser.parse_args()
 
-        args.lr_step = [int(i) for i in args.lr_step.split(',')]
-        args.lr_factor = [float(i) for i in args.lr_factor.split(',')]
+        args.lr_step = [int(i) for i in args.lr_step.split(",")]
+        args.lr_factor = [float(i) for i in args.lr_factor.split(",")]
         if (len(args.lr_step) > 1) and (len(args.lr_factor) == 1):
             args.lr_factor = len(args.lr_step) * args.lr_factor  # replicate
         assert len(args.lr_step) == len(
-            args.lr_factor), "You must specify as many values in `lr_step` as in `lr_factors`"
+            args.lr_factor
+        ), "You must specify as many values in `lr_step` as in `lr_factors`"
 
         if args.exclude_feats is not None:
-            args.exclude_feats = [int(i)
-                                  for i in args.exclude_feats.split(',')]
-        args.mask_feats = [int(i) for i in args.mask_feats.split(',')]
+            args.exclude_feats = [int(i) for i in args.exclude_feats.split(",")]
+        args.mask_feats = [int(i) for i in args.mask_feats.split(",")]
 
         if args.val_pattern is not None:
             args.val_ratio = 0
