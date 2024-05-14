@@ -246,6 +246,7 @@ def validate(
     epoch,
     keep_predictions=False,
     require_padding=False,
+    need_attn_weights=False,
     plot=False
 ):
     """Run an evaluation on the validation set while logging metrics, and handle outcome"""
@@ -253,14 +254,15 @@ def validate(
     logger.info("Evaluating on validation set ...")
     eval_start_time = time.time()
     with torch.no_grad():
-        aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True, require_padding=require_padding)
+        aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
         if keep_predictions:
             aggr_metrics, per_batch, predictions, targets = val_evaluator.evaluate(
                 epoch,
                 keep_predictions=True,
                 require_padding=require_padding,
-                keep_all=True,
+                keep_all=True
             )
+        
     eval_runtime = time.time() - eval_start_time
     logger.info(
         "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
@@ -579,6 +581,7 @@ class SupervisedRunner(BaseRunner):
                 attn_smoothness_loss = 0
                 attn_weights_layers = torch.transpose(attn_weights_layers, 0, 1)
                 for attn_weights in attn_weights_layers:
+                  # TODO: maybe try torch.mean() or choose a smaller smoothing_lambda
                   attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
 
                 total_loss += smoothing_lambda * attn_smoothness_loss
@@ -633,7 +636,6 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
-            # print("length of model forward call: ", len(self.model(X.to(self.device))))
             if require_padding:
                 if need_attn_weights:
                     predictions, _ = self.model(X.to(self.device), padding_masks)

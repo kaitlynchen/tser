@@ -146,8 +146,10 @@ class Options(object):
 
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2"}, default="transformer",
                                  help="Model class")
+        self.parser.add_argument('--smooth_attention', action='store_true',
+                                 help="""If set, will smooth adjacent attention weights.""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--max_seq_len', type=int,
@@ -165,6 +167,8 @@ class Options(object):
                                  help='Number of multi-headed attention heads')
         self.parser.add_argument('--num_layers', type=int, default=3,
                                  help='Number of transformer encoder layers (blocks)')
+        self.parser.add_argument('--num_gpsa_layers', type=int, default=0,
+                                 help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
         self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable'}, default='fixed',
