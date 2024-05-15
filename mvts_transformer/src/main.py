@@ -72,7 +72,15 @@ def main(config):
     elif config["model"] is not None and config["model"] == "patch":
         from models.patch_tst import model_factory
     elif config["model"] is not None and config["model"] == "climax":
+        from models.ts_climax_base import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth":
         from models.ts_climax import model_factory
+    elif config["model"] is not None and config["model"] == "convit":
+        from models.climax_convit import model_factory
+    elif config["model"] is not None and config["model"] == "convit_smooth":
+        from models.climax_convit_smooth import model_factory
+    elif config["model"] is not None and config["model"] == "convit_2":
+        from models.climax_with_convit_blocks import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -104,17 +112,6 @@ def main(config):
 
         my_data.all_df = trimmed_train_data
         my_data.feature_df = trimmed_train_data
-
-    # TODO: uncomment below for normalize labels
-    # original_label_mean = None
-    # original_label_std = None
-    # if config["task"] == "regression":
-    #     print("Labels: ", my_data.labels_df is not None)
-    #     original_label_mean = my_data.labels_df.mean()
-    #     original_label_std = my_data.labels_df.std()
-    #     my_data.labels_df = (
-    #         my_data.labels_df - my_data.labels_df.mean()
-    #     ) / my_data.labels_df.std()
 
     if config["task"] == "classification":
         validation_method = "StratifiedShuffleSplit"
@@ -315,10 +312,10 @@ def main(config):
         or config["model"] == "smooth"
     )
 
-    use_smoothing = config["model"] == "smooth" and config["task"] == "regression"
-    smoothing_lambda = config["reg_lambda"]
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=config["model"] == "smooth"
+    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth") and config["smooth_attention"]
+    use_smoothing = need_attn_weights and config["task"] == "regression"
+    smoothing_lambda = config["reg_lambda"]
 
     if config["test_only"] == "testset":  # Only evaluate and skip training
         dataset_class, collate_fn, runner_class = pipeline_factory(config)
@@ -411,6 +408,7 @@ def main(config):
         best_value,
         epoch=0,
         require_padding=require_padding,
+        need_attn_weights=need_attn_weights
     )
     metrics_names, metrics_values = zip(*aggr_metrics_val.items())
     metrics.append(list(metrics_values))
@@ -498,6 +496,7 @@ def main(config):
                 epoch,
                 require_padding=require_padding,
                 keep_predictions=True,
+                need_attn_weights=need_attn_weights,
                 plot=(epoch != start_epoch + 1) and (epoch != config["epochs"]) and config["plot_accuracy"]
             )
             metrics_names, metrics_values = zip(*aggr_metrics_val.items())

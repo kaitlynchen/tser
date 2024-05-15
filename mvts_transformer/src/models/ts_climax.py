@@ -3,6 +3,7 @@ import math
 
 import torch
 import numpy as np
+import copy
 from torch import nn, Tensor
 from torch.nn import functional as F
 from torch.nn.modules import MultiheadAttention, Linear, Dropout, BatchNorm1d, TransformerEncoderLayer
@@ -27,7 +28,7 @@ def model_factory(config, data):
             raise x
 
     if (task == "imputation") or (task == "transduction"):
-        if config['model'] == 'climax':
+        if config['model'] == 'climax_smooth':
             return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'], 
                               d_ff=config['dim_feedforward'], dropout=config['dropout'],
                               activation=config['activation'], n_layers=config['num_layers'])
@@ -35,10 +36,10 @@ def model_factory(config, data):
         # dimensionality of labels
         num_labels = len(
             data.class_names) if task == "classification" else data.labels_df.shape[1]
-        if config['model'] == 'climax':
+        if config['model'] == 'climax_smooth':
             return ClimaX(list([feat_dim]), img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
                           stride=config['stride'], embed_dim=config['d_model'], depth=config['num_layers'], decoder_depth=config['num_decoder_layers'],
-                          num_heads=config['num_heads'], num_classes=num_labels)
+                          num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'], num_classes=num_labels, freeze=config['freeze'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
     
@@ -70,7 +71,9 @@ class ClimaX(nn.Module):
         depth=8,
         decoder_depth=2,
         num_heads=16,
+        feedforward_dim=256,
         num_classes=0,
+        freeze=False,
         mlp_ratio=4.0,
         drop_path=0.1,
         drop_rate=0.1,
@@ -94,10 +97,17 @@ class ClimaX(nn.Module):
         self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
         # positional embedding
-        # TODO: consider relative positional embedding
         self.pos_embed = nn.Parameter(torch.zeros(int((max_seq_len - patch_size) / stride + 1), embed_dim), requires_grad=True)
+
         # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * patch_size - 1), num_heads)) 
+        self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * patch_size - 1), num_heads))  # 2*Wt-1, nH
+
+        # get pair-wise relative position index for each token inside the window
+        coords_t = torch.arange(patch_size)
+        relative_coords = coords_t[:, None] - coords_t[None, :]  # Wt, Wt
+        relative_coords += patch_size - 1  # shift to start from 0
+        relative_position_index = relative_coords
+        self.register_buffer("relative_position_index", relative_position_index)
 
         # --------------------------------------------------------------------------
 
@@ -118,7 +128,7 @@ class ClimaX(nn.Module):
                 for i in range(depth)
             ]
         )
-        self.norm = nn.LayerNorm(embed_dim)
+        # self.norm = nn.LayerNorm(embed_dim // 2)
 
         # --------------------------------------------------------------------------
 
@@ -129,6 +139,11 @@ class ClimaX(nn.Module):
             self.head.append(nn.GELU())
         self.head.append(nn.Linear(embed_dim, embed_dim // 2))
         self.head = nn.Sequential(*self.head)
+
+        encoder_layer = TransformerBatchNormEncoderLayer(
+                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze))
+        self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
+        self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
 
         # --------------------------------------------------------------------------
 
@@ -165,22 +180,6 @@ class ClimaX(nn.Module):
         var_embed = nn.Parameter(torch.zeros(self.img_size[1], dim), requires_grad=True)
         return var_embed
 
-    # def unpatchify(self, x: torch.Tensor, h=None, w=None):
-    #     """
-    #     x: (B, L, V * patch_size**2)
-    #     return imgs: (B, V, H, W)
-    #     """
-    #     p = self.patch_size
-    #     c = len(self.default_vars)
-    #     h = self.img_size[0] // p if h is None else h // p
-    #     w = self.img_size[1] // p if w is None else w // p
-    #     assert h * w == x.shape[1]
-
-    #     x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-    #     x = torch.einsum("nhwpqc->nchpwq", x)
-    #     imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
-    #     return imgs
-
     def aggregate_variables(self, x: torch.Tensor):
         """
         x: B, V, L, D
@@ -191,9 +190,19 @@ class ClimaX(nn.Module):
 
         var_query = self.var_query.repeat_interleave(x.shape[0], dim=0)
         x, _ = self.var_agg(var_query, x, x)  # BxL, D
+        # query, key, value
+        
         x = x.squeeze()
 
         x = x.unflatten(dim=0, sizes=(b, l))  # B, L, D
+
+        # TODO: add relative position bias
+        # relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(self.patch_size, self.patch_size, -1)  # Wt, Wt, nH
+        # relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wt, Wt
+        # print("x shape: ", x.shape)
+        # print("relative_position_bias shape: ", relative_position_bias.shape)
+        # x = x + relative_position_bias.unsqueeze(0)
+
         return x
 
     def forward_encoder(self, x: torch.Tensor):
@@ -218,11 +227,13 @@ class ClimaX(nn.Module):
         x = self.pos_drop(x)
 
         # apply Transformer blocks
-        for blk in self.blocks:
-            x = blk(x)
-        x = self.norm(x)
+        # for blk in self.blocks:
+        #     x = blk(x)
+        x, attn_weights = self.transformer_encoder(x)
+        x = self.head_linear(x)
+        # x = self.norm(x)
 
-        return x
+        return x, attn_weights
 
     def forward(self, x):
         """Forward pass through the model.
@@ -232,9 +243,193 @@ class ClimaX(nn.Module):
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
-        out_transformers = self.forward_encoder(x)  # B, L, D
-        preds = self.head(out_transformers)  # B, L, V*p*p
+        preds, attn_weights = self.forward_encoder(x)
         preds = preds.reshape(preds.shape[0], -1)
         preds = self.output_layer(preds)       
 
-        return preds
+        return preds, attn_weights
+
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
+class TransformerEncoder(nn.modules.Module):
+    r"""TransformerEncoder is a stack of N encoder layers. Users can build the
+    BERT(https://arxiv.org/abs/1810.04805) model with corresponding parameters.
+
+    Args:
+        encoder_layer: an instance of the TransformerEncoderLayer() class (required).
+        num_layers: the number of sub-encoder-layers in the encoder (required).
+        norm: the layer normalization component (optional).
+        enable_nested_tensor: if True, input will automatically convert to nested tensor
+            (and convert back on output). This will improve the overall performance of
+            TransformerEncoder when padding rate is high. Default: ``True`` (enabled).
+
+    Examples::
+        >>> encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
+        >>> transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+        >>> src = torch.rand(10, 32, 512)
+        >>> out = transformer_encoder(src)
+    """
+    __constants__ = ['norm']
+
+    def __init__(self, encoder_layer, num_layers, norm=None, enable_nested_tensor=True, mask_check=True):
+        super(TransformerEncoder, self).__init__()
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+        self.norm = norm
+        self.enable_nested_tensor = enable_nested_tensor
+        self.mask_check = mask_check
+
+    def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+        r"""Pass the input through the encoder layers in turn.
+
+        Args:
+            src: the sequence to the encoder (required).
+            mask: the mask for the src sequence (optional).
+            src_key_padding_mask: the mask for the src keys per batch (optional).
+
+        Shape:
+            see the docs in Transformer class.
+        """
+        if src_key_padding_mask is not None:
+            _skpm_dtype = src_key_padding_mask.dtype
+            if _skpm_dtype != torch.bool and not torch.is_floating_point(src_key_padding_mask):
+                raise AssertionError(
+                    "only bool and floating types of key_padding_mask are supported")
+        output = src
+        convert_to_nested = False
+        first_layer = self.layers[0]
+        src_key_padding_mask_for_layers = src_key_padding_mask
+        why_not_sparsity_fast_path = ''
+        str_first_layer = "self.layers[0]"
+        if not isinstance(first_layer, torch.nn.TransformerEncoderLayer):
+            why_not_sparsity_fast_path = f"{str_first_layer} was not TransformerEncoderLayer"
+        elif first_layer.norm_first :
+            why_not_sparsity_fast_path = f"{str_first_layer}.norm_first was True"
+        elif first_layer.training:
+            why_not_sparsity_fast_path = f"{str_first_layer} was in training mode"
+        elif not first_layer.self_attn.batch_first:
+            why_not_sparsity_fast_path = f" {str_first_layer}.self_attn.batch_first was not True"
+        elif not first_layer.self_attn._qkv_same_embed_dim:
+            why_not_sparsity_fast_path = f"{str_first_layer}.self_attn._qkv_same_embed_dim was not True"
+        elif not first_layer.activation_relu_or_gelu:
+            why_not_sparsity_fast_path = f" {str_first_layer}.activation_relu_or_gelu was not True"
+        elif not (first_layer.norm1.eps == first_layer.norm2.eps) :
+            why_not_sparsity_fast_path = f"{str_first_layer}.norm1.eps was not equal to {str_first_layer}.norm2.eps"
+        elif not src.dim() == 3:
+            why_not_sparsity_fast_path = f"input not batched; expected src.dim() of 3 but got {src.dim()}"
+        elif not self.enable_nested_tensor:
+            why_not_sparsity_fast_path = "enable_nested_tensor was not True"
+        elif src_key_padding_mask is None:
+            why_not_sparsity_fast_path = "src_key_padding_mask was None"
+        elif (((not hasattr(self, "mask_check")) or self.mask_check)
+                and not torch._nested_tensor_from_mask_left_aligned(src, src_key_padding_mask.logical_not())):
+            why_not_sparsity_fast_path = "mask_check enabled, and src and src_key_padding_mask was not left aligned"
+        elif output.is_nested:
+            why_not_sparsity_fast_path = "NestedTensor input is not supported"
+        elif mask is not None:
+            why_not_sparsity_fast_path = "src_key_padding_mask and mask were both supplied"
+        elif first_layer.self_attn.num_heads % 2 == 1:
+            why_not_sparsity_fast_path = "num_head is odd"
+        elif torch.is_autocast_enabled():
+            why_not_sparsity_fast_path = "autocast is enabled"
+
+        if not why_not_sparsity_fast_path:
+            tensor_args = (
+                src,
+                first_layer.self_attn.in_proj_weight,
+                first_layer.self_attn.in_proj_bias,
+                first_layer.self_attn.out_proj.weight,
+                first_layer.self_attn.out_proj.bias,
+                first_layer.norm1.weight,
+                first_layer.norm1.bias,
+                first_layer.norm2.weight,
+                first_layer.norm2.bias,
+                first_layer.linear1.weight,
+                first_layer.linear1.bias,
+                first_layer.linear2.weight,
+                first_layer.linear2.bias,
+            )
+
+            if torch.overrides.has_torch_function(tensor_args):
+                why_not_sparsity_fast_path = "some Tensor argument has_torch_function"
+            elif not (src.is_cuda or 'cpu' in str(src.device)):
+                why_not_sparsity_fast_path = "src is neither CUDA nor CPU"
+            elif torch.is_grad_enabled() and any(x.requires_grad for x in tensor_args):
+                why_not_sparsity_fast_path = ("grad is enabled and at least one of query or the "
+                                              "input/output projection weights or biases requires_grad")
+
+            if (not why_not_sparsity_fast_path) and (src_key_padding_mask is not None):
+                convert_to_nested = True
+                output = torch._nested_tensor_from_mask(output, src_key_padding_mask.logical_not(), mask_check=False)
+                src_key_padding_mask_for_layers = None
+
+        attn_weights_layers = None
+        for mod in self.layers:
+            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)
+            if attn_weights_layers is None:
+              attn_weights_layers = attn_weights
+            else:
+              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights))
+
+        if convert_to_nested:
+            output = output.to_padded_tensor(0.)
+
+        if self.norm is not None:
+            output = self.norm(output)
+
+        return output, attn_weights_layers
+    
+class TransformerBatchNormEncoderLayer(nn.modules.Module):
+    r"""This transformer encoder layer block is made up of self-attn and feedforward network.
+    It differs from TransformerEncoderLayer in torch/nn/modules/transformer.py in that it replaces LayerNorm
+    with BatchNorm.
+
+    Args:
+        d_model: the number of expected features in the input (required).
+        nhead: the number of heads in the multiheadattention models (required).
+        dim_feedforward: the dimension of the feedforward network model (default=2048).
+        dropout: the dropout value (default=0.1).
+        activation: the activation function of intermediate layer, relu or gelu (default=relu).
+    """
+
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super(TransformerBatchNormEncoderLayer, self).__init__()
+        self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
+        # Implementation of Feedforward model
+        self.linear1 = Linear(d_model, dim_feedforward)
+        self.dropout = Dropout(dropout)
+        self.linear2 = Linear(dim_feedforward, d_model)
+
+        # normalizes each feature across batch samples and time steps
+        self.norm1 = BatchNorm1d(d_model, eps=1e-5)
+        self.norm2 = BatchNorm1d(d_model, eps=1e-5)
+        self.dropout1 = Dropout(dropout)
+        self.dropout2 = Dropout(dropout)
+
+        self.activation = F.gelu
+
+    def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
+                src_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+        r"""Pass the input through the encoder layer.
+
+        Args:
+            src: the sequence to the encoder layer (required).
+            src_mask: the mask for the src sequence (optional).
+            src_key_padding_mask: the mask for the src keys per batch (optional).
+
+        Shape:
+            see the docs in Transformer class.
+        """
+        src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
+                              key_padding_mask=src_key_padding_mask, average_attn_weights=False)
+        src = src + self.dropout1(src2)  # (seq_len, batch_size, d_model)
+        src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
+        src = self.norm1(src)
+        src = src.permute(2, 0, 1)  # restore (seq_len, batch_size, d_model)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)  # (seq_len, batch_size, d_model)
+        src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
+        src = self.norm2(src)
+        src = src.permute(2, 0, 1)  # restore (seq_len, batch_size, d_model)
+        return src, attn_output_weights
