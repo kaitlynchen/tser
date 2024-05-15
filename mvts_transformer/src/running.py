@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import sklearn
 
-from utils import utils, analysis
+from utils import utils, analysis, visualization_utils
 from models.loss import l2_reg_loss
 from datasets.dataset import (
     ImputationDataset,
@@ -47,7 +47,7 @@ def pipeline_factory(config):
             return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
                            masking_ratio=config['proportion'], mode=config['mask_mode'],
                            distribution='early', exclude_feats=config['exclude_feats']),\
-                collate_unsuperv, UnsupervisedRunner        
+                collate_unsuperv, UnsupervisedRunner
         else:
             return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
                            masking_ratio=config['masking_ratio'], mode=config['mask_mode'],
@@ -101,11 +101,12 @@ def setup(args):
         rand_suffix = "".join(random.choices(string.ascii_letters + string.digits, k=3))
         output_dir += "_" + formatted_timestamp + "_" + rand_suffix
     config["output_dir"] = output_dir
+    config["plot_dir"] = os.path.join(output_dir, "plots")
     config["save_dir"] = os.path.join(output_dir, "checkpoints")
     config["pred_dir"] = os.path.join(output_dir, "predictions")
     config["tensorboard_dir"] = os.path.join(output_dir, "tb_summaries")
     utils.create_dirs(
-        [config["save_dir"], config["pred_dir"], config["tensorboard_dir"]]
+        [config["plot_dir"], config["save_dir"], config["pred_dir"], config["tensorboard_dir"]]
     )
 
     # Save configuration as a (pretty) json file
@@ -300,7 +301,7 @@ def validate(
             epoch,
             val_evaluator.model,
         )
-        
+
         # TODO: integrate from pre-training to fine-tuning
         # with open(os.path.join("./experiments", config['experiment_name'] + "_model_path.txt"), "w") as f:
         #     f.write(os.path.join(config['save_dir'], 'model_best.pth'))
@@ -309,6 +310,15 @@ def validate(
 
         pred_filepath = os.path.join(config["pred_dir"], "best_predictions")
         np.savez(pred_filepath, **per_batch)
+
+        if plot:
+            y_pred = np.concatenate(per_batch["predictions"], axis=0)
+            y_true = np.concatenate(per_batch["targets"], axis=0)
+            print("Plotting!", y_pred.shape, y_true.shape)
+            visualization_utils.plot_single_scatter_file(y_pred, y_true, "Predicted", "True",
+                                                         config['plot_dir'],
+                                                         title_description=f"{config['experiment_name']} epoch {epoch}",
+                                                         filename_description=f"{config['experiment_name']}_val", should_align=True)
 
     if keep_predictions:
         return aggr_metrics, best_metrics, best_value, predictions, targets
@@ -534,7 +544,7 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
 
-    def train_epoch(self, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
+    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
@@ -543,10 +553,13 @@ class SupervisedRunner(BaseRunner):
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
-            X, targets, padding_masks, IDs = batch
+            X, targets, padding_masks, time, IDs = batch  # @joshuafan added time
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
+
+            if config["mixtype"] != 'none':
+                X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
             if require_padding:
                 if need_attn_weights:
@@ -608,7 +621,7 @@ class SupervisedRunner(BaseRunner):
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, all_predictions, all_targets, supervised_loss, supervised_smoothing_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss
 
         return self.epoch_metrics
 
@@ -628,7 +641,7 @@ class SupervisedRunner(BaseRunner):
         }
 
         for i, batch in enumerate(self.dataloader):
-            X, targets, padding_masks, IDs = batch
+            X, targets, padding_masks, time, IDs = batch
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
@@ -720,7 +733,7 @@ class SupervisedRunner(BaseRunner):
             plt.close()
 
         if keep_predictions:
-            return self.epoch_metrics, per_batch, all_predictions, all_targets
+            return self.epoch_metrics, per_batch, np.concatenate(all_predictions, axis=0), np.concatenate(all_targets, axis=0)
 
         if keep_all:
             return self.epoch_metrics, per_batch

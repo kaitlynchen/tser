@@ -12,6 +12,8 @@ import torch
 import xlrd
 import xlwt
 from xlutils.copy import copy
+from sklearn.neighbors import KernelDensity
+from dtaidistance import dtw
 
 import logging
 
@@ -19,6 +21,122 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+############################################################################################
+# C-Mixup code taken from https://github.com/huaxiuyao/C-Mixup/blob/main/src/algorithm.py
+############################################################################################
+
+def stats_values(targets):  # from utils.py file in C-Mixup repo
+    mean = np.mean(targets)
+    min = np.min(targets)
+    max = np.max(targets)
+    std = np.std(targets)
+    print(f'y stats: mean = {mean}, max = {max}, min = {min}, std = {std}')
+    return mean, min, max, std
+
+
+def get_mixup_sample_rate(args, data_packet, device='cuda', use_kde = False):
+
+    mix_idx = []
+    x_list, y_list = data_packet['x_train'], data_packet['y_train']
+    is_np = isinstance(y_list,np.ndarray)
+    if is_np:
+        data_list = torch.tensor(y_list, dtype=torch.float32)
+    else:
+        data_list = y_list
+
+    N = len(data_list)
+
+    ######## use kde rate or uniform rate #######
+    if args["mixtype"] == "dtw":
+        x_numpy = x_list.cpu().detach().numpy().astype(np.float64)  # [batch, timesteps, channel]
+
+        # For each channel, compute DTW distance between each pair of datapoints
+        distance_matrices = []
+        logging.disable(logging.INFO)
+        for i in range(x_numpy.shape[2]):  # Loop through channels
+            distance_matrix = dtw.distance_matrix_fast(x_numpy[:, :, i])  # [batch, batch]
+            distance_matrices.append(distance_matrix)
+        logging.disable(logging.NOTSET)
+        distance_matrix = np.stack(distance_matrices, axis=0).mean(axis=0)  # [batch, batch]
+        # print("AVG Distance matrix", distance_matrix[0:2, :])
+
+        # Compute distance to similarity, and normalize
+        each_rate = np.exp(-distance_matrix / (2 * (args["kde_bandwidth"]**2)))  # similarity to all other datapoints
+        # np.fill_diagonal(each_rate, 0)  # Set similarity to oneself as 0
+        # print("Unnormalized similarity", each_rate[0:2, :])
+        each_rate /= np.sum(each_rate, axis=1, keepdims=True)
+        # print("Normalized", each_rate[0:2, :])
+        # print("Row sums", each_rate.sum(axis=1))
+        mix_idx = each_rate
+    else:
+        for i in range(N):
+            if args["mixtype"] == 'kde' or use_kde: # kde
+                data_i = data_list[i]
+                data_i = data_i.reshape(-1,data_i.shape[0]) # get 2D
+
+                if args["show_process"]:
+                    if i % (N // 10) == 0:
+                        print('Mixup sample prepare {:.2f}%'.format(i * 100.0 / N ))
+                    # if i == 0: print(f'data_list.shape = {data_list.shape}, std(data_list) = {torch.std(data_list)}')#, data_i = {data_i}' + f'data_i.shape = {data_i.shape}')
+
+                ######### get kde sample rate ##########
+                kd = KernelDensity(kernel=args["kde_type"], bandwidth=args["kde_bandwidth"]).fit(data_i)  # should be 2D
+                each_rate = np.exp(kd.score_samples(data_list))
+                each_rate /= np.sum(each_rate)  # norm
+
+            else:
+                each_rate = np.ones(y_list.shape[0]) * 1.0 / y_list.shape[0]
+
+            ####### visualization: observe relative rate distribution shot #######
+            if args["show_process"] and i == 0:
+                    print(f'bw = {args["kde_bandwidth"]}')
+                    print(f'each_rate[:10] = {each_rate[:10]}')
+                    stats_values(each_rate)
+
+            mix_idx.append(each_rate)
+
+    mix_idx = np.array(mix_idx)
+    # print("mixup_sample_rate", mix_idx.shape)
+    # print(mix_idx[0])
+    # print(y_list)
+
+    self_rate = [mix_idx[i][i] for i in range(len(mix_idx))]
+
+    if args["show_process"]:
+        print(f'len(y_list) = {len(y_list)}, len(mix_idx) = {len(mix_idx)}, np.mean(self_rate) = {np.mean(self_rate)}, np.std(self_rate) = {np.std(self_rate)},  np.min(self_rate) = {np.min(self_rate)}, np.max(self_rate) = {np.max(self_rate)}')
+
+    return mix_idx
+
+
+
+def get_batch_kde_mixup_idx(args, Batch_X, Batch_Y, device):
+    # assert Batch_X.shape[0] % 2 == 0
+    Batch_packet = {}
+    Batch_packet['x_train'] = Batch_X.cpu()
+    Batch_packet['y_train'] = Batch_Y.cpu()
+
+    Batch_rate = get_mixup_sample_rate(args, Batch_packet, device, use_kde=True) # batch -> kde
+    if args["show_process"]:
+        stats_values(Batch_rate[0])
+        # print(f'Batch_rate[0][:20] = {Batch_rate[0][:20]}')
+    idx2 = [np.random.choice(np.arange(Batch_X.shape[0]), p=Batch_rate[sel_idx])
+            for sel_idx in np.arange(Batch_X.shape[0])]  # @joshuafan changed, used to be Batch_X.shape // 2
+    return idx2
+
+def generate_mixup_data(args, X1, Y1, device):
+    lambd = np.random.beta(args["mix_alpha"], args["mix_alpha"])
+    idx2 = get_batch_kde_mixup_idx(args, X1, Y1, device)
+    X2 = X1[idx2]
+    Y2 = Y1[idx2]
+    mixup_X = X1 * lambd + X2 * (1 - lambd)
+    mixup_Y = Y1 * lambd + Y2 * (1 - lambd)
+    return mixup_X, mixup_Y
+
+############################################################################################
+# End of C-Mixup code
+############################################################################################
+
 
 
 def timer(func):

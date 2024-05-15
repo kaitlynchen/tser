@@ -15,7 +15,7 @@ def get_loss_module(config):
 
     if task == "regression":
         return nn.MSELoss(reduction='none')  # outputs loss for each batch sample
-
+        # return nn.SmoothL1Loss(reduction='none')
     else:
         raise ValueError("Loss module for task '{}' does not exist".format(task))
 
