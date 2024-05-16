@@ -261,9 +261,9 @@ def validate(
                 epoch,
                 keep_predictions=True,
                 require_padding=require_padding,
-                keep_all=True
+                keep_all=True,
             )
-        
+
     eval_runtime = time.time() - eval_start_time
     logger.info(
         "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
@@ -433,7 +433,6 @@ class UnsupervisedRunner(BaseRunner):
                 attn_smoothness_loss = 0
                 for attn_weights in attn_weights_layers:
                   attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
-
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             # Zero gradients, perform a backward pass, and update the weights.
@@ -590,12 +589,27 @@ class SupervisedRunner(BaseRunner):
 
             supervised_loss += total_loss.cpu().detach().numpy()
 
-            if use_smoothing:
+            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
+                if epoch_num == config['num_epochs'] and i == 0:  # epoch_num is 1-based
+                    n_rows = 10  # Examples to plot
+                    n_cols = attn_weights_layers.shape[1]//4  # Heads to plot
+                    fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
+                    for i in range(n_rows):
+                        for j in range(n_cols):
+                            axeslist[i, j].imshow(attn_weights_layers[i, 4*j, :, :].detach().cpu().numpy())
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                    plt.suptitle("Example attention matrices")
+                    plt.savefig(os.path.join(config['plot_dir'], 'attention_matrices.png'))
+                    plt.close()
+                    exit(1)
+
                 attn_smoothness_loss = 0
-                attn_weights_layers = torch.transpose(attn_weights_layers, 0, 1)
-                for attn_weights in attn_weights_layers:
-                  # TODO: maybe try torch.mean() or choose a smaller smoothing_lambda
-                  attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
+                attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
+                attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                # print("Mean loss", mean_loss, "Attn smoothness", attn_smoothness_loss)
+                # for attn_weights in attn_weights_layers:
+                #   # TODO: maybe try torch.mean() or choose a smaller smoothing_lambda
+                #   attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
 
                 total_loss += smoothing_lambda * attn_smoothness_loss
 

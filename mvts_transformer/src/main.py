@@ -6,6 +6,7 @@ George Zerveas et al. A Transformer-based Framework for Multivariate Time Series
 Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD '21), August 14--18, 2021
 """
 
+import random
 from optimizers import get_optimizer
 from models.loss import get_loss_module
 from datasets.datasplit import split_dataset
@@ -54,6 +55,8 @@ def main(config):
 
     if config["seed"] is not None:
         torch.manual_seed(config["seed"])
+        random.seed(config["seed"])
+        np.random.seed(config["seed"])
 
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and config["gpu"] != "-1") else "cpu"
@@ -487,7 +490,7 @@ def main(config):
 
         # evaluate if first or last epoch or at specified interval
         if ((epoch == config["epochs"]) or (epoch == start_epoch + 1) or (epoch % config["val_interval"] == 0)):
-            aggr_metrics_val, best_metrics, best_value, predictions, targets = validate(
+            aggr_metrics_val, best_metrics, best_value = validate(
                 val_evaluator,
                 tensorboard_writer,
                 config,
@@ -495,7 +498,7 @@ def main(config):
                 best_value,
                 epoch,
                 require_padding=require_padding,
-                keep_predictions=True,
+                # keep_predictions=True,
                 need_attn_weights=need_attn_weights,
                 plot=(epoch != start_epoch + 1) and (epoch != config["epochs"]) and config["plot_accuracy"]
             )
@@ -503,7 +506,7 @@ def main(config):
             metrics.append(list(metrics_values))
             val_epochs.append(epoch)
             val_rmses.append(aggr_metrics_val['loss'] ** 0.5)
-            all_val_preds.append(predictions)
+            # all_val_preds.append(predictions)
 
         utils.save_model(
             os.path.join(config["save_dir"], "model_{}.pth".format(mark)),
@@ -557,19 +560,19 @@ def main(config):
 
         # predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
 
-    # Evaluate each epoch's predictions, and the average prediction
-    all_val_preds = torch.from_numpy(np.stack(all_val_preds, axis=0))  # [epoch, val_examples]
-    all_val_preds = all_val_preds[all_val_preds.shape[0]//2:, :]  # get only the later part of trained models
-    targets = torch.from_numpy(targets.flatten())  # [val_examples]
-    ensemble_preds = torch.mean(all_val_preds, dim=0)
-    epoch_losses = []
-    for i in range(all_val_preds.shape[0]):
-        epoch_losses.append(loss_module(all_val_preds[i], targets).mean().item())
-    print("===============  Ensemble test =================")
-    print("Epoch losses", epoch_losses)
-    print("Best epoch loss", min(epoch_losses))
-    print("Ensembled pred loss", loss_module(ensemble_preds, targets).mean().item())
-    print("=============================================")
+    # # Evaluate each epoch's predictions, and the average prediction
+    # all_val_preds = torch.from_numpy(np.stack(all_val_preds, axis=0))  # [epoch, val_examples]
+    # all_val_preds = all_val_preds[all_val_preds.shape[0]//2:, :]  # get only the later part of trained models
+    # targets = torch.from_numpy(targets.flatten())  # [val_examples]
+    # ensemble_preds = torch.mean(all_val_preds, dim=0)
+    # epoch_losses = []
+    # for i in range(all_val_preds.shape[0]):
+    #     epoch_losses.append(loss_module(all_val_preds[i], targets).mean().item())
+    # print("===============  Ensemble test =================")
+    # print("Epoch losses", epoch_losses)
+    # print("Best epoch loss", min(epoch_losses))
+    # print("Ensembled pred loss", loss_module(ensemble_preds, targets).mean().item())
+    # print("=============================================")
 
     # Export evolution of metrics over epochs
     header = metrics_names

@@ -40,7 +40,7 @@ class Options(object):
                                  help='Number of processes for data loading/preprocessing. By default, equals num. of available cores.')
         self.parser.add_argument('--num_workers', type=int, default=0,
                                  help='dataloader threads. 0 for single-thread.')
-        self.parser.add_argument('--seed',
+        self.parser.add_argument('--seed', type=int,
                                  help='Seed used for splitting sets. None by default, set to an integer for reproducibility')
 
         # Dataset

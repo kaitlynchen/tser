@@ -177,7 +177,8 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         super(TransformerBatchNormEncoderLayer, self).__setstate__(state)
 
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
-                src_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+                src_key_padding_mask: Optional[Tensor] = None,
+                **kwargs) -> Tensor:  # modified https://stackoverflow.com/questions/77078717/typeerror-transformerbatchnormencoderlayer-forward-got-an-unexpected-keyword
         r"""Pass the input through the encoder layer.
 
         Args:
@@ -287,7 +288,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         else:
             self.pos_enc = get_pos_encoder(pos_encoding)(d_model, dropout=dropout * (1.0 - freeze), max_len=max_len)
             self.output_layer = self.build_output_module(d_model, max_len, num_classes)
-        
+
         # Add a class token
         self.class_token = nn.Parameter(torch.zeros(1, 1, feat_dim))
 
@@ -335,8 +336,10 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         inp = X.permute(1, 0, 2)
         inp = self.project_inp(inp) * math.sqrt(self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
-        output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
+        print("Before encoder", inp.shape)
 
+        output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
+        print("After enc", output.shape)
         if self.include_cls_token:
             # Classifier "token" as used by standard language architectures
             output = output[:, 0]
@@ -345,9 +348,9 @@ class TSTransformerEncoderClassiregressor(nn.Module):
             output = output.permute(1, 0, 2)  # (batch_size, seq_length, d_model)
             output = self.dropout1(output)
 
-        output = output * padding_masks.unsqueeze(-1) # zero-out padding embeddings          
+        output = output * padding_masks.unsqueeze(-1) # zero-out padding embeddings
         output = output.reshape(output.shape[0], -1) # (batch_size, seq_length * d_model)
 
         output = self.output_layer(output)  # (batch_size, num_classes)
-
+        print("final output", output.shape)
         return output

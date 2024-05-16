@@ -2,6 +2,7 @@ from typing import Optional, Any
 import math
 
 import torch
+import torch.nn as nn
 import numpy as np
 import copy
 from torch import nn, Tensor
@@ -29,7 +30,7 @@ def model_factory(config, data):
 
     if (task == "imputation") or (task == "transduction"):
         if config['model'] == 'climax_smooth':
-            return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'], 
+            return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'],
                               d_ff=config['dim_feedforward'], dropout=config['dropout'],
                               activation=config['activation'], n_layers=config['num_layers'])
     if (task == "classification") or (task == "regression"):
@@ -39,10 +40,23 @@ def model_factory(config, data):
         if config['model'] == 'climax_smooth':
             return ClimaX(list([feat_dim]), img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
                           stride=config['stride'], embed_dim=config['d_model'], depth=config['num_layers'], decoder_depth=config['num_decoder_layers'],
-                          num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'], num_classes=num_labels, freeze=config['freeze'])
+                          num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'],
+                          drop_rate=config['dropout'],
+                          activation=config['activation'],
+                          norm=config['normalization_layer'],
+                          num_classes=num_labels, freeze=config['freeze'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
-    
+
+
+def _get_activation_fn(activation):
+    if activation == "relu":
+        return F.relu
+    elif activation == "gelu":
+        return F.gelu
+    raise ValueError(
+        "activation should be relu/gelu, not {}".format(activation))
+
 class ClimaX(nn.Module):
     """Implements the ClimaX model as described in the paper,
     https://arxiv.org/abs/2301.10343
@@ -58,6 +72,8 @@ class ClimaX(nn.Module):
         mlp_ratio (float): ratio of mlp hidden dimension to embedding dimension
         drop_path (float): stochastic depth rate
         drop_rate (float): dropout rate
+        norm: BatchNorm or LayerNorm
+        activation:
     """
 
     def __init__(
@@ -77,6 +93,8 @@ class ClimaX(nn.Module):
         mlp_ratio=4.0,
         drop_path=0.1,
         drop_rate=0.1,
+        norm='BatchNorm',
+        activation='gelu'
     ):
         super().__init__()
 
@@ -89,12 +107,17 @@ class ClimaX(nn.Module):
 
         # variable embedding to denote which variable each token belongs to
         # helps in aggregating variables
-        self.var_embed = self.create_var_embedding(embed_dim)
-        self.embed_layer = nn.Linear(patch_size, embed_dim)
 
-        # variable aggregation: a learnable query and a single-layer cross attention
-        self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
-        self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.var_aggregation = False
+        if self.var_aggregation:
+            self.embed_layer = nn.Linear(patch_size, embed_dim)
+
+            # variable aggregation: a learnable query and a single-layer cross attention
+            self.var_embed = self.create_var_embedding(embed_dim)
+            self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+            self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        else:
+            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim)  # each patch has patch_size*num_variables elements
 
         # positional embedding
         self.pos_embed = nn.Parameter(torch.zeros(int((max_seq_len - patch_size) / stride + 1), embed_dim), requires_grad=True)
@@ -114,54 +137,70 @@ class ClimaX(nn.Module):
         # ViT backbone
         self.pos_drop = nn.Dropout(p=drop_rate)
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]  # stochastic depth decay rule
-        self.blocks = nn.ModuleList(
-            [
-                Block(
-                    embed_dim,
-                    num_heads,
-                    mlp_ratio,
-                    qkv_bias=True,
-                    drop_path=dpr[i],
-                    norm_layer=nn.LayerNorm,
-                    drop=drop_rate,
-                )
-                for i in range(depth)
-            ]
-        )
+        # if norm == 'BatchNorm':
+        #     norm_layer = nn.BatchNorm1d
+        # elif norm == 'LayerNorm':
+        #     norm_layer = nn.LayerNorm
+        # else:
+        #     raise ValueError("Unsupported norm layer")
+        # activation = _get_activation_fn(activation)
+        # self.blocks = nn.ModuleList(
+        #     [
+        #         Block(
+        #             embed_dim,
+        #             num_heads,
+        #             mlp_ratio,
+        #             qkv_bias=True,
+        #             drop_path=dpr[i],
+        #             norm_layer=norm_layer,  # @joshuafan customized to allow different normalization layers
+        #             attn_drop=drop_rate,  # @joshuafan changed: newest timm version does not have 'drop' parameter, only 'attn_drop' and 'proj_drop'
+        #             proj_drop=drop_rate
+        #         )
+        #         for i in range(depth)
+        #     ]
+        # )
         # self.norm = nn.LayerNorm(embed_dim // 2)
 
         # --------------------------------------------------------------------------
 
-        # prediction head
-        self.head = nn.ModuleList()
-        for _ in range(decoder_depth):
-            self.head.append(nn.Linear(embed_dim, embed_dim))
-            self.head.append(nn.GELU())
-        self.head.append(nn.Linear(embed_dim, embed_dim // 2))
-        self.head = nn.Sequential(*self.head)
+        # # prediction head
+        # self.head = nn.ModuleList()
+        # for _ in range(decoder_depth):
+        #     self.head.append(nn.Linear(embed_dim, embed_dim))
+        #     self.head.append(nn.GELU())
+        # self.head.append(nn.Linear(embed_dim, embed_dim // 2))
+        # self.head = nn.Sequential(*self.head)
 
         encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze))
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
-        self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
+        # self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
+
+        self.act = _get_activation_fn(activation)
+        self.dropout1 = nn.Dropout(p=drop_rate)
 
         # --------------------------------------------------------------------------
 
         self.initialize_weights()
 
         # final linear layer
-        self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
+        # self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
+        self.output_layer = nn.Linear(embed_dim * int((max_seq_len - patch_size) / stride + 1), num_classes)
 
     def initialize_weights(self):
-        # initialize pos_emb and var_emb
-        pos_embed = get_1d_sincos_pos_embed_from_grid(
-            self.pos_embed.shape[-1],
-            np.arange(int((self.max_len - self.patch_size) / self.stride + 1))
-        )
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
+        # # TODO TODO Try removing this!
+        # # initialize pos_emb and var_emb with sinusoidal values
+        # pos_embed = get_1d_sincos_pos_embed_from_grid(
+        #     self.pos_embed.shape[-1],
+        #     np.arange(int((self.max_len - self.patch_size) / self.stride + 1))
+        # )
+        # self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
 
-        var_embed = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
-        self.var_embed.data.copy_(torch.from_numpy(var_embed).float())
+        # Method from TST: uniform initialization
+        nn.init.uniform_(self.pos_embed, -0.02, 0.02)
+
+        # var_embed = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
+        # self.var_embed.data.copy_(torch.from_numpy(var_embed).float())
 
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
@@ -191,7 +230,7 @@ class ClimaX(nn.Module):
         var_query = self.var_query.repeat_interleave(x.shape[0], dim=0)
         x, _ = self.var_agg(var_query, x, x)  # BxL, D
         # query, key, value
-        
+
         x = x.squeeze()
 
         x = x.unflatten(dim=0, sizes=(b, l))  # B, L, D
@@ -208,44 +247,56 @@ class ClimaX(nn.Module):
     def forward_encoder(self, x: torch.Tensor):
         # x: `[B, T, V]` shape.
 
-        # tokenize each variable separately
-        x = x.permute(0, 2, 1) # B, V, T
-        x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, L, P
-        x = self.embed_layer(x)
+        if self.var_aggregation:
+            # tokenize each variable separately
+            x = x.permute(0, 2, 1) # B, V, T
+            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, L, D
+            x = self.embed_layer(x)
 
-        # add variable embedding
-        var_embed = self.var_embed # V, D
-        var_embed = var_embed.unsqueeze(0).unsqueeze(2) # 1, V, 1, D
-        x = x + var_embed  # B, V, L, D
+            # add variable embedding
+            var_embed = self.var_embed # V, D
+            var_embed = var_embed.unsqueeze(0).unsqueeze(2) # 1, V, 1, D
+            x = x + var_embed  # B, V, L, D
 
-        # variable aggregation
-        x = self.aggregate_variables(x)  # B, L, D
+            # variable aggregation
+            x = self.aggregate_variables(x)  # B, L, D
 
-        # add pos embedding
+        else:
+            x = x.permute(0, 2, 1) # B, V, T
+            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, num_patches, patch_size
+            x = x.permute(0, 2, 1, 3)  # B, num_patches, V, patch_size
+            x = x.reshape((x.shape[0], x.shape[1], -1))  # B, num_patches, V*patch_size
+            x = self.embed_layer(x)
+
+        # Add pos embedding. At this point, X should be [batch, seq_len, embed_dim],
+        # and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
         x = x + self.pos_embed
-
         x = self.pos_drop(x)
+        x = x.permute((1, 0, 2))  # Change to [seq_len, batch, embed_dim] to align with Pytorch convention
 
         # apply Transformer blocks
         # for blk in self.blocks:
         #     x = blk(x)
-        x, attn_weights = self.transformer_encoder(x)
-        x = self.head_linear(x)
+        x, attn_weights = self.transformer_encoder(x)  # after encoder. x: [seq_len, batch, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
+        # x = self.head_linear(x)
         # x = self.norm(x)
 
+        x = x.permute((1, 0, 2))  # Permute back to [batch, seq_len, embed_dim]
         return x, attn_weights
 
     def forward(self, x):
         """Forward pass through the model.
 
         Args:
-            x: `[batch_size, seq_length, feat_dim]` shape. 
+            x: `[batch_size, seq_length, feat_dim]` shape.
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
         preds, attn_weights = self.forward_encoder(x)
+        preds = self.act(preds)
+        preds = self.dropout1(preds)
         preds = preds.reshape(preds.shape[0], -1)
-        preds = self.output_layer(preds)       
+        preds = self.output_layer(preds)
 
         return preds, attn_weights
 
@@ -284,7 +335,7 @@ class TransformerEncoder(nn.modules.Module):
         r"""Pass the input through the encoder layers in turn.
 
         Args:
-            src: the sequence to the encoder (required).
+            src: the sequence to the encoder (required). Must be of shape [TIME, BATCH, EMBED_DIM]
             mask: the mask for the src sequence (optional).
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
@@ -366,11 +417,11 @@ class TransformerEncoder(nn.modules.Module):
 
         attn_weights_layers = None
         for mod in self.layers:
-            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)
+            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)  # output: [seq_len, batch, embed_dim], attn_weights: [batch, n_heads, seq_len, seq_len]
             if attn_weights_layers is None:
               attn_weights_layers = attn_weights
             else:
-              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights))
+              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights), dim=1)  # attn_weights: [batch, n_layers*n_heads, seq_len, seq_len]
 
         if convert_to_nested:
             output = output.to_padded_tensor(0.)
@@ -379,7 +430,7 @@ class TransformerEncoder(nn.modules.Module):
             output = self.norm(output)
 
         return output, attn_weights_layers
-    
+
 class TransformerBatchNormEncoderLayer(nn.modules.Module):
     r"""This transformer encoder layer block is made up of self-attn and feedforward network.
     It differs from TransformerEncoderLayer in torch/nn/modules/transformer.py in that it replaces LayerNorm
@@ -414,7 +465,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         r"""Pass the input through the encoder layer.
 
         Args:
-            src: the sequence to the encoder layer (required).
+            src: the sequence to the encoder layer (required). Shape: [seq_len, batch, embed_dim]
             src_mask: the mask for the src sequence (optional).
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
@@ -422,7 +473,8 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             see the docs in Transformer class.
         """
         src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                              key_padding_mask=src_key_padding_mask, average_attn_weights=False)
+                              key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [seq_len, batch_size, d_model], attn_output_weights: [batch, n_heads, seq_len, seq_len]
+
         src = src + self.dropout1(src2)  # (seq_len, batch_size, d_model)
         src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
         src = self.norm1(src)
