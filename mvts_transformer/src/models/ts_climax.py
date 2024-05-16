@@ -44,7 +44,8 @@ def model_factory(config, data):
                           drop_rate=config['dropout'],
                           activation=config['activation'],
                           norm=config['normalization_layer'],
-                          num_classes=num_labels, freeze=config['freeze'])
+                          num_classes=num_labels, freeze=config['freeze'],
+                          agg_vars=config['agg_vars'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -94,7 +95,8 @@ class ClimaX(nn.Module):
         drop_path=0.1,
         drop_rate=0.1,
         norm='BatchNorm',
-        activation='gelu'
+        activation='gelu',
+        agg_vars=False
     ):
         super().__init__()
 
@@ -103,13 +105,14 @@ class ClimaX(nn.Module):
         self.stride = stride
         self.default_vars = default_vars
         self.max_len = max_seq_len
+        self.agg_vars = agg_vars
+
         # variable tokenization: separate embedding layer for each input variable
 
         # variable embedding to denote which variable each token belongs to
         # helps in aggregating variables
 
-        self.var_aggregation = False
-        if self.var_aggregation:
+        if self.agg_vars:
             self.embed_layer = nn.Linear(patch_size, embed_dim)
 
             # variable aggregation: a learnable query and a single-layer cross attention
@@ -247,7 +250,7 @@ class ClimaX(nn.Module):
     def forward_encoder(self, x: torch.Tensor):
         # x: `[B, T, V]` shape.
 
-        if self.var_aggregation:
+        if self.agg_vars:
             # tokenize each variable separately
             x = x.permute(0, 2, 1) # B, V, T
             x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, L, D

@@ -590,7 +590,9 @@ class SupervisedRunner(BaseRunner):
             supervised_loss += total_loss.cpu().detach().numpy()
 
             if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
-                if epoch_num == config['num_epochs'] and i == 0:  # epoch_num is 1-based
+
+                # Plot example attention matrices
+                if epoch_num == config['epochs'] and i == 0:  # epoch_num is 1-based
                     n_rows = 10  # Examples to plot
                     n_cols = attn_weights_layers.shape[1]//4  # Heads to plot
                     fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))

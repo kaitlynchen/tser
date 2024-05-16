@@ -149,6 +149,8 @@ class Options(object):
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
+        self.parser.add_argument('--agg_vars', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, creates separate tokens for individual variables, and uses cross-variable attention to aggregate. Otherwise, lumps all variables together into a single token.""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--max_seq_len', type=int,
