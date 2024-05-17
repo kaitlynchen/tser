@@ -2,6 +2,7 @@ from typing import Optional, Any
 import math
 
 import torch
+import torch.nn as nn
 import numpy as np
 import copy
 from torch import nn, Tensor
@@ -29,7 +30,7 @@ def model_factory(config, data):
 
     if (task == "imputation") or (task == "transduction"):
         if config['model'] == 'climax_smooth':
-            return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'], 
+            return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'],
                               d_ff=config['dim_feedforward'], dropout=config['dropout'],
                               activation=config['activation'], n_layers=config['num_layers'])
     if (task == "classification") or (task == "regression"):
@@ -37,12 +38,29 @@ def model_factory(config, data):
         num_labels = len(
             data.class_names) if task == "classification" else data.labels_df.shape[1]
         if config['model'] == 'climax_smooth':
-            return ClimaX(list([feat_dim]), img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
+            return ClimaX(list([feat_dim]), device=config['device'], img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
                           stride=config['stride'], embed_dim=config['d_model'], depth=config['num_layers'], decoder_depth=config['num_decoder_layers'],
-                          num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'], num_classes=num_labels, freeze=config['freeze'])
+                          num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'],
+                          drop_rate=config['dropout'],
+                          activation=config['activation'],
+                          norm=config['normalization_layer'],
+                          num_classes=num_labels, freeze=config['freeze'],
+                          pos_encoding=config['pos_encoding'],
+                          relative_pos_encoding=config['relative_pos_encoding'],
+                          agg_vars=config['agg_vars'],
+                          local_mask=config['local_mask'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
-    
+
+
+def _get_activation_fn(activation):
+    if activation == "relu":
+        return F.relu
+    elif activation == "gelu":
+        return F.gelu
+    raise ValueError(
+        "activation should be relu/gelu, not {}".format(activation))
+
 class ClimaX(nn.Module):
     """Implements the ClimaX model as described in the paper,
     https://arxiv.org/abs/2301.10343
@@ -58,11 +76,18 @@ class ClimaX(nn.Module):
         mlp_ratio (float): ratio of mlp hidden dimension to embedding dimension
         drop_path (float): stochastic depth rate
         drop_rate (float): dropout rate
+        norm: BatchNorm or LayerNorm
+        activation: gelu or relu
+        pos_encoding: ABSOLUTE positional encoding method (fixed, learnable, learnable_sin_init, none)
+        relative_pos_encoding: RELATIVE positional encoding method (erpe, alibi, none)
+        agg_vars: whether to use cross-variable attention (if False, lumps all variables into one token)
+        local_mask: if set to a positive number, only allow attention between tokens that are at most this distance apart. If set to -1, no restriction.
     """
 
     def __init__(
         self,
         default_vars,
+        device,
         img_size=[32, 64],
         max_seq_len=1024,
         patch_size=2,
@@ -77,6 +102,12 @@ class ClimaX(nn.Module):
         mlp_ratio=4.0,
         drop_path=0.1,
         drop_rate=0.1,
+        norm='BatchNorm',
+        activation='gelu',
+        pos_encoding='learnable_init_sin',
+        relative_pos_encoding='none',
+        agg_vars=False,
+        local_mask=-1,
     ):
         super().__init__()
 
@@ -85,83 +116,176 @@ class ClimaX(nn.Module):
         self.stride = stride
         self.default_vars = default_vars
         self.max_len = max_seq_len
+        self.pos_encoding = pos_encoding
+        self.relative_pos_encoding = relative_pos_encoding
+        self.agg_vars = agg_vars
+        self.device = device
+        self.local_mask = local_mask
+
         # variable tokenization: separate embedding layer for each input variable
 
         # variable embedding to denote which variable each token belongs to
         # helps in aggregating variables
-        self.var_embed = self.create_var_embedding(embed_dim)
-        self.embed_layer = nn.Linear(patch_size, embed_dim)
 
-        # variable aggregation: a learnable query and a single-layer cross attention
-        self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
-        self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        if self.agg_vars:
+            self.embed_layer = nn.Linear(patch_size, embed_dim)
+
+            # variable aggregation: a learnable query and a single-layer cross attention
+            self.var_embed = self.create_var_embedding(embed_dim)
+            self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+            self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        else:
+            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim)  # each patch has patch_size*num_variables elements
+
+        # Number of tokens (patches) in the time dimension
+        seq_len = int((max_seq_len - patch_size) / stride + 1)
+        self.seq_len = seq_len
 
         # positional embedding
-        self.pos_embed = nn.Parameter(torch.zeros(int((max_seq_len - patch_size) / stride + 1), embed_dim), requires_grad=True)
-
-        # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * patch_size - 1), num_heads))  # 2*Wt-1, nH
-
-        # get pair-wise relative position index for each token inside the window
-        coords_t = torch.arange(patch_size)
-        relative_coords = coords_t[:, None] - coords_t[None, :]  # Wt, Wt
-        relative_coords += patch_size - 1  # shift to start from 0
-        relative_position_index = relative_coords
-        self.register_buffer("relative_position_index", relative_position_index)
+        self.setup_pos_embed(pos_encoding, relative_pos_encoding, seq_len, embed_dim, num_heads)
 
         # --------------------------------------------------------------------------
 
         # ViT backbone
         self.pos_drop = nn.Dropout(p=drop_rate)
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]  # stochastic depth decay rule
-        self.blocks = nn.ModuleList(
-            [
-                Block(
-                    embed_dim,
-                    num_heads,
-                    mlp_ratio,
-                    qkv_bias=True,
-                    drop_path=dpr[i],
-                    norm_layer=nn.LayerNorm,
-                    drop=drop_rate,
-                )
-                for i in range(depth)
-            ]
-        )
+
+        # THIS IS NOT USED CURRENTLY
+        # if norm == 'BatchNorm':
+        #     norm_layer = nn.BatchNorm1d
+        # elif norm == 'LayerNorm':
+        #     norm_layer = nn.LayerNorm
+        # else:
+        #     raise ValueError("Unsupported norm layer")
+        # activation = _get_activation_fn(activation)
+        # self.blocks = nn.ModuleList(
+        #     [
+        #         Block(
+        #             embed_dim,
+        #             num_heads,
+        #             mlp_ratio,
+        #             qkv_bias=True,
+        #             drop_path=dpr[i],
+        #             norm_layer=norm_layer,  # @joshuafan customized to allow different normalization layers
+        #             attn_drop=drop_rate,  # @joshuafan changed: newest timm version does not have 'drop' parameter, only 'attn_drop' and 'proj_drop'
+        #             proj_drop=drop_rate
+        #         )
+        #         for i in range(depth)
+        #     ]
+        # )
         # self.norm = nn.LayerNorm(embed_dim // 2)
 
         # --------------------------------------------------------------------------
 
-        # prediction head
-        self.head = nn.ModuleList()
-        for _ in range(decoder_depth):
-            self.head.append(nn.Linear(embed_dim, embed_dim))
-            self.head.append(nn.GELU())
-        self.head.append(nn.Linear(embed_dim, embed_dim // 2))
-        self.head = nn.Sequential(*self.head)
+        # # prediction head
+        # self.head = nn.ModuleList()
+        # for _ in range(decoder_depth):
+        #     self.head.append(nn.Linear(embed_dim, embed_dim))
+        #     self.head.append(nn.GELU())
+        # self.head.append(nn.Linear(embed_dim, embed_dim // 2))
+        # self.head = nn.Sequential(*self.head)
 
         encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze))
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
-        self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
+        # self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
+
+        self.act = _get_activation_fn(activation)
+        self.dropout1 = nn.Dropout(p=drop_rate)
 
         # --------------------------------------------------------------------------
 
         self.initialize_weights()
 
         # final linear layer
-        self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
+        # self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
+        self.output_layer = nn.Linear(embed_dim * int((max_seq_len - patch_size) / stride + 1), num_classes)
+
+        # Local mask. Restrict which pairs of timesteps can pay attention to each other
+        if self.local_mask >= 0:
+
+            # Note that if relative positional encoding is being used, this is redundant with "relative_coords"
+            indices = torch.arange(0, int((max_seq_len - patch_size) / stride + 1))
+            distance_matrix = torch.abs(indices.reshape((1, -1)) - indices.reshape((-1, 1)))  # [seq_len, seq_len]
+            self.invalid_mask = torch.zeros((len(indices), len(indices))).bool()  # [seq_len, seq_len]
+            self.invalid_mask[distance_matrix > self.local_mask] = True
+            print(self.invalid_mask)
+        else:
+            self.invalid_mask = None
+
+
+    def setup_pos_embed(self, pos_encoding, relative_pos_encoding, seq_len, emb_dim, num_heads):
+
+        # For absolute positional encodings, it is a matrix of size [seq_len, emb_dim]
+        if pos_encoding == "learnable":
+            # Simple learnable vector for each position
+            self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
+            nn.init.uniform_(self.pos_embed, -0.02, 0.02)
+        elif pos_encoding == "learnable_sin_init":
+            # Simple learnable vector for each position, initialized with sinusoidal features
+            self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
+            pos_embed = get_1d_sincos_pos_embed_from_grid(
+                self.pos_embed.shape[-1],
+                np.arange(int((self.max_len - self.patch_size) / self.stride + 1))
+            )
+            self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
+        elif pos_encoding == "fixed":
+            # FIXED sinusoidal vector for each position
+            # Code from Zerveas TST repo, https://github.com/gzerveas/mvts_transformer/blob/master/src/models/ts_transformer.py#L65
+            scale_factor = 1.0  # Hardcode default value
+            pe = torch.zeros(seq_len, emb_dim)  # positional encoding
+            position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, emb_dim, 2).float() * (-math.log(10000.0) / emb_dim))
+            pe[:, 0::2] = torch.sin(position * div_term)
+            pe[:, 1::2] = torch.cos(position * div_term)
+            self.pos_embed = scale_factor * pe.unsqueeze(0).transpose(0, 1)
+            self.register_buffer('pos_embed', self.pos_embed)  # this stores the variable in the state_dict (used for non-trainable variables)
+        elif pos_encoding == "none":
+            self.pos_embed = None
+        else:
+            raise ValueError("Invalid value of absolute_pos_embed (must be: learnable, learnable_sin_init, fixed, none)")
+
+        if relative_pos_encoding == "erpe":
+            # eRPE: learnable bias for each relative offset between timesteps
+            # define a parameter table of relative position bias
+            self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads))  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+
+            # get pair-wise relative position index for each token inside the window
+            coords_t = torch.arange(seq_len)
+            self.relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
+            self.relative_coords += seq_len - 1  # shift to start from 0
+            self.register_buffer("relative_coords", self.relative_coords)
+        elif relative_pos_encoding == "alibi":
+            # FIXED bias for relative offsets. Each head has a different function.
+            # Code from https://github.com/ofirpress/attention_with_linear_biases/issues/5
+
+            # get pair-wise relative position index for each token inside the window
+            coords_t = torch.arange(seq_len)
+            self.relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
+            self.register_buffer("relative_coords", self.relative_coords)
+
+            def get_slopes(n):
+                def get_slopes_power_of_2(n):
+                    start = (2**(-2**-(math.log2(n)-3)))
+                    ratio = start
+                    return [start*ratio**i for i in range(n)]
+
+                if math.log2(n).is_integer():
+                    return get_slopes_power_of_2(n)                   #In the paper, we only train models that have 2^a heads for some a. This function has
+                else:                                                 #some good properties that only occur when the input is a power of 2. To maintain that even
+                    closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround.
+                    return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
+
+            self.slopes = torch.Tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
+            self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [num_heads, 1, 1] * [seq_len, seq_len] -> [num_heads, seq_len, seq_len]
+            self.alibi = self.alibi.view(1, num_heads, seq_len, seq_len)  # [1, num_heads, seq_len, seq_len]
+
 
     def initialize_weights(self):
-        # initialize pos_emb and var_emb
-        pos_embed = get_1d_sincos_pos_embed_from_grid(
-            self.pos_embed.shape[-1],
-            np.arange(int((self.max_len - self.patch_size) / self.stride + 1))
-        )
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
+        # NOTE: pos_embed initialization is moved to setup_pos_embed
 
-        var_embed = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
-        self.var_embed.data.copy_(torch.from_numpy(var_embed).float())
+        # var_embed = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
+        # self.var_embed.data.copy_(torch.from_numpy(var_embed).float())
 
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
@@ -191,62 +315,86 @@ class ClimaX(nn.Module):
         var_query = self.var_query.repeat_interleave(x.shape[0], dim=0)
         x, _ = self.var_agg(var_query, x, x)  # BxL, D
         # query, key, value
-        
+
         x = x.squeeze()
 
         x = x.unflatten(dim=0, sizes=(b, l))  # B, L, D
-
-        # TODO: add relative position bias
-        # relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(self.patch_size, self.patch_size, -1)  # Wt, Wt, nH
-        # relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wt, Wt
-        # print("x shape: ", x.shape)
-        # print("relative_position_bias shape: ", relative_position_bias.shape)
-        # x = x + relative_position_bias.unsqueeze(0)
 
         return x
 
     def forward_encoder(self, x: torch.Tensor):
         # x: `[B, T, V]` shape.
 
-        # tokenize each variable separately
-        x = x.permute(0, 2, 1) # B, V, T
-        x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, L, P
-        x = self.embed_layer(x)
+        if self.agg_vars:
+            # tokenize each variable separately
+            x = x.permute(0, 2, 1) # B, V, T
+            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, L, D
+            x = self.embed_layer(x)
 
-        # add variable embedding
-        var_embed = self.var_embed # V, D
-        var_embed = var_embed.unsqueeze(0).unsqueeze(2) # 1, V, 1, D
-        x = x + var_embed  # B, V, L, D
+            # add variable embedding
+            var_embed = self.var_embed # V, D
+            var_embed = var_embed.unsqueeze(0).unsqueeze(2) # 1, V, 1, D
+            x = x + var_embed  # B, V, L, D
 
-        # variable aggregation
-        x = self.aggregate_variables(x)  # B, L, D
+            # variable aggregation
+            x = self.aggregate_variables(x)  # B, L, D
 
-        # add pos embedding
+        else:
+            x = x.permute(0, 2, 1) # B, V, T
+            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, num_patches, patch_size
+            x = x.permute(0, 2, 1, 3)  # B, num_patches, V, patch_size
+            x = x.reshape((x.shape[0], x.shape[1], -1))  # B, num_patches, V*patch_size
+            x = self.embed_layer(x)
+
+        # Add ABSOLUTE pos embedding if using.
+        # At this point, X should be [batch, seq_len, embed_dim], and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
         x = x + self.pos_embed
-
         x = self.pos_drop(x)
+        x = x.permute((1, 0, 2))  # Change to [seq_len, batch, embed_dim] to align with Pytorch convention
 
-        # apply Transformer blocks
+        # apply Transformer blocks. NOT USED ANYMORE
         # for blk in self.blocks:
         #     x = blk(x)
-        x, attn_weights = self.transformer_encoder(x)
-        x = self.head_linear(x)
+
+        # Construct mask for relative positional encoding.
+        offset_mask = None
+        if self.relative_pos_encoding == "erpe":
+            # To construct relative embedding matrix, flatten the "offset matrix", and use these as indices into the relative bias table.
+            # Then reshape to construct the real offset matrix (same shape as attention matrix)
+            num_heads = self.relative_bias_table.shape[1]
+            flattened_indices = self.relative_coords.flatten()
+            offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)
+        elif self.relative_pos_encoding == "alibi":
+            offset_mask = self.alibi.repeat((x.shape[0], 1, 1))  # Repeat along the batch dimension, as PyTorch expects mask to be [batch*num_heads, seq_len, seq_len]
+
+        # If some positions are not allowed to attend, either use the Boolean mask, or if combining with
+        # relative position encoding, set those mask entries to -inf
+        if self.invalid_mask is not None:
+            if offset_mask is None:
+                offset_mask = self.invalid_mask  # True at positions that are NOT ALLOWED to attend (too far)
+            else:
+                offset_mask[self.invalid_mask] = float("-inf")
+
+        x, attn_weights = self.transformer_encoder(x, mask=offset_mask)  # after encoder. x: [seq_len, batch, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
+        # x = self.head_linear(x)
         # x = self.norm(x)
 
+        x = x.permute((1, 0, 2))  # Permute back to [batch, seq_len, embed_dim]
         return x, attn_weights
 
     def forward(self, x):
         """Forward pass through the model.
 
         Args:
-            x: `[batch_size, seq_length, feat_dim]` shape. 
+            x: `[batch_size, seq_length, feat_dim]` shape.
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
         preds, attn_weights = self.forward_encoder(x)
+        preds = self.act(preds)
+        preds = self.dropout1(preds)
         preds = preds.reshape(preds.shape[0], -1)
-        preds = self.output_layer(preds)       
-
+        preds = self.output_layer(preds)
         return preds, attn_weights
 
 def _get_clones(module, N):
@@ -284,7 +432,7 @@ class TransformerEncoder(nn.modules.Module):
         r"""Pass the input through the encoder layers in turn.
 
         Args:
-            src: the sequence to the encoder (required).
+            src: the sequence to the encoder (required). Must be of shape [TIME, BATCH, EMBED_DIM]
             mask: the mask for the src sequence (optional).
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
@@ -366,11 +514,11 @@ class TransformerEncoder(nn.modules.Module):
 
         attn_weights_layers = None
         for mod in self.layers:
-            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)
+            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)  # output: [seq_len, batch, embed_dim], attn_weights: [batch, num_heads, seq_len, seq_len]
             if attn_weights_layers is None:
               attn_weights_layers = attn_weights
             else:
-              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights))
+              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights), dim=1)  # attn_weights: [batch, n_layers*num_heads, seq_len, seq_len]
 
         if convert_to_nested:
             output = output.to_padded_tensor(0.)
@@ -379,7 +527,7 @@ class TransformerEncoder(nn.modules.Module):
             output = self.norm(output)
 
         return output, attn_weights_layers
-    
+
 class TransformerBatchNormEncoderLayer(nn.modules.Module):
     r"""This transformer encoder layer block is made up of self-attn and feedforward network.
     It differs from TransformerEncoderLayer in torch/nn/modules/transformer.py in that it replaces LayerNorm
@@ -414,7 +562,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         r"""Pass the input through the encoder layer.
 
         Args:
-            src: the sequence to the encoder layer (required).
+            src: the sequence to the encoder layer (required). Shape: [seq_len, batch, embed_dim]
             src_mask: the mask for the src sequence (optional).
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
@@ -422,7 +570,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             see the docs in Transformer class.
         """
         src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                              key_padding_mask=src_key_padding_mask, average_attn_weights=False)
+                              key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [seq_len, batch_size, d_model], attn_output_weights: [batch, num_heads, seq_len, seq_len]
         src = src + self.dropout1(src2)  # (seq_len, batch_size, d_model)
         src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
         src = self.norm1(src)

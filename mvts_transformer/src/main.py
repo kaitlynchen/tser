@@ -6,6 +6,7 @@ George Zerveas et al. A Transformer-based Framework for Multivariate Time Series
 Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD '21), August 14--18, 2021
 """
 
+import random
 from optimizers import get_optimizer
 from models.loss import get_loss_module
 from datasets.datasplit import split_dataset
@@ -54,10 +55,13 @@ def main(config):
 
     if config["seed"] is not None:
         torch.manual_seed(config["seed"])
+        random.seed(config["seed"])
+        np.random.seed(config["seed"])
 
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and config["gpu"] != "-1") else "cpu"
     )
+    config['device'] = device
     logger.info("Using device: {}".format(device))
     if device == "cuda":
         logger.info("Device index: {}".format(torch.cuda.current_device()))
@@ -413,7 +417,12 @@ def main(config):
     metrics.append(list(metrics_values))
 
     logger.info("Starting training...")
-    rmses = []
+    train_epochs = []
+    train_rmses = []
+    val_epochs = []
+    val_rmses = []
+    all_val_preds = []
+
 
     supervised_losses = []
     supervised_smoothness_losses = []
@@ -423,19 +432,20 @@ def main(config):
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
         if plot_losses:
-            aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss = trainer.train_epoch(epoch, keep_predictions=plot_losses, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
-            rmses.append(aggr_metrics_train["loss"] ** 0.5)
+            aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss = trainer.train_epoch(config, epoch, keep_predictions=plot_losses, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+            train_epochs.append(epoch)
+            train_rmses.append(aggr_metrics_train["loss"] ** 0.5)
             supervised_losses.append(supervised_loss)
             supervised_smoothness_losses.append(supervised_smoothness_loss)
         else:
-            aggr_metrics_train = trainer.train_epoch(epoch, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
-            rmses.append(aggr_metrics_train["loss"] ** 0.5)
+            aggr_metrics_train = trainer.train_epoch(config, epoch, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+            train_rmses.append(aggr_metrics_train["loss"] ** 0.5)
 
         if config["baseline"] is not None:
             # early prediction
             if epoch == config["epochs"]:
-                aggr_metrics_train, predictions = trainer.train_epoch(epoch, keep_predictions=True, need_attn_weights=need_attn_weights)
-                aggr_metrics_train, predictions, targets = trainer.train_epoch(epoch, keep_predictions=True, need_attn_weights=need_attn_weights)
+                aggr_metrics_train, predictions = trainer.train_epoch(config, epoch, keep_predictions=True, need_attn_weights=need_attn_weights)
+                aggr_metrics_train, predictions, targets = trainer.train_epoch(config, epoch, keep_predictions=True, need_attn_weights=need_attn_weights)
 
                 example = 1
                 dimension = 1
@@ -451,7 +461,7 @@ def main(config):
                 plt.ylabel("Feature values")
                 plt.xlabel("Time step")
                 plt.title("Forecast accuracy of autoregressive transformers")
-                plt.savefig("graphs/AppliancesEnergy/forecast_accuracy.png")
+                plt.savefig(os.path.join(config["plot_dir"], "forecast_accuracy.png"))
                 plt.close()
 
         epoch_runtime = time.time() - epoch_start_time
@@ -488,11 +498,15 @@ def main(config):
                 best_value,
                 epoch,
                 require_padding=require_padding,
+                # keep_predictions=True,
                 need_attn_weights=need_attn_weights,
                 plot=(epoch != start_epoch + 1) and (epoch != config["epochs"]) and config["plot_accuracy"]
             )
             metrics_names, metrics_values = zip(*aggr_metrics_val.items())
             metrics.append(list(metrics_values))
+            val_epochs.append(epoch)
+            val_rmses.append(aggr_metrics_val['loss'] ** 0.5)
+            # all_val_preds.append(predictions)
 
         utils.save_model(
             os.path.join(config["save_dir"], "model_{}.pth".format(mark)),
@@ -524,12 +538,13 @@ def main(config):
 
     # Plot training RMSEs
     if config["plot_accuracy"]:
-        plt.plot(rmses)
-        plt.legend(["Predictions", "Targets"])
+        plt.plot(train_epochs, train_rmses, label="Train")
+        plt.plot(val_epochs, val_rmses, label="Val")
         plt.ylabel("RMSE")
-        plt.xlabel("Time step")
+        plt.xlabel("Epoch")
+        plt.legend()
         plt.title("Training RMSEs per epoch")
-        plt.savefig("graphs/AppliancesEnergy/train_rmses.png")
+        plt.savefig(os.path.join(config["plot_dir"], "rmses.png"))
         plt.close()
 
     if plot_losses:
@@ -540,9 +555,25 @@ def main(config):
         plt.ylabel("RMSE")
         plt.xlabel("Epoch")
         plt.title("Training RMSEs per epoch")
-        plt.savefig("graphs/" + str(dataset) + "/supervised_loss.png")
+        plt.savefig(os.path.join(config["plot_dir"], "supervised_loss.png"))
         plt.close()
-    
+
+        # predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
+
+    # # Evaluate each epoch's predictions, and the average prediction
+    # all_val_preds = torch.from_numpy(np.stack(all_val_preds, axis=0))  # [epoch, val_examples]
+    # all_val_preds = all_val_preds[all_val_preds.shape[0]//2:, :]  # get only the later part of trained models
+    # targets = torch.from_numpy(targets.flatten())  # [val_examples]
+    # ensemble_preds = torch.mean(all_val_preds, dim=0)
+    # epoch_losses = []
+    # for i in range(all_val_preds.shape[0]):
+    #     epoch_losses.append(loss_module(all_val_preds[i], targets).mean().item())
+    # print("===============  Ensemble test =================")
+    # print("Epoch losses", epoch_losses)
+    # print("Best epoch loss", min(epoch_losses))
+    # print("Ensembled pred loss", loss_module(ensemble_preds, targets).mean().item())
+    # print("=============================================")
+
     # Export evolution of metrics over epochs
     header = metrics_names
     metrics_filepath = os.path.join(
@@ -559,7 +590,7 @@ def main(config):
         config["experiment_name"],
         best_metrics,
         aggr_metrics_val,
-        comment=config["comment"],
+        comment=config["comment"] + ".  COMMMAND: " + " ".join(sys.argv),
     )
 
     logger.info(

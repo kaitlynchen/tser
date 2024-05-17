@@ -40,9 +40,9 @@ class Options(object):
                                  help='Number of processes for data loading/preprocessing. By default, equals num. of available cores.')
         self.parser.add_argument('--num_workers', type=int, default=0,
                                  help='dataloader threads. 0 for single-thread.')
-        self.parser.add_argument('--seed',
+        self.parser.add_argument('--seed', type=int,
                                  help='Seed used for splitting sets. None by default, set to an integer for reproducibility')
-        
+
         # Dataset
         self.parser.add_argument('--limit_size', type=float, default=None,
                                  help="Limit  dataset to specified smaller random sample, e.g. for rapid debugging purposes. "
@@ -144,12 +144,15 @@ class Options(object):
         self.parser.add_argument('--plot_loss', action='store_true',
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
-
         # Model
         self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
+        self.parser.add_argument('--agg_vars', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, creates separate tokens for individual variables, and uses cross-variable attention to aggregate. Otherwise, lumps all variables together into a single token.""")
+        self.parser.add_argument('--local_mask', type=int, default=-1,
+                                 help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--max_seq_len', type=int,
@@ -157,7 +160,7 @@ class Options(object):
                                  If not provided, then the value defined inside the data class will be used.""")
         self.parser.add_argument('--data_window_len', type=int,
                                  help="""Used instead of the `max_seq_len`, when the data samples must be
-                                 segmented into windows. Determines maximum input sequence length 
+                                 segmented into windows. Determines maximum input sequence length
                                  (size of transformer layers).""")
         self.parser.add_argument('--d_model', type=int, default=64,
                                  help='Internal dimension of transformer embeddings')
@@ -171,8 +174,10 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable'}, default='fixed',
-                                 help='Internal dimension of transformer embeddings')
+        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_init_sin', 'none'}, default='fixed',
+                                 help='Method for ABSOLUTE positional encoding')
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'none'}, default='none',
+                                 help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',
                                  help='Activation to be used in transformer encoder')
         self.parser.add_argument('--normalization_layer', choices={'BatchNorm', 'LayerNorm'}, default='BatchNorm',
@@ -185,6 +190,18 @@ class Options(object):
                                  help='Number of time steps in each patch')
         self.parser.add_argument('--num_decoder_layers', type=int, default=2,
                                  help='Number of decoder layers')
+
+        # C-Mixup specific
+        self.parser.add_argument('--mixtype', type=str, default='random',
+                                 help="random or kde or erm or dtw")
+        self.parser.add_argument('--kde_bandwidth', type=float, default=1.0,
+                                 help="bandwidth")
+        self.parser.add_argument('--mix_alpha', type=float, default=2)
+        self.parser.add_argument('--kde_type', type=str, default='gaussian', help = 'gaussian or tophat')
+        self.parser.add_argument('--batch_type', default=0, type=int, help='1 for y batch and 2 for x batch and 3 for representation')
+        self.parser.add_argument('--show_process', type=int, default = 0,
+                                 help = 'show rmse and r^2 in the process')
+
 
     def parse(self):
         args = self.parser.parse_args()

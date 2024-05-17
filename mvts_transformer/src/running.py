@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import sklearn
 
-from utils import utils, analysis
+from utils import utils, analysis, visualization_utils
 from models.loss import l2_reg_loss
 from datasets.dataset import (
     ImputationDataset,
@@ -47,7 +47,7 @@ def pipeline_factory(config):
             return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
                            masking_ratio=config['proportion'], mode=config['mask_mode'],
                            distribution='early', exclude_feats=config['exclude_feats']),\
-                collate_unsuperv, UnsupervisedRunner        
+                collate_unsuperv, UnsupervisedRunner
         else:
             return partial(ImputationDataset, mean_mask_length=config['mean_mask_length'],
                            masking_ratio=config['masking_ratio'], mode=config['mask_mode'],
@@ -101,11 +101,12 @@ def setup(args):
         rand_suffix = "".join(random.choices(string.ascii_letters + string.digits, k=3))
         output_dir += "_" + formatted_timestamp + "_" + rand_suffix
     config["output_dir"] = output_dir
+    config["plot_dir"] = os.path.join(output_dir, "plots")
     config["save_dir"] = os.path.join(output_dir, "checkpoints")
     config["pred_dir"] = os.path.join(output_dir, "predictions")
     config["tensorboard_dir"] = os.path.join(output_dir, "tb_summaries")
     utils.create_dirs(
-        [config["save_dir"], config["pred_dir"], config["tensorboard_dir"]]
+        [config["plot_dir"], config["save_dir"], config["pred_dir"], config["tensorboard_dir"]]
     )
 
     # Save configuration as a (pretty) json file
@@ -262,7 +263,7 @@ def validate(
                 require_padding=require_padding,
                 keep_all=True
             )
-        
+
     eval_runtime = time.time() - eval_start_time
     logger.info(
         "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
@@ -302,15 +303,32 @@ def validate(
             epoch,
             val_evaluator.model,
         )
-        
+
         # TODO: integrate from pre-training to fine-tuning
         # with open(os.path.join("./experiments", config['experiment_name'] + "_model_path.txt"), "w") as f:
         #     f.write(os.path.join(config['save_dir'], 'model_best.pth'))
+
+        # @joshuafan: savez doesn't work, try concatenating "per_batch" predictions/targets first into single numpy array (instead of list of batches)
+        # print("Targets", per_batch["targets"], "Predictions", per_batch["predictions"], "Metrics", per_batch["metrics"], per_batch["IDs"])
+        # print("Metrics", per_batch["metrics"][0:5])
+        per_batch["targets"] = np.concatenate(per_batch["targets"], axis=0)
+        per_batch["predictions"] = np.concatenate(per_batch["predictions"], axis=0)
+        per_batch["metrics"] = np.concatenate(per_batch["metrics"], axis=0)
+        per_batch["IDs"] = np.concatenate(per_batch["IDs"], axis=0)
 
         best_metrics = aggr_metrics.copy()
 
         pred_filepath = os.path.join(config["pred_dir"], "best_predictions")
         np.savez(pred_filepath, **per_batch)
+
+        if plot:
+            y_pred = np.concatenate(per_batch["predictions"], axis=0)
+            y_true = np.concatenate(per_batch["targets"], axis=0)
+            print("Plotting!", y_pred.shape, y_true.shape)
+            visualization_utils.plot_single_scatter_file(y_pred, y_true, "Predicted", "True",
+                                                         config['plot_dir'],
+                                                         title_description=f"{config['experiment_name']} epoch {epoch}",
+                                                         filename_description=f"{config['experiment_name']}_val", should_align=True)
 
     if keep_predictions:
         return aggr_metrics, best_metrics, best_value, predictions, targets
@@ -423,7 +441,6 @@ class UnsupervisedRunner(BaseRunner):
                 attn_smoothness_loss = 0
                 for attn_weights in attn_weights_layers:
                   attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
-
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             # Zero gradients, perform a backward pass, and update the weights.
@@ -504,7 +521,7 @@ class UnsupervisedRunner(BaseRunner):
                 per_batch["target_masks"].append(target_masks.cpu().detach().numpy())
                 per_batch["targets"].append(targets.cpu().detach().numpy())
                 per_batch["predictions"].append(predictions.cpu().detach().numpy())
-                per_batch["metrics"].append([loss.cpu().detach().numpy()])
+                per_batch["metrics"].append(loss.cpu().detach().numpy())
                 per_batch["IDs"].append(IDs)
 
             metrics = {"loss": mean_loss}
@@ -536,7 +553,7 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
 
-    def train_epoch(self, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
+    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
@@ -545,10 +562,13 @@ class SupervisedRunner(BaseRunner):
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
-            X, targets, padding_masks, IDs = batch
+            X, targets, padding_masks, IDs = batch  # @joshuafan added time
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
+
+            if config["mixtype"] != 'none':
+                X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
             if require_padding:
                 if need_attn_weights:
@@ -577,12 +597,30 @@ class SupervisedRunner(BaseRunner):
 
             supervised_loss += total_loss.cpu().detach().numpy()
 
-            if use_smoothing:
+            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
+
+                # Plot example attention matrices
+                if epoch_num == config['epochs'] and i == 0:  # epoch_num is 1-based
+                    n_rows = 10  # Examples to plot
+                    n_cols = attn_weights_layers.shape[1]//4  # Heads to plot
+                    fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
+
+                    for i in range(n_rows):
+                        for j in range(n_cols):
+                            im = axeslist[i, j].imshow(attn_weights_layers[i, 4*j, :, :].detach().cpu().numpy(), vmin=0, vmax=5/attn_weights_layers.shape[1])  #0/attn_weights_layers.shape[1])
+                    plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
+                    plt.colorbar(im)
+                    plt.suptitle("Example attention matrices")
+                    plt.savefig(os.path.join(config['plot_dir'], 'attention_matrices.png'))
+                    plt.close()
+
                 attn_smoothness_loss = 0
-                attn_weights_layers = torch.transpose(attn_weights_layers, 0, 1)
-                for attn_weights in attn_weights_layers:
-                  # TODO: maybe try torch.mean() or choose a smaller smoothing_lambda
-                  attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
+                attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
+                attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                # print("Mean loss", mean_loss, "Attn smoothness", attn_smoothness_loss)
+                # for attn_weights in attn_weights_layers:
+                #   # TODO: maybe try torch.mean() or choose a smaller smoothing_lambda
+                #   attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
 
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
@@ -611,7 +649,7 @@ class SupervisedRunner(BaseRunner):
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, all_predictions, all_targets, supervised_loss, supervised_smoothing_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss
 
         return self.epoch_metrics
 
@@ -657,8 +695,8 @@ class SupervisedRunner(BaseRunner):
 
             per_batch["targets"].append(targets.cpu().numpy())
             per_batch["predictions"].append(predictions.cpu().numpy())
-            per_batch["metrics"].append([loss.cpu().numpy()])
-            per_batch["IDs"].append(IDs)
+            per_batch["metrics"].append(loss.cpu().numpy())
+            per_batch["IDs"].append(np.array(IDs))
 
             metrics = {"loss": mean_loss}
             if i % self.print_interval == 0:
@@ -722,7 +760,7 @@ class SupervisedRunner(BaseRunner):
             plt.close()
 
         if keep_predictions:
-            return self.epoch_metrics, per_batch, all_predictions, all_targets
+            return self.epoch_metrics, per_batch, np.concatenate(all_predictions, axis=0), np.concatenate(all_targets, axis=0)
 
         if keep_all:
             return self.epoch_metrics, per_batch
