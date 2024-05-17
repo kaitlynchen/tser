@@ -174,7 +174,7 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_init_sin', 'none'}, default='fixed',
+        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'none'}, default='fixed',
                                  help='Method for ABSOLUTE positional encoding')
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
