@@ -25,7 +25,7 @@ class Normalizer(object):
         """
         Args:
             norm_type: choose from:
-                "standardization", "minmax": normalizes dataframe across ALL contained rows (time steps)
+                "standardization", "minmax": normalizes dataframe across ALL contained rows (time steps), for each variable
                 "per_sample_std", "per_sample_minmax": normalizes each sample separately (i.e. across only its own rows)
             mean, std, min_val, max_val: optional (num_feat,) Series of pre-computed values
         """
@@ -47,6 +47,7 @@ class Normalizer(object):
             if self.mean is None:
                 self.mean = df.mean()
                 self.std = df.std()
+                # print("Df shape", df.shape, "Mean", self.mean.shape, self.mean)
             return (df - self.mean) / (self.std + np.finfo(float).eps)
 
         elif self.norm_type == "minmax":
@@ -274,9 +275,9 @@ class TSRegressionArchive(BaseData):
 
         self.config = config
 
-        self.all_df, self.labels_df, self.time_df = self.load_all(
+        self.all_df, self.labels_df = self.load_all(
             root_dir, file_list=file_list, pattern=pattern
-        )
+        )  # , self.time_df
         self.all_IDs = (
             self.all_df.index.unique()
         )  # all sample IDs (integer indices 0 ... num_samples-1)
@@ -329,9 +330,9 @@ class TSRegressionArchive(BaseData):
             raise Exception("No .ts files found using pattern: '{}'".format(pattern))
 
         # a single file contains dataset
-        all_df, labels_df, time_df = self.load_single(input_paths[0])
+        all_df, labels_df = self.load_single(input_paths[0]) # , time_df
 
-        return all_df, labels_df, time_df
+        return all_df, labels_df  #, time_df
 
     def load_single(self, filepath):
         # Every row of the returned df corresponds to a sample;
@@ -405,27 +406,28 @@ class TSRegressionArchive(BaseData):
         else:
             self.max_seq_len = lengths[0, 0]
 
-        # @joshuafan: Create a (seq_len, 1) dataframe for each sample, storing the timestamp of each time step
-        # Then concatenate into a (num_samples * seq_len) dataframe, with multiple rows corresponding 
-        # to the sample index
-        timestamp_df = pd.concat(
-            (
-                pd.DataFrame({'timestamp': df.loc[row, df.columns[0]].index})
-                .reset_index(drop=True)
-                .set_index(pd.Series(lengths[row, 0] * [row]))
-                for row in range(df.shape[0])
-            ),
-            axis=0
-        )
+        # # @joshuafan: Create a (seq_len, 1) dataframe for each sample, storing the timestamp of each time step
+        # # Then concatenate into a (num_samples * seq_len) dataframe, with multiple rows corresponding
+        # # to the sample index.
+        # # NOTE - does not work for all datasets, commenting out for now
+        # timestamp_df = pd.concat(
+        #     (
+        #         pd.DataFrame({'timestamp': df.loc[row, df.columns[0]].index})
+        #         .reset_index(drop=True)
+        #         .set_index(pd.Series(lengths[row, 0] * [row]))
+        #         for row in range(df.shape[0])
+        #     ),
+        #     axis=0
+        # )
 
-        # Extract features from timestamp data. Normalize all so that they are between (0, 1).
-        # TODO: Consider adding a feature to allow model to distinguish days of the week. # "day_of_week": timestamp_df['timestamp'].dt.weekday,  # 0 is Monday, 6 is Sunday
-        time_df = pd.DataFrame({
-            "year": timestamp_df['timestamp'].dt.year,
-            "day_of_year": timestamp_df['timestamp'].dt.day_of_year / 366,
-            "hour_of_day": timestamp_df['timestamp'].dt.hour / 24 + timestamp_df['timestamp'].dt.minute / (24*60) + timestamp_df['timestamp'].dt.second / (24*60*60)
-        })
-        time_df["year"] = (time_df["year"] - time_df["year"].min()) / (time_df["year"].max() + 1 - time_df["year"].min())
+        # # Extract features from timestamp data. Normalize all so that they are between (0, 1).
+        # # TODO: Consider adding a feature to allow model to distinguish days of the week. # "day_of_week": timestamp_df['timestamp'].dt.weekday,  # 0 is Monday, 6 is Sunday
+        # time_df = pd.DataFrame({
+        #     "year": timestamp_df['timestamp'].dt.year,
+        #     "day_of_year": timestamp_df['timestamp'].dt.day_of_year / 366,
+        #     "hour_of_day": timestamp_df['timestamp'].dt.hour / 24 + timestamp_df['timestamp'].dt.minute / (24*60) + timestamp_df['timestamp'].dt.second / (24*60*60)
+        # })
+        # time_df["year"] = (time_df["year"] - time_df["year"].min()) / (time_df["year"].max() + 1 - time_df["year"].min())
 
         # First create a (seq_len, feat_dim) dataframe for each sample, indexed by a single integer ("ID" of the sample)
         # Then concatenate into a (num_samples * seq_len, feat_dim) dataframe, with multiple rows corresponding to the
@@ -444,7 +446,7 @@ class TSRegressionArchive(BaseData):
         grp = df.groupby(by=df.index)
         df = grp.transform(interpolate_missing)
 
-        return df, labels_df, time_df
+        return df, labels_df  #, time_df
 
 
 class PMUData(BaseData):

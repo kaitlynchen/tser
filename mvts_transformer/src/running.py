@@ -308,6 +308,14 @@ def validate(
         # with open(os.path.join("./experiments", config['experiment_name'] + "_model_path.txt"), "w") as f:
         #     f.write(os.path.join(config['save_dir'], 'model_best.pth'))
 
+        # @joshuafan: savez doesn't work, try concatenating "per_batch" predictions/targets first into single numpy array (instead of list of batches)
+        # print("Targets", per_batch["targets"], "Predictions", per_batch["predictions"], "Metrics", per_batch["metrics"], per_batch["IDs"])
+        # print("Metrics", per_batch["metrics"][0:5])
+        per_batch["targets"] = np.concatenate(per_batch["targets"], axis=0)
+        per_batch["predictions"] = np.concatenate(per_batch["predictions"], axis=0)
+        per_batch["metrics"] = np.concatenate(per_batch["metrics"], axis=0)
+        per_batch["IDs"] = np.concatenate(per_batch["IDs"], axis=0)
+
         best_metrics = aggr_metrics.copy()
 
         pred_filepath = os.path.join(config["pred_dir"], "best_predictions")
@@ -513,7 +521,7 @@ class UnsupervisedRunner(BaseRunner):
                 per_batch["target_masks"].append(target_masks.cpu().detach().numpy())
                 per_batch["targets"].append(targets.cpu().detach().numpy())
                 per_batch["predictions"].append(predictions.cpu().detach().numpy())
-                per_batch["metrics"].append([loss.cpu().detach().numpy()])
+                per_batch["metrics"].append(loss.cpu().detach().numpy())
                 per_batch["IDs"].append(IDs)
 
             metrics = {"loss": mean_loss}
@@ -554,7 +562,7 @@ class SupervisedRunner(BaseRunner):
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
-            X, targets, padding_masks, time, IDs = batch  # @joshuafan added time
+            X, targets, padding_masks, IDs = batch  # @joshuafan added time
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
@@ -596,14 +604,15 @@ class SupervisedRunner(BaseRunner):
                     n_rows = 10  # Examples to plot
                     n_cols = attn_weights_layers.shape[1]//4  # Heads to plot
                     fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
+
                     for i in range(n_rows):
                         for j in range(n_cols):
-                            axeslist[i, j].imshow(attn_weights_layers[i, 4*j, :, :].detach().cpu().numpy())
-                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                            im = axeslist[i, j].imshow(attn_weights_layers[i, 4*j, :, :].detach().cpu().numpy(), vmin=0, vmax=5/attn_weights_layers.shape[1])  #0/attn_weights_layers.shape[1])
+                    plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
+                    plt.colorbar(im)
                     plt.suptitle("Example attention matrices")
                     plt.savefig(os.path.join(config['plot_dir'], 'attention_matrices.png'))
                     plt.close()
-                    exit(1)
 
                 attn_smoothness_loss = 0
                 attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
@@ -660,7 +669,7 @@ class SupervisedRunner(BaseRunner):
         }
 
         for i, batch in enumerate(self.dataloader):
-            X, targets, padding_masks, time, IDs = batch
+            X, targets, padding_masks, IDs = batch
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
@@ -686,8 +695,8 @@ class SupervisedRunner(BaseRunner):
 
             per_batch["targets"].append(targets.cpu().numpy())
             per_batch["predictions"].append(predictions.cpu().numpy())
-            per_batch["metrics"].append([loss.cpu().numpy()])
-            per_batch["IDs"].append(IDs)
+            per_batch["metrics"].append(loss.cpu().numpy())
+            per_batch["IDs"].append(np.array(IDs))
 
             metrics = {"loss": mean_loss}
             if i % self.print_interval == 0:

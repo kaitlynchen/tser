@@ -61,6 +61,7 @@ def main(config):
     device = torch.device(
         "cuda" if (torch.cuda.is_available() and config["gpu"] != "-1") else "cpu"
     )
+    config['device'] = device
     logger.info("Using device: {}".format(device))
     if device == "cuda":
         logger.info("Device index: {}".format(torch.cuda.current_device()))
@@ -590,7 +591,7 @@ def main(config):
         config["experiment_name"],
         best_metrics,
         aggr_metrics_val,
-        comment=config["comment"],
+        comment=config["comment"] + ".  COMMMAND: " + " ".join(sys.argv),
     )
 
     logger.info(

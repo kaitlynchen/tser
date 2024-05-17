@@ -106,7 +106,7 @@ def collate_superv(data, max_len=None):
     """
 
     batch_size = len(data)
-    features, labels, times, IDs = zip(*data)
+    features, labels, IDs = zip(*data)  # times
     # print("features length: ", len(features))
 
     # Stack and pad features and masks (convert 2D to 3D tensors, i.e. add batch dimension)
@@ -121,12 +121,12 @@ def collate_superv(data, max_len=None):
         X[i, :end, :] = features[i][:end, :]
 
     targets = torch.stack(labels, dim=0)  # (batch_size, num_labels)
-    times = torch.stack(times, dim=0)
+    # times = torch.stack(times, dim=0)
 
     padding_masks = padding_mask(torch.tensor(lengths, dtype=torch.int16),
                                  max_len=max_len)  # (batch_size, padded_length) boolean tensor, "1" means keep
 
-    return X, targets, padding_masks, times, IDs
+    return X, targets, padding_masks, IDs  #times
 
 
 class ClassiregressionDataset(Dataset):
@@ -138,7 +138,7 @@ class ClassiregressionDataset(Dataset):
         self.IDs = indices  # list of data IDs, but also mapping between integer index and ID
         self.feature_df = self.data.feature_df.loc[self.IDs]
         self.labels_df = self.data.labels_df.loc[self.IDs]
-        self.time_df = self.data.time_df.loc[self.IDs]
+        #self.time_df = self.data.time_df.loc[self.IDs]
 
     def __getitem__(self, ind):
         """
@@ -154,9 +154,9 @@ class ClassiregressionDataset(Dataset):
         # (seq_length, feat_dim) array
         X = self.feature_df.loc[self.IDs[ind]].values
         y = self.labels_df.loc[self.IDs[ind]].values  # (num_labels,) array
-        time = self.time_df.loc[self.IDs[ind]].values
+        #time = self.time_df.loc[self.IDs[ind]].values
 
-        return torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(time), self.IDs[ind]
+        return torch.from_numpy(X), torch.from_numpy(y), self.IDs[ind]  #torch.from_numpy(time),
 
     def __len__(self):
         return len(self.IDs)
@@ -272,7 +272,7 @@ def noise_mask(X, masking_ratio, lm=3, mode='separate', distribution='geometric'
     if distribution == 'early' or distribution == 'autoregressive':
         if masking_ratio == None:
             masking_ratio = random.random()
-            
+
         mask = early_prediction_mask(X.shape, masking_ratio)
     elif distribution == 'geometric':  # stateful (Markov chain)
         # mask = np.ones(X.shape, dtype=bool)

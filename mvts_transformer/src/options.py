@@ -151,6 +151,8 @@ class Options(object):
                                  help="""If set, will smooth adjacent attention weights.""")
         self.parser.add_argument('--agg_vars', action='store_true',
                                  help="""Only applicable for ClimaX. If set, creates separate tokens for individual variables, and uses cross-variable attention to aggregate. Otherwise, lumps all variables together into a single token.""")
+        self.parser.add_argument('--local_mask', type=int, default=-1,
+                                 help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--max_seq_len', type=int,
@@ -172,8 +174,10 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable'}, default='fixed',
-                                 help='Internal dimension of transformer embeddings')
+        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_init_sin', 'none'}, default='fixed',
+                                 help='Method for ABSOLUTE positional encoding')
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'none'}, default='none',
+                                 help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',
                                  help='Activation to be used in transformer encoder')
         self.parser.add_argument('--normalization_layer', choices={'BatchNorm', 'LayerNorm'}, default='BatchNorm',
