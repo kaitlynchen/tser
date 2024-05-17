@@ -238,8 +238,8 @@ class ClimaX(nn.Module):
             div_term = torch.exp(torch.arange(0, emb_dim, 2).float() * (-math.log(10000.0) / emb_dim))
             pe[:, 0::2] = torch.sin(position * div_term)
             pe[:, 1::2] = torch.cos(position * div_term)
-            self.pos_embed = scale_factor * pe.unsqueeze(0).transpose(0, 1)
-            self.register_buffer('pos_embed', self.pos_embed)  # this stores the variable in the state_dict (used for non-trainable variables)
+            pos_embed = scale_factor * pe  #.unsqueeze(0).transpose(0, 1) do not need to create extra dimension
+            self.register_buffer('pos_embed', pos_embed)  # this stores the variable in the state_dict (used for non-trainable variables)
         elif pos_encoding == "none":
             self.pos_embed = None
         else:
@@ -251,18 +251,18 @@ class ClimaX(nn.Module):
             self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads))  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
 
             # get pair-wise relative position index for each token inside the window
-            coords_t = torch.arange(seq_len)
-            self.relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
-            self.relative_coords += seq_len - 1  # shift to start from 0
-            self.register_buffer("relative_coords", self.relative_coords)
+            coords_t = torch.arange(seq_len, device=self.device)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
+            relative_coords += seq_len - 1  # shift to start from 0
+            self.register_buffer("relative_coords", relative_coords)
         elif relative_pos_encoding == "alibi":
             # FIXED bias for relative offsets. Each head has a different function.
             # Code from https://github.com/ofirpress/attention_with_linear_biases/issues/5
 
             # get pair-wise relative position index for each token inside the window
-            coords_t = torch.arange(seq_len)
-            self.relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
-            self.register_buffer("relative_coords", self.relative_coords)
+            coords_t = torch.arange(seq_len, device=self.device)
+            relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
+            self.register_buffer("relative_coords", relative_coords)
 
             def get_slopes(n):
                 def get_slopes_power_of_2(n):
@@ -276,10 +276,11 @@ class ClimaX(nn.Module):
                     closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround.
                     return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
 
-            self.slopes = torch.Tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
+            self.slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
+            # print("Slopes", self.slopes)
             self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [num_heads, 1, 1] * [seq_len, seq_len] -> [num_heads, seq_len, seq_len]
-            self.alibi = self.alibi.view(1, num_heads, seq_len, seq_len)  # [1, num_heads, seq_len, seq_len]
-
+            # self.alibi = self.alibi.view(1, num_heads, seq_len, seq_len)  # [1, num_heads, seq_len, seq_len]
+            # print("Final bias", self.alibi)
 
     def initialize_weights(self):
         # NOTE: pos_embed initialization is moved to setup_pos_embed
@@ -350,7 +351,6 @@ class ClimaX(nn.Module):
         # At this point, X should be [batch, seq_len, embed_dim], and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-        x = x.permute((1, 0, 2))  # Change to [seq_len, batch, embed_dim] to align with Pytorch convention
 
         # apply Transformer blocks. NOT USED ANYMORE
         # for blk in self.blocks:
@@ -359,11 +359,18 @@ class ClimaX(nn.Module):
         # Construct mask for relative positional encoding.
         offset_mask = None
         if self.relative_pos_encoding == "erpe":
-            # To construct relative embedding matrix, flatten the "offset matrix", and use these as indices into the relative bias table.
-            # Then reshape to construct the real offset matrix (same shape as attention matrix)
+            # self.relative_bias_table: [2*seq_len-1, num_heads]
+            # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
+            # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
+            # and use these as indices into the relative bias table.
+            # Then reshape to construct the real bias matrix (same shape as attention matrix)
             num_heads = self.relative_bias_table.shape[1]
-            flattened_indices = self.relative_coords.flatten()
-            offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)
+            # print("Bias", self.relative_bias_table.shape, self.relative_bias_table)
+            # print("Relative coords", self.relative_coords)
+            flattened_indices = self.relative_coords.flatten()  # [seq_len*seq_len]
+            offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)  # [seq_len, seq_len, heads]
+            offset_mask = offset_mask.permute(2, 0, 1).repeat((x.shape[0], 1, 1))  # [batch*num_heads, seq_len, seq_len]
+            # print("Offset mask", offset_mask)
         elif self.relative_pos_encoding == "alibi":
             offset_mask = self.alibi.repeat((x.shape[0], 1, 1))  # Repeat along the batch dimension, as PyTorch expects mask to be [batch*num_heads, seq_len, seq_len]
 
@@ -374,6 +381,9 @@ class ClimaX(nn.Module):
                 offset_mask = self.invalid_mask  # True at positions that are NOT ALLOWED to attend (too far)
             else:
                 offset_mask[self.invalid_mask] = float("-inf")
+
+        # Change to [seq_len, batch, embed_dim] to align with Pytorch convention
+        x = x.permute((1, 0, 2))
 
         x, attn_weights = self.transformer_encoder(x, mask=offset_mask)  # after encoder. x: [seq_len, batch, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
         # x = self.head_linear(x)
