@@ -349,7 +349,6 @@ class ClimaX(nn.Module):
 
         # Add ABSOLUTE pos embedding if using.
         # At this point, X should be [batch, seq_len, embed_dim], and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
-        print(x.shape, self.pos_embed.shape)
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
