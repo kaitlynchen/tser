@@ -47,7 +47,6 @@ class Normalizer(object):
             if self.mean is None:
                 self.mean = df.mean()
                 self.std = df.std()
-                # print("Df shape", df.shape, "Mean", self.mean.shape, self.mean)
             return (df - self.mean) / (self.std + np.finfo(float).eps)
 
         elif self.norm_type == "minmax":
@@ -342,7 +341,6 @@ class TSRegressionArchive(BaseData):
                 filepath, return_separate_X_and_y=True, replace_missing_vals_with="NaN"
             )
             labels_df = pd.DataFrame(labels, dtype=np.float32)
-
         elif self.config["task"] == "classification":
             df, labels = load_data.load_from_tsfile_to_dataframe(
                 filepath, return_separate_X_and_y=True, replace_missing_vals_with="NaN"

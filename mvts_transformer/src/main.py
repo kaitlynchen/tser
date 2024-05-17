@@ -134,7 +134,6 @@ def main(config):
     if config["test_pattern"]:  # used if test data come from different files / file patterns
         test_data = data_class(config["data_dir"], pattern=config["test_pattern"], n_proc=-1, config=config)
         test_indices = test_data.all_IDs
-
     if config["test_from"]:  # load test IDs directly from file, if available, otherwise use `test_set_ratio`. Can work together with `test_pattern`
         test_indices = list(set([line.rstrip() for line in open(config["test_from"]).readlines()]))
         try:

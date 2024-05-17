@@ -261,7 +261,7 @@ def validate(
                 epoch,
                 keep_predictions=True,
                 require_padding=require_padding,
-                keep_all=True,
+                keep_all=True
             )
 
     eval_runtime = time.time() - eval_start_time

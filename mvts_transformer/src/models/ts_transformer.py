@@ -336,10 +336,8 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         inp = X.permute(1, 0, 2)
         inp = self.project_inp(inp) * math.sqrt(self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
-        print("Before encoder", inp.shape)
 
         output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
-        print("After enc", output.shape)
         if self.include_cls_token:
             # Classifier "token" as used by standard language architectures
             output = output[:, 0]
@@ -352,5 +350,4 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         output = output.reshape(output.shape[0], -1) # (batch_size, seq_length * d_model)
 
         output = self.output_layer(output)  # (batch_size, num_classes)
-        print("final output", output.shape)
         return output
