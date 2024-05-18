@@ -12,7 +12,7 @@ from models.loss import get_loss_module
 from datasets.datasplit import split_dataset
 from datasets.data import data_factory, Normalizer
 from datasets.utils import process_data
-from utils import utils
+from utils import utils, visualization_utils
 from running import setup, pipeline_factory, validate, check_progress, NEG_METRICS
 from options import Options
 from torch.utils.tensorboard import SummaryWriter
@@ -131,6 +131,7 @@ def main(config):
 
     val_data = my_data
     val_indices = []
+    test_data = None
     if config["test_pattern"]:  # used if test data come from different files / file patterns
         test_data = data_class(config["data_dir"], pattern=config["test_pattern"], n_proc=-1, config=config)
         test_indices = test_data.all_IDs
@@ -273,7 +274,6 @@ def main(config):
     )
 
     # Initialize optimizer
-
     if config["global_reg"]:
         weight_decay = config["l2_reg"]
         output_reg = None
@@ -289,6 +289,7 @@ def main(config):
     start_epoch = 0
     lr_step = 0  # current step index of `lr_step`
     lr = config["lr"]  # current learning step
+
     # Load model and optimizer state
     if args.load_model:
         model, optimizer, start_epoch = utils.load_model(
@@ -353,6 +354,7 @@ def main(config):
 
     # Initialize data generators
     dataset_class, collate_fn, runner_class = pipeline_factory(config)
+
     val_dataset = dataset_class(val_data, val_indices)
 
     val_loader = DataLoader(
@@ -418,28 +420,29 @@ def main(config):
 
     logger.info("Starting training...")
     train_epochs = []
-    train_rmses = []
+    train_losses_sup = []
+    train_losses_smoothness = []
+    train_losses_posenc = []
     val_epochs = []
-    val_rmses = []
+    val_losses = []
     all_val_preds = []
 
+    # Number of epochs since the previous "best" (for early stopping)
+    num_epochs_no_improvement = 0
 
-    supervised_losses = []
-    supervised_smoothness_losses = []
+    # Store prediction/target of best model
+    best_val_predictions = None
+    best_val_targets = None
 
     for epoch in tqdm(range(start_epoch + 1, config["epochs"] + 1), desc="Training Epoch", leave=False):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        if plot_losses:
-            aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss = trainer.train_epoch(config, epoch, keep_predictions=plot_losses, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
-            train_epochs.append(epoch)
-            train_rmses.append(aggr_metrics_train["loss"] ** 0.5)
-            supervised_losses.append(supervised_loss)
-            supervised_smoothness_losses.append(supervised_smoothness_loss)
-        else:
-            aggr_metrics_train = trainer.train_epoch(config, epoch, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
-            train_rmses.append(aggr_metrics_train["loss"] ** 0.5)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+        train_epochs.append(epoch)
+        train_losses_sup.append(supervised_loss)
+        train_losses_smoothness.append(supervised_smoothness_loss)
+        train_losses_posenc.append(posenc_loss)
 
         if config["baseline"] is not None:
             # early prediction
@@ -490,7 +493,8 @@ def main(config):
 
         # evaluate if first or last epoch or at specified interval
         if ((epoch == config["epochs"]) or (epoch == start_epoch + 1) or (epoch % config["val_interval"] == 0)):
-            aggr_metrics_val, best_metrics, best_value = validate(
+            old_best_value = best_value
+            aggr_metrics_val, best_metrics, best_value, predictions, targets = validate(
                 val_evaluator,
                 tensorboard_writer,
                 config,
@@ -498,22 +502,34 @@ def main(config):
                 best_value,
                 epoch,
                 require_padding=require_padding,
-                # keep_predictions=True,
-                need_attn_weights=need_attn_weights,
-                plot=(epoch != start_epoch + 1) and (epoch != config["epochs"]) and config["plot_accuracy"]
+                keep_predictions=True,
+                need_attn_weights=need_attn_weights
             )
             metrics_names, metrics_values = zip(*aggr_metrics_val.items())
             metrics.append(list(metrics_values))
             val_epochs.append(epoch)
-            val_rmses.append(aggr_metrics_val['loss'] ** 0.5)
-            # all_val_preds.append(predictions)
+            val_losses.append(aggr_metrics_val['loss'])
+            all_val_preds.append(predictions)
 
-        utils.save_model(
-            os.path.join(config["save_dir"], "model_{}.pth".format(mark)),
-            epoch,
-            model,
-            optimizer,
-        )
+            # If this was a new best model, save validation predictions/targets, and reset
+            # the "num_epochs_no_improvement" counter
+            if best_value != old_best_value:
+                best_val_predictions = predictions
+                best_val_targets = targets
+                num_epochs_no_improvement = 0
+            else:
+                num_epochs_no_improvement += config["val_interval"]
+
+        if num_epochs_no_improvement > config["patience"]:
+            print(f"Early stopping: no improvement for {config['patience']} epochs")
+            break
+
+        # utils.save_model(
+        #     os.path.join(config["save_dir"], "model_{}.pth".format(mark)),
+        #     epoch,
+        #     model,
+        #     optimizer,
+        # )
 
         # Learning rate scheduling
         if epoch == config["lr_step"][lr_step]:
@@ -536,32 +552,63 @@ def main(config):
             train_loader.dataset.update()
             val_loader.dataset.update()
 
-    # Plot training RMSEs
-    if config["plot_accuracy"]:
-        plt.plot(train_epochs, train_rmses, label="Train")
-        plt.plot(val_epochs, val_rmses, label="Val")
-        plt.ylabel("RMSE")
-        plt.xlabel("Epoch")
-        plt.legend()
-        plt.title("Training RMSEs per epoch")
-        plt.savefig(os.path.join(config["plot_dir"], "rmses.png"))
-        plt.close()
+    # Scatterplot on validation set
+    visualization_utils.plot_single_scatter_file(best_val_predictions, best_val_targets, "predicted", "true", config['plot_dir'],
+                                                 title_description=f"{config['experiment_name']}",
+                                                 filename_description="val", should_align=True)
 
+    # Finally compute test prediction using best model (best on validation set)
+    aggr_metrics_test = None
+    if test_data is not None:
+        # Load best model
+        model = utils.load_model(
+            model,
+            os.path.join(config["save_dir"], "model_best.pth")
+        )
+
+        # Set up test dataset
+        dataset_class, collate_fn, runner_class = pipeline_factory(config)
+        test_dataset = dataset_class(test_data, test_indices)
+        test_loader = DataLoader(
+            dataset=test_dataset,
+            batch_size=config["batch_size"],
+            shuffle=False,
+            num_workers=config["num_workers"],
+            pin_memory=True,
+            collate_fn=lambda x: collate_fn(x, max_len=model.max_len),
+        )
+        test_evaluator = runner_class(
+            model,
+            test_loader,
+            device,
+            loss_module,
+            print_interval=config["print_interval"],
+            console=config["console"],
+        )
+
+        # Evaluate on test dataset, plot scatterplot
+        with torch.no_grad():
+            aggr_metrics_test, per_batch_test, predictions_test, targets_test = test_evaluator.evaluate(best_metrics["epoch"], keep_predictions=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
+            if config["plot_accuracy"]:
+                visualization_utils.plot_single_scatter_file(predictions_test, targets_test, "predicted", "true", config['plot_dir'],
+                                                             title_description=f"{config['experiment_name']}",
+                                                             filename_description="test", should_align=True)
+
+    # Plot loss curves
     if plot_losses:
-        dataset = config["data_dir"][5:]
-        plt.plot(supervised_losses)
-        plt.plot(supervised_smoothness_losses)
-        plt.legend(["Supervised loss", "Supervised and smoothness loss"])
-        plt.ylabel("RMSE")
+        plt.plot(train_epochs, train_losses_sup, label="Train loss (MSE, supervised)")
+        plt.plot(train_epochs, train_losses_smoothness, label="Attn smoothness loss")
+        plt.plot(train_epochs, train_losses_posenc, label="Pos enc smoothness loss")
+        plt.plot(val_epochs, val_losses, label="Val loss (MSE)")
+        plt.ylabel("Loss")
         plt.xlabel("Epoch")
-        plt.title("Training RMSEs per epoch")
-        plt.savefig(os.path.join(config["plot_dir"], "supervised_loss.png"))
+        plt.title("Losses per epoch")
+        plt.legend()
+        plt.savefig(os.path.join(config["plot_dir"], "losses.png"))
         plt.close()
-
-        # predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
 
     # # Evaluate each epoch's predictions, and the average prediction
-    # all_val_preds = torch.from_numpy(np.stack(all_val_preds, axis=0))  # [epoch, val_examples]
+    all_val_preds = torch.from_numpy(np.stack(all_val_preds, axis=0))  # [epoch, val_examples]
     # all_val_preds = all_val_preds[all_val_preds.shape[0]//2:, :]  # get only the later part of trained models
     # targets = torch.from_numpy(targets.flatten())  # [val_examples]
     # ensemble_preds = torch.mean(all_val_preds, dim=0)
@@ -590,12 +637,18 @@ def main(config):
         config["experiment_name"],
         best_metrics,
         aggr_metrics_val,
+        aggr_metrics_test,
         comment=config["comment"] + ".  COMMMAND: " + " ".join(sys.argv),
     )
 
     logger.info(
         "Best {} was {}. Other metrics: {}".format(
             config["key_metric"], best_value, best_metrics
+        )
+    )
+    logger.info(
+        "TEST SET: Best {} was {}. Other metrics: {}".format(
+            config["key_metric"], aggr_metrics_test[config["key_metric"]], aggr_metrics_test
         )
     )
     logger.info("All Done!")

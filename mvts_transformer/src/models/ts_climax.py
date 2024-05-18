@@ -10,6 +10,8 @@ from torch.nn import functional as F
 from torch.nn.modules import MultiheadAttention, Linear, Dropout, BatchNorm1d, TransformerEncoderLayer
 from functools import lru_cache
 from timm.models.vision_transformer import Block, PatchEmbed, trunc_normal_
+import matplotlib.pyplot as plt
+import os
 
 from models.ClimaX.pos_embed import (
     get_1d_sincos_pos_embed_from_grid,
@@ -142,7 +144,7 @@ class ClimaX(nn.Module):
         self.seq_len = seq_len
 
         # positional embedding
-        self.setup_pos_embed(pos_encoding, relative_pos_encoding, seq_len, embed_dim, num_heads)
+        self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, embed_dim, num_heads)
 
         # --------------------------------------------------------------------------
 
@@ -214,7 +216,7 @@ class ClimaX(nn.Module):
             self.invalid_mask = None
 
 
-    def setup_pos_embed(self, pos_encoding, relative_pos_encoding, seq_len, emb_dim, num_heads):
+    def setup_posenc(self, pos_encoding, relative_pos_encoding, seq_len, emb_dim, num_heads):
 
         # For absolute positional encodings, it is a matrix of size [seq_len, emb_dim]
         if pos_encoding == "learnable":
@@ -245,10 +247,39 @@ class ClimaX(nn.Module):
         else:
             raise ValueError("Invalid value of absolute_pos_embed (must be: learnable, learnable_sin_init, fixed, none)")
 
+        # Helper function for ALIBI
+        def get_slopes(n):
+            def get_slopes_power_of_2(n):
+                start = (2**(-2**-(math.log2(n)-3)))
+                ratio = start
+                return [start*ratio**i for i in range(n)]
+
+            if math.log2(n).is_integer():
+                return get_slopes_power_of_2(n)                   #In the paper, we only train models that have 2^a heads for some a. This function has
+            else:                                                 #some good properties that only occur when the input is a power of 2. To maintain that even
+                closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround.
+                return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
+
         if relative_pos_encoding == "erpe":
             # eRPE: learnable bias for each relative offset between timesteps
             # define a parameter table of relative position bias
-            self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads))  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+            # TODO. In the original eRPE paper, this is applied AFTER softmax, but in
+            # here we do it BEFORE softmax because of PyTorch's MultiheadAttention
+            # implementation. Try to fix this later!
+            self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads), requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+
+            # get pair-wise relative position index for each token inside the window
+            coords_t = torch.arange(seq_len, device=self.device)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
+            relative_coords += seq_len - 1  # shift to start from 0
+            self.register_buffer("relative_coords", relative_coords)
+        elif relative_pos_encoding == "erpe_alibi_init":
+            # Calculate initial bias table using ALIBI linear functions for each head. Note that the linaer function is multiplying "slope" with absolute |distance|.
+            slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
+            bias_table_init = torch.zeros(2*seq_len-1, num_heads)
+            bias_table_init[0:self.seq_len-1] = torch.arange(start=self.seq_len-1, end=0, step=-1, device=self.device).unsqueeze(1) * slopes
+            bias_table_init[self.seq_len-1:] = torch.arange(start=0, end=self.seq_len, device=self.device).unsqueeze(1) * slopes
+            self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
 
             # get pair-wise relative position index for each token inside the window
             coords_t = torch.arange(seq_len, device=self.device)
@@ -264,23 +295,60 @@ class ClimaX(nn.Module):
             relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
             self.register_buffer("relative_coords", relative_coords)
 
-            def get_slopes(n):
-                def get_slopes_power_of_2(n):
-                    start = (2**(-2**-(math.log2(n)-3)))
-                    ratio = start
-                    return [start*ratio**i for i in range(n)]
-
-                if math.log2(n).is_integer():
-                    return get_slopes_power_of_2(n)                   #In the paper, we only train models that have 2^a heads for some a. This function has
-                else:                                                 #some good properties that only occur when the input is a power of 2. To maintain that even
-                    closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround.
-                    return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
-
             self.slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
             # print("Slopes", self.slopes)
             self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [num_heads, 1, 1] * [seq_len, seq_len] -> [num_heads, seq_len, seq_len]
             # self.alibi = self.alibi.view(1, num_heads, seq_len, seq_len)  # [1, num_heads, seq_len, seq_len]
             # print("Final bias", self.alibi)
+
+
+    def posenc_smoothness_loss(self, logger, plot_dir=None, epoch_num=None):
+        file_prefix = "epoch{}".format(epoch_num) if epoch_num is not None else ""
+
+        # Smoothness of absolute position encoding
+        smoothness_loss = 0.
+        if "learnable" in self.pos_encoding:
+            # self.pos_embed has shape [seq_len, embed_dim]
+            smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
+
+            if plot_dir is not None:
+                logger.info("Abs pos encoding smoothness: {}".format(smoothness_loss.item()))
+
+                # Plot positional encoding
+                im = plt.imshow(self.pos_embed.detach().cpu().numpy())
+                plt.xlabel("Embedding index")
+                plt.ylabel("Timestep")
+                plt.colorbar(im)
+                plt.title("Absolute positional embeddings")
+                plt.savefig(os.path.join(plot_dir, f'{file_prefix}_absolute_pos_encoding.png'))
+                plt.close()
+
+                # Compute pairwise distance between each pair of positions
+                pairwise_distances = torch.cdist(self.pos_embed.unsqueeze(0), self.pos_embed.unsqueeze(0)).squeeze(0)
+                im = plt.imshow(pairwise_distances.detach().cpu().numpy())
+                plt.colorbar(im)
+                plt.title("Pairwise distances between absolute pos encodings")
+                plt.savefig(os.path.join(plot_dir, f'{file_prefix}_absolute_pos_encoding_distances.png'))
+                plt.close()
+
+        if "erpe" in self.relative_pos_encoding:
+            # self.relative_bias_table has shape [2*seq_len-1, num_heads]
+            rel_smoothness = ((self.relative_bias_table[1:, :] - self.relative_bias_table[:-1, :]) ** 2).mean()
+            smoothness_loss += rel_smoothness
+
+            if plot_dir is not None:
+                logger.info("Rel pos encoding smoothness: {}".format(rel_smoothness.item()))
+                im = plt.imshow(self.relative_bias_table.detach().cpu().numpy(), aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
+                plt.xlabel("Head number")
+                plt.ylabel("Relative offset (middle is 0)")
+                plt.colorbar(im)
+                plt.title("Relative attention biases")
+                plt.savefig(os.path.join(plot_dir, f'{file_prefix}_relative_pos_offsets.png'))
+                plt.close()
+
+        return smoothness_loss
+
+
 
     def initialize_weights(self):
         # NOTE: pos_embed initialization is moved to setup_pos_embed
@@ -358,19 +426,16 @@ class ClimaX(nn.Module):
 
         # Construct mask for relative positional encoding.
         offset_mask = None
-        if self.relative_pos_encoding == "erpe":
+        if "erpe" in self.relative_pos_encoding:
             # self.relative_bias_table: [2*seq_len-1, num_heads]
             # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
             # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
             # and use these as indices into the relative bias table.
             # Then reshape to construct the real bias matrix (same shape as attention matrix)
             num_heads = self.relative_bias_table.shape[1]
-            # print("Bias", self.relative_bias_table.shape, self.relative_bias_table)
-            # print("Relative coords", self.relative_coords)
             flattened_indices = self.relative_coords.flatten()  # [seq_len*seq_len]
             offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)  # [seq_len, seq_len, heads]
             offset_mask = offset_mask.permute(2, 0, 1).repeat((x.shape[0], 1, 1))  # [batch*num_heads, seq_len, seq_len]
-            # print("Offset mask", offset_mask)
         elif self.relative_pos_encoding == "alibi":
             offset_mask = self.alibi.repeat((x.shape[0], 1, 1))  # Repeat along the batch dimension, as PyTorch expects mask to be [batch*num_heads, seq_len, seq_len]
 
