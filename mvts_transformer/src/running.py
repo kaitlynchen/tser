@@ -248,21 +248,22 @@ def validate(
     keep_predictions=False,
     require_padding=False,
     need_attn_weights=False,
-    plot=False
 ):
     """Run an evaluation on the validation set while logging metrics, and handle outcome"""
 
     logger.info("Evaluating on validation set ...")
     eval_start_time = time.time()
     with torch.no_grad():
-        aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
         if keep_predictions:
             aggr_metrics, per_batch, predictions, targets = val_evaluator.evaluate(
                 epoch,
                 keep_predictions=True,
                 require_padding=require_padding,
-                keep_all=True
+                keep_all=True,
+                need_attn_weights=need_attn_weights
             )
+        else:
+            aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
 
     eval_runtime = time.time() - eval_start_time
     logger.info(
@@ -309,8 +310,6 @@ def validate(
         #     f.write(os.path.join(config['save_dir'], 'model_best.pth'))
 
         # @joshuafan: savez doesn't work, try concatenating "per_batch" predictions/targets first into single numpy array (instead of list of batches)
-        # print("Targets", per_batch["targets"], "Predictions", per_batch["predictions"], "Metrics", per_batch["metrics"], per_batch["IDs"])
-        # print("Metrics", per_batch["metrics"][0:5])
         per_batch["targets"] = np.concatenate(per_batch["targets"], axis=0)
         per_batch["predictions"] = np.concatenate(per_batch["predictions"], axis=0)
         per_batch["metrics"] = np.concatenate(per_batch["metrics"], axis=0)
@@ -320,15 +319,6 @@ def validate(
 
         pred_filepath = os.path.join(config["pred_dir"], "best_predictions")
         np.savez(pred_filepath, **per_batch)
-
-        if plot:
-            y_pred = np.concatenate(per_batch["predictions"], axis=0)
-            y_true = np.concatenate(per_batch["targets"], axis=0)
-            print("Plotting!", y_pred.shape, y_true.shape)
-            visualization_utils.plot_single_scatter_file(y_pred, y_true, "Predicted", "True",
-                                                         config['plot_dir'],
-                                                         title_description=f"{config['experiment_name']} epoch {epoch}",
-                                                         filename_description=f"{config['experiment_name']}_val", should_align=True)
 
     if keep_predictions:
         return aggr_metrics, best_metrics, best_value, predictions, targets
@@ -558,7 +548,7 @@ class SupervisedRunner(BaseRunner):
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss = 0, 0
+        supervised_loss, supervised_smoothing_loss, posenc_loss = 0, 0, 0
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
@@ -601,13 +591,14 @@ class SupervisedRunner(BaseRunner):
 
                 # Plot example attention matrices
                 if epoch_num == config['epochs'] and i == 0:  # epoch_num is 1-based
-                    n_rows = 10  # Examples to plot
-                    n_cols = attn_weights_layers.shape[1]//4  # Heads to plot
+                    n_rows = 5  # Examples to plot
+                    n_cols = 4
+                    num_heads = attn_weights_layers.shape[1]  # Heads to plot
                     fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
 
-                    for i in range(n_rows):
-                        for j in range(n_cols):
-                            im = axeslist[i, j].imshow(attn_weights_layers[i, 4*j, :, :].detach().cpu().numpy(), vmin=0, vmax=5/attn_weights_layers.shape[1])  #0/attn_weights_layers.shape[1])
+                    for r in range(n_rows):
+                        for c in range(n_cols):
+                            im = axeslist[r, c].imshow(attn_weights_layers[r, c*(num_heads//n_cols), :, :].detach().cpu().numpy(), vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
                     plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
                     plt.colorbar(im)
                     plt.suptitle("Example attention matrices")
@@ -617,14 +608,20 @@ class SupervisedRunner(BaseRunner):
                 attn_smoothness_loss = 0
                 attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
                 attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
-                # print("Mean loss", mean_loss, "Attn smoothness", attn_smoothness_loss)
-                # for attn_weights in attn_weights_layers:
-                #   # TODO: maybe try torch.mean() or choose a smaller smoothing_lambda
-                #   attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
-
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             supervised_smoothing_loss += total_loss.cpu().detach().numpy()
+
+            # Positional encoding smoothness loss. TODO - we should also save it so we can plot
+            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
+                if (epoch_num==config["epochs"] or epoch_num==1) and i == 0:
+                    posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=config['plot_dir'], epoch_num=epoch_num)
+                else:
+                    posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=None)
+                total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
+                posenc_loss += posenc_loss_batch.cpu().detach().numpy()
+            else:
+                assert config['lambda_posenc_smoothness'] == 0
 
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
@@ -649,7 +646,7 @@ class SupervisedRunner(BaseRunner):
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss
 
         return self.epoch_metrics
 

@@ -116,6 +116,8 @@ class Options(object):
 
         self.parser.add_argument('--epochs', type=int, default=400,
                                  help='Number of training epochs')
+        self.parser.add_argument('--patience', type=int, default=200,
+                                 help='Early stopping patience (stop if val loss does not reach a new best after this many epochs)')
         self.parser.add_argument('--val_interval', type=int, default=2,
                                  help='Evaluate on validation set every this many epochs. Must be >= 1.')
         self.parser.add_argument(
@@ -155,6 +157,8 @@ class Options(object):
                                  help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
+        self.parser.add_argument('--lambda_posenc_smoothness', type=float, default=0,
+                                 help="""Regularizing weight for loss for POS ENC smoothing.""")
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
                                  If not provided, then the value defined inside the data class will be used.""")
@@ -176,7 +180,7 @@ class Options(object):
                                  help='Dropout applied to most transformer encoder layers')
         self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'none'}, default='fixed',
                                  help='Method for ABSOLUTE positional encoding')
-        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'none'}, default='none',
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',
                                  help='Activation to be used in transformer encoder')
