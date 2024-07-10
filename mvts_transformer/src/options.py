@@ -55,6 +55,8 @@ class Options(object):
         self.parser.add_argument('--labels', type=str,
                                  help="In case a dataset contains several labels (multi-task), "
                                       "which type of labels should be used in regression or classification, i.e. name of column(s).")
+        self.parser.add_argument('--shuffle_timesteps', action='store_true',
+                                 help="""Whether timesteps should be shuffled.""")
         self.parser.add_argument('--test_from',
                                  help='If given, will read test IDs from specified text file containing sample IDs one in each row')
         self.parser.add_argument('--test_ratio', type=float, default=0,
@@ -116,7 +118,7 @@ class Options(object):
 
         self.parser.add_argument('--epochs', type=int, default=400,
                                  help='Number of training epochs')
-        self.parser.add_argument('--patience', type=int, default=200,
+        self.parser.add_argument('--patience', type=int, default=1000,
                                  help='Early stopping patience (stop if val loss does not reach a new best after this many epochs)')
         self.parser.add_argument('--val_interval', type=int, default=2,
                                  help='Evaluate on validation set every this many epochs. Must be >= 1.')
@@ -147,12 +149,14 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
         self.parser.add_argument('--agg_vars', action='store_true',
                                  help="""Only applicable for ClimaX. If set, creates separate tokens for individual variables, and uses cross-variable attention to aggregate. Otherwise, lumps all variables together into a single token.""")
+        self.parser.add_argument('--conv_transformer', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, uses depthwise separable convolution as encoder.""")
         self.parser.add_argument('--local_mask', type=int, default=-1,
                                  help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
@@ -178,10 +182,14 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'none'}, default='fixed',
+        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'learnable_tape_init', 'none'}, default='fixed',
                                  help='Method for ABSOLUTE positional encoding')
-        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'none'}, default='none',
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'custom_rpe', 'erpe_symmetric', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
+        self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating"], default="before",
+                                 help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the mdoel can decide how much to weight position & content attention""")
+        self.parser.add_argument('--conv_projection', action='store_true',
+                                 help="""If true, use conv instead of linear for Q/K/V""")
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',
                                  help='Activation to be used in transformer encoder')
         self.parser.add_argument('--normalization_layer', choices={'BatchNorm', 'LayerNorm'}, default='BatchNorm',

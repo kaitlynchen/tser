@@ -54,7 +54,11 @@ def main(config):
     logger.info("Running:\n{}\n".format(" ".join(sys.argv)))  # command used to run
 
     if config["seed"] is not None:
+        # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Required due to CUBLAS https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
         torch.manual_seed(config["seed"])
+        torch.cuda.manual_seed(config["seed"])
+        torch.cuda.manual_seed_all(config["seed"])
+        torch.use_deterministic_algorithms(True)
         random.seed(config["seed"])
         np.random.seed(config["seed"])
 
@@ -352,10 +356,17 @@ def main(config):
         logger.info(print_str)
         return
 
+    # If shuffling timesteps
+    if config['shuffle_timesteps']:
+        rng = np.random.default_rng(seed=config['seed'])
+        timestep_indices = np.arange(my_data.max_seq_len)
+        rng.shuffle(timestep_indices)
+    else:
+        q = None
+
     # Initialize data generators
     dataset_class, collate_fn, runner_class = pipeline_factory(config)
-
-    val_dataset = dataset_class(val_data, val_indices)
+    val_dataset = dataset_class(val_data, val_indices, timestep_indices=timestep_indices)
 
     val_loader = DataLoader(
         dataset=val_dataset,
@@ -366,7 +377,7 @@ def main(config):
         collate_fn=lambda x: collate_fn(x, max_len=model.max_len),
     )
 
-    train_dataset = dataset_class(my_data, train_indices)
+    train_dataset = dataset_class(my_data, train_indices, timestep_indices=timestep_indices)
 
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -568,7 +579,7 @@ def main(config):
 
         # Set up test dataset
         dataset_class, collate_fn, runner_class = pipeline_factory(config)
-        test_dataset = dataset_class(test_data, test_indices)
+        test_dataset = dataset_class(test_data, test_indices, timestep_indices=timestep_indices)
         test_loader = DataLoader(
             dataset=test_dataset,
             batch_size=config["batch_size"],

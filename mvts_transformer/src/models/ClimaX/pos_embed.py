@@ -47,7 +47,7 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
     return emb
 
 
-def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+def get_1d_sincos_pos_embed_from_grid(embed_dim, pos, max_len=None):
     """
     embed_dim: output dimension for each position
     pos: a list of positions to be encoded: size (M,)
@@ -57,6 +57,10 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     omega = np.arange(embed_dim // 2, dtype=float)  # np.float) @joshuafan changed np.float -> float
     omega /= embed_dim / 2.0
     omega = 1.0 / 10000**omega  # (D/2,)
+
+    # TAPE modifcation: modulate by sequence length.
+    if max_len is not None:
+        omega = omega * (embed_dim / max_len)
 
     pos = pos.reshape(-1)  # (M,)
     out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product

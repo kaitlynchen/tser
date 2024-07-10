@@ -4,7 +4,7 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from matplotlib.colors import Normalize 
+from matplotlib.colors import Normalize
 from scipy.interpolate import interpn
 
 from sklearn.linear_model import LinearRegression
@@ -19,9 +19,9 @@ def plot_single_scatter_file(x, y, x_label, y_label, plot_dir, title_description
     if not os.path.exists(plot_dir):
         os.makedirs(plot_dir)
     title = title_description + "\n" + y_label + " vs " + x_label
-    plt.figure(figsize=(8, 8))   
+    plt.figure(figsize=(8, 8))
     plot_single_scatter(x, y, x_label, y_label, title, ax=plt.gca(), should_align=should_align)
-    plt.savefig(os.path.join(plot_dir, filename_description + y_label + "_vs_" + x_label + ".png"))  
+    plt.savefig(os.path.join(plot_dir, filename_description + y_label + "_vs_" + x_label + ".png"))
     plt.close()
 
 
@@ -52,6 +52,7 @@ def plot_single_scatter(x, y, x_label, y_label, title, ax=None, should_align=Tru
     slope = regression.coef_[0]
     intercept = regression.intercept_
     regression_line = slope * x + intercept
+    print(slope, intercept)
     regression_equation = 'y={:.2f}x+{:.2f}'.format(slope, intercept)
     identity_line = x
 
@@ -62,7 +63,7 @@ def plot_single_scatter(x, y, x_label, y_label, title, ax=None, should_align=Tru
     corr = np.corrcoef(x, y)[0, 1]
     mae = mean_absolute_error(x, y)
     mape = np.mean(100*np.abs((x - y) / (x + 1e-5)))
-    rmse =  math.sqrt(mean_squared_error(x, y)) 
+    rmse =  math.sqrt(mean_squared_error(x, y))
 
     # Plot scatterplot for this crop type
     if x.size > 500:
@@ -85,7 +86,7 @@ def plot_single_scatter(x, y, x_label, y_label, title, ax=None, should_align=Tru
 
 def density_scatter(x, y, ax=None, sort=True, bins=20, **kwargs):
     """Plot a scatter between x/y with density coloring (with 2d histogram).
-    
+
     Code from https://stackoverflow.com/questions/20105364/how-can-i-make-a-scatter-plot-colored-by-density-in-matplotlib
     """
 
@@ -106,3 +107,18 @@ def density_scatter(x, y, ax=None, sort=True, bins=20, **kwargs):
     norm = Normalize(vmin = np.min(z), vmax = np.max(z))
 
     return ax
+
+
+def plot_time_series(x, filename):
+    """ x should be shape [time, num_vars], numpy array
+    """
+    num_timesteps, num_vars = x.shape
+    fig, axeslist = plt.subplots(num_vars, 1, figsize=(10, 1.5*num_vars))
+    for var_idx in range(num_vars):
+        axeslist[var_idx].plot(np.arange(num_timesteps), x[:, var_idx])
+        axeslist[var_idx].set_xlabel('Timestep')
+        axeslist[var_idx].set_ylabel('Value')
+        axeslist[var_idx].set_title(f'Variable {var_idx}')
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close()
