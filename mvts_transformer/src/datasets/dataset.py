@@ -141,6 +141,10 @@ class ClassiregressionDataset(Dataset):
         #self.time_df = self.data.time_df.loc[self.IDs]
         self.timestep_indices = timestep_indices
 
+        # Calculate the mean/std label
+        self.label_mean = self.labels_df.values.mean()
+        self.label_std = self.labels_df.values.std()
+
 
     def __getitem__(self, ind):
         """

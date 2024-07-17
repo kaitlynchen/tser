@@ -149,7 +149,7 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -202,6 +202,12 @@ class Options(object):
                                  help='Number of time steps in each patch')
         self.parser.add_argument('--num_decoder_layers', type=int, default=2,
                                  help='Number of decoder layers')
+
+        # Local-CNN specific
+        self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local'], default='hierarchical',
+                                 help='Type of CNN')
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear'], default='linear',
+                                 help='Type of final pooling')
 
         # C-Mixup specific
         self.parser.add_argument('--mixtype', type=str, default='random',

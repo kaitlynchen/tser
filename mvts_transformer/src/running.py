@@ -581,6 +581,7 @@ class SupervisedRunner(BaseRunner):
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
+            predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions)
             all_targets.append(targets)
 
@@ -700,6 +701,7 @@ class SupervisedRunner(BaseRunner):
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
+            predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions.flatten().cpu().detach().numpy())
             all_targets.append(targets.flatten().cpu().detach().numpy())
 

@@ -54,7 +54,7 @@ def main(config):
     logger.info("Running:\n{}\n".format(" ".join(sys.argv)))  # command used to run
 
     if config["seed"] is not None:
-        # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Required due to CUBLAS https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Required due to CUBLAS https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
         torch.manual_seed(config["seed"])
         torch.cuda.manual_seed(config["seed"])
         torch.cuda.manual_seed_all(config["seed"])
@@ -89,6 +89,8 @@ def main(config):
         from models.climax_convit_smooth import model_factory
     elif config["model"] is not None and config["model"] == "convit_2":
         from models.climax_with_convit_blocks import model_factory
+    elif config["model"] is not None and config["model"] == "local_cnn":
+        from models.local_cnn import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -345,7 +347,7 @@ def main(config):
             print_interval=config["print_interval"],
             console=config["console"],
         )
-        aggr_metrics_test, per_batch_test = test_evaluator.evaluate(keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
+        aggr_metrics_test, per_batch_test = test_evaluator.evaluate(keep_all=True, config=config, require_padding=require_padding, need_attn_weights=need_attn_weights)
         print_str = "Test Summary: "
         for k, v in aggr_metrics_test.items():
             if k is not None and v is not None:
@@ -362,7 +364,7 @@ def main(config):
         timestep_indices = np.arange(my_data.max_seq_len)
         rng.shuffle(timestep_indices)
     else:
-        q = None
+        timestep_indices = None
 
     # Initialize data generators
     dataset_class, collate_fn, runner_class = pipeline_factory(config)
@@ -378,6 +380,10 @@ def main(config):
     )
 
     train_dataset = dataset_class(my_data, train_indices, timestep_indices=timestep_indices)
+
+    # Store mean/std label
+    config["label_mean"] = train_dataset.label_mean
+    config["label_std"] = train_dataset.label_std
 
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -599,7 +605,7 @@ def main(config):
 
         # Evaluate on test dataset, plot scatterplot
         with torch.no_grad():
-            aggr_metrics_test, per_batch_test, predictions_test, targets_test = test_evaluator.evaluate(best_metrics["epoch"], keep_predictions=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
+            aggr_metrics_test, per_batch_test, predictions_test, targets_test = test_evaluator.evaluate(best_metrics["epoch"], config=config, keep_predictions=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
             if config["plot_accuracy"]:
                 visualization_utils.plot_single_scatter_file(predictions_test, targets_test, "predicted", "true", config['plot_dir'],
                                                              title_description=f"{config['experiment_name']}",
