@@ -132,6 +132,10 @@ def collate_superv(data, max_len=None):
 class ClassiregressionDataset(Dataset):
 
     def __init__(self, data, indices, timestep_indices=None):
+        """
+        timestep_indices is a list of indices specifying which timesteps to use in order
+        (if None, uses all timesteps). This allows one to shuffle/permute the timesteps.
+        """
         super(ClassiregressionDataset, self).__init__()
 
         self.data = data  # this is a subclass of the BaseData class in data.py

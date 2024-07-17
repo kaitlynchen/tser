@@ -52,7 +52,6 @@ def plot_single_scatter(x, y, x_label, y_label, title, ax=None, should_align=Tru
     slope = regression.coef_[0]
     intercept = regression.intercept_
     regression_line = slope * x + intercept
-    print(slope, intercept)
     regression_equation = 'y={:.2f}x+{:.2f}'.format(slope, intercept)
     identity_line = x
 

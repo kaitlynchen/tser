@@ -187,7 +187,7 @@ class Options(object):
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'custom_rpe', 'erpe_symmetric', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating"], default="before",
-                                 help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the mdoel can decide how much to weight position & content attention""")
+                                 help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
         self.parser.add_argument('--conv_projection', action='store_true',
                                  help="""If true, use conv instead of linear for Q/K/V""")
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',

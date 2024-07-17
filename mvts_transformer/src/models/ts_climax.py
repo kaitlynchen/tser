@@ -149,17 +149,7 @@ class ClimaX(nn.Module):
             seq_len = int((max_seq_len - patch_size) / stride + 1)
 
         elif self.conv_transformer:
-            # # Convolutional encoder
-            # self.embed_layer = nn.Sequential(
-            #     nn.Conv2d(1, embed_dim*4, kernel_size=[1, patch_size], padding='same'),
-            #     nn.BatchNorm2d(embed_dim*4),
-            #     nn.GELU(),
-            #     nn.Conv2d(embed_dim*4, embed_dim, kernel_size=[self.img_size[1], 1], padding='valid'),
-            #     nn.BatchNorm2d(embed_dim),
-            #     nn.MaxPool2d(kernel_size=[1, stride], stride=[1, stride]),
-            #     nn.GELU()
-            # )
-
+            # Convolutional encoder
             self.embed_layer = ConvEmbed(patch_size, img_size[1], embed_dim,
                                          stride, padding=int(np.ceil((patch_size-stride)/2)),  # Ensures that num_patches is num_timesteps/stride
                                          norm_layer=nn.BatchNorm1d)
@@ -250,7 +240,7 @@ class ClimaX(nn.Module):
 
     def setup_posenc(self, pos_encoding, relative_pos_encoding, seq_len, emb_dim, num_heads):
 
-        # For absolute positional encodings, it is a matrix of size [seq_len, emb_dim]
+        # ABSOLUTE POSITION ENCODING: vector for each timestep, or matrix of size [seq_len, emb_dim]
         if pos_encoding == "learnable":
             # Simple learnable vector for each position
             self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
@@ -301,66 +291,69 @@ class ClimaX(nn.Module):
                 closest_power_of_2 = 2**math.floor(math.log2(n))  #when the number of heads is not a power of 2, we use this workaround.
                 return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
 
+        # RELATIVE POSITION ENCODING: adjustment to the attention matrix that depends
+        # only on the relative offset between two timesteps. This can be added to the
+        # attention matrix before softmax or after softmax (see `where_to_add_relpos`)
         if relative_pos_encoding == "erpe":
             # eRPE: learnable bias for each relative offset between timesteps
-            # define a parameter table of relative position bias
-            # TODO. In the original eRPE paper, this is applied AFTER softmax, but in
-            # here we do it BEFORE softmax because of PyTorch's MultiheadAttention
-            # implementation. Try to fix this later!
+            # Define a parameter table of relative position bias
             self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads), requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
 
-            # get pair-wise relative position index for each token inside the window
+            # The attention matrix will have shape [time, time].
+            # For entry (i, j), we want to look up the appropriate index in relative_bias_table,
+            # which will be (i - j) + seq_len - 1. "relative_coords" does this lookup.
             coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
-            relative_coords += seq_len - 1  # shift to start from 0
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
+            relative_coords += seq_len - 1  # shift to start from 0. Each entry (i, j) contains (i - j) + seq_len - 1
             self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "erpe_symmetric":
-            # eRPE: learnable bias for each relative offset between timesteps
-            # define a parameter table of relative position bias
-            self.relative_bias_table = nn.Parameter(torch.zeros(seq_len, num_heads), requires_grad=True)  # Relative offsets range from (0) to -(seq_len-1), inclusive
+            # Same as eRPE, but offsets x and -x will now share a common offset.
+            # In other words, the offset only depends on the absolute distance, not the sign.
+            self.relative_bias_table = nn.Parameter(torch.zeros(seq_len, num_heads), requires_grad=True)  # Relative offsets range from (0) to (seq_len-1), inclusive
 
-            # get pair-wise relative position index for each token inside the window
+            # The attention matrix will have shape [time, time].
+            # For entry (i, j), we want to look up the appropriate index in relative_bias_table,
+            # which will be |i - j|. "relative_coords" does this lookup.
             coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains |i-j|
+            relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains |i - j|
             self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "erpe_alibi_init":
-            # Calculate initial bias table using ALIBI linear functions for each head. Note that the linaer function is multiplying "slope" with absolute |distance|.
+            # Calculate initial bias table using ALIBI linear functions for each head.
+            # Note that the linear function is multiplying "slope" with absolute |distance|.
             slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
             bias_table_init = torch.zeros(2*seq_len-1, num_heads)
             bias_table_init[0:seq_len-1] = torch.arange(start=seq_len-1, end=0, step=-1, device=self.device).unsqueeze(1) * slopes
             bias_table_init[seq_len-1:] = torch.arange(start=0, end=seq_len, device=self.device).unsqueeze(1) * slopes
             self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
 
-            # get pair-wise relative position index for each token inside the window
+            # For each entry in the attention matrix, store the matching index in relative_bias_table
             coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0
             self.register_buffer("relative_coords", relative_coords)
         elif relative_pos_encoding == "custom_rpe":
+            # Custom relative position encoding. Some heads will be initialized to behave like ConViT,
+            # with attention focused on a specific offset and decaying from there. Here, the offset,
+            # slope, and intercept are all learnable. Other heads will be randomly initialized and
+            # fully learnable (like ERPE).
             convit_heads = num_heads // 2
             normal_heads = num_heads - convit_heads
 
-            # These heads just have purely learnable positional embeddings
+            # Normal heads have purely learnable relative positional embeddings
             self.normal_biases = nn.Parameter(torch.zeros(2*seq_len-1, normal_heads), requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+
+            # Convit heads are initialized to focus attention around `convit_offsets`, with peak
+            # intensity `convit_intercepts` and decay `convit_slopes`
             self.convit_slopes = nn.Parameter(torch.tensor([0.5 for i in range(convit_heads)], device=self.device), requires_grad=True)
             self.convit_intercepts = nn.Parameter(torch.zeros((convit_heads), device=self.device), requires_grad=True)
             self.convit_offsets = nn.Parameter(torch.tensor([-1 * (2.0 ** i) for i in range(convit_heads//2)] +
                                                             [2.0 ** i for i in range(convit_heads//2)], device=self.device), requires_grad=True)
 
-            # #self.alibi_slopes = nn.Parameter(torch.tensor(get_slopes(alibi_heads), device=self.device), requires_grad=True)
-            # self.convit_slopes = nn.Parameter(torch.tensor([0.1 for i in range(convit_heads)], device=self.device), requires_grad=True)
-            # #self.alibi_intercepts = nn.Parameter(torch.zeros((alibi_heads), device=self.device), requires_grad=True)
-            # self.convit_slopes = torch.tensor([0.1 for i in range(convit_heads)], device=self.device)
-            # self.convit_intercepts = torch.zeros((convit_heads), device=self.device)
-            # self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(convit_heads//2)] +
-            #                                    [2.0 ** i for i in range(convit_heads//2)], device=self.device)
-            # bias_init[:, -convit_heads:] = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
-            # self.relative_bias_table = nn.Parameter(bias_init, requires_grad=True)
-            # get pair-wise relative position index for each token inside the window
+            # For each entry in the attention matrix, store the matching index in relative_bias_table
             coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i-j)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0
             self.register_buffer("relative_coords", relative_coords)
 
@@ -368,16 +361,13 @@ class ClimaX(nn.Module):
             # FIXED bias for relative offsets. Each head has a different function.
             # Code from https://github.com/ofirpress/attention_with_linear_biases/issues/5
 
-            # get pair-wise relative position index for each token inside the window
+            # For each entry in the attention matrix, store the matching index in relative_bias_table
             coords_t = torch.arange(seq_len, device=self.device)
             relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
             self.register_buffer("relative_coords", relative_coords)
 
             self.slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
-            # print("Slopes", self.slopes)
             self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [num_heads, 1, 1] * [seq_len, seq_len] -> [num_heads, seq_len, seq_len]
-            # self.alibi = self.alibi.view(1, num_heads, seq_len, seq_len)  # [1, num_heads, seq_len, seq_len]
-            # print("Final bias", self.alibi)
 
 
     def posenc_smoothness_loss(self, logger, plot_dir=None, epoch_num=None):
@@ -516,7 +506,7 @@ class ClimaX(nn.Module):
             x = self.aggregate_variables(x)  # B, L, D
 
         elif self.conv_transformer:
-            x = x.permute(0, 2, 1) # B, V, T  [batch, vars, time]
+            x = x.permute(0, 2, 1) # B, V, T  [batch, channel, time (num_patches)]
             x = self.embed_layer(x)  # [batch, embed_dim, num_patches]
             x = x.permute(0, 2, 1)  # [batch, num_patches (seq_len), embed_dim]
         else:
@@ -538,7 +528,7 @@ class ClimaX(nn.Module):
 
         # Construct mask for relative positional encoding.
         offset_mask = None
-        if "erpe" in self.relative_pos_encoding:  # erpe_symmetric can use the same code since we set "relative_coords" to use absolute distances
+        if self.relative_pos_encoding in ["erpe", "erpe_symmetric"]:  # erpe_symmetric can use the same code since we set "relative_coords" to use absolute distances
             # self.relative_bias_table: [2*seq_len-1, num_heads]
             # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
             # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
@@ -549,8 +539,7 @@ class ClimaX(nn.Module):
             offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)  # [seq_len, seq_len, heads]
             offset_mask = offset_mask.permute(2, 0, 1).repeat((x.shape[0], 1, 1))  # [batch*num_heads, seq_len, seq_len]
         elif self.relative_pos_encoding == "custom_rpe":
-            # # Set up bias table
-            # #alibi_biases = -1.0 * self.alibi_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1)) + self.alibi_intercepts # Distance to myself, [2*seq_len-1, num_alibi_heads]
+            # Set up bias table
             convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
             bias_table = torch.cat([self.normal_biases, convit_biases], dim=1)
             self.relative_bias_table = bias_table
@@ -712,13 +701,15 @@ class TransformerEncoder(nn.modules.Module):
 
         attn_weights_layers = None
 
-        # DEBUGGING: Compute Euclidean distance between each timestep's feature vectors. "output" is assumed to be shape [batch, seq_len, embed_dim].
+        # FOR VISUALIZATIONS: Compute Euclidean distance between each timestep's feature vectors.
+        # "output" is assumed to be shape [batch, seq_len, embed_dim].
         # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then take the norm over embed_dim.
         # Result is [batch, seq_len, seq_len]
         feat_detached = output.detach().cpu()
         feature_distances_layers = [torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3)]
 
-        # DEBUGGING: Compute cosine similarity between each timestep's feature vectors. "output" is assumed to be shape [batch, seq_len, embed_dim].
+        # FOR VISUALIZATIONS: Compute cosine similarity between each timestep's feature vectors.
+        # "output" is assumed to be shape [batch, seq_len, embed_dim].
         # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then compute similarity over embed_dim.
         # Result is [batch, seq_len, seq_len]
         # See https://pytorch.org/docs/stable/generated/torch.nn.functional.cosine_similarity.html
@@ -781,7 +772,7 @@ class TransformerEncoder(nn.modules.Module):
 
             # Plot attention matrices
             n_matrices = attn_weights_layers.shape[1]  # Total number of attention maps per example (n_layers*n_heads)
-            n_cols = n_matrices//2
+            n_cols = n_matrices//4
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
 
             for r in range(n_rows):
@@ -818,7 +809,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         if where_to_add_relpos == "before":
             # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
-            self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)  # TEMPORARY only for bugfix, batch_first=True)
+            self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
             assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         else:
             # Custom attention if we want relative position offset to be applied after softmax
@@ -867,6 +858,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         src = self.norm2(src)
         src = src.permute(0, 2, 1)  # restore (batch, seq_len, d_model)
         return src, attn_output_weights
+
 
 
 
@@ -936,21 +928,10 @@ class Attention_Rel_Scl(nn.Module):
         k = self.key(key).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
         v = self.value(value).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
         q = self.query(query).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
-        # # k shape = (batch_size, num_heads, d_head, seq_len)
-        # # v,q shape = (batch_size, num_heads, seq_len, d_head)
-        # print("Before linear projection")
-        # print(torch.dot(query[0, 0, :], key[0, 0, :]))
-        # print(torch.dot(query[0, 1, :], key[0, 1, :]))
-        # print(torch.dot(query[0, 2, :], key[0, 2, :]))
-        # print(torch.dot(query[0, 3, :], key[0, 3, :]))
-        # print("After lin proj")
-        # print(torch.dot(q[0, 0, 0, :], k[0, 0, :, 0]))
-        # print(torch.dot(q[0, 0, 0, :], k[0, 0, :, 1]))
-        # print(torch.dot(q[0, 0, 0, :], k[0, 0, :, 2]))
-        # print(torch.dot(q[0, 0, 0, :], k[0, 0, :, 3]))
-        # exit(1)
+        # k shape = (batch_size, num_heads, d_head, seq_len)
+        # v,q shape = (batch_size, num_heads, seq_len, d_head)
+
         attn = torch.matmul(q, k) * self.scale  # attn shape (batch_size, num_heads, seq_len, seq_len)
-        #print(attn.shape)
 
         # Add mask (relative position encoding) before softmax if specified
         if self.where_to_add_relpos == 'before' and attn_mask is not None:
@@ -968,7 +949,7 @@ class Attention_Rel_Scl(nn.Module):
             if self.where_to_add_relpos == 'after':
                 attn = content_attn + attn_mask
             elif self.where_to_add_relpos == "after_gating":
-                print("Gating (Pr position)", torch.sigmoid(self.gating_param))
+                # print("Gating (Pr position)", torch.sigmoid(self.gating_param))
                 gating = self.gating_param.view(1,-1,1,1)
                 attn = (1.-torch.sigmoid(gating))*content_attn + torch.sigmoid(gating)*F.softmax(attn_mask, dim=-1)  # First term is original content attention, second term is position attention
                 attn /= attn.sum(dim=-1).unsqueeze(-1)
@@ -1009,7 +990,6 @@ class Attention_Rel_Scl(nn.Module):
         # out = self.to_out(out)
         # print("Out", out[0, 0:10, :])
         return out, attn
-
 
 
 # ========================================================================

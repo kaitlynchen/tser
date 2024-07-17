@@ -600,22 +600,6 @@ class SupervisedRunner(BaseRunner):
 
             if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
 
-                # # Plot example attention matrices
-                # if epoch_num == config['epochs'] and i == 0:  # epoch_num is 1-based
-                #     n_rows = 5  # Examples to plot
-                #     n_matrices = attn_weights_layers.shape[1]  # Total number of attention maps per example (n_layers*n_heads)
-                #     n_cols = n_matrices//2
-                #     fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-
-                #     for r in range(n_rows):
-                #         for c in range(n_cols):
-                #             im = axeslist[r, c].imshow(attn_weights_layers[r, c*(n_matrices//n_cols), :, :].detach().cpu().numpy(), vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
-                #     plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-                #     plt.colorbar(im)
-                #     plt.suptitle("Example attention matrices")
-                #     plt.savefig(os.path.join(config['plot_dir'], 'attention_matrices.png'))
-                #     plt.close()
-
                 attn_smoothness_loss = 0
                 attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
                 # attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
@@ -626,9 +610,6 @@ class SupervisedRunner(BaseRunner):
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
-                # if (epoch_num % 100 == 0 or epoch_num==1) and i == 0:
-                #     posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=os.path.join(config['plot_dir'], f"epoch{epoch_num}", epoch_num=epoch_num)
-                # else:
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
                 posenc_loss += posenc_loss_batch.cpu().detach().numpy()
