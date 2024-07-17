@@ -1,5 +1,5 @@
 """
-Simple linaer baseline
+Simple linear regression baselines only
 """
 
 import random

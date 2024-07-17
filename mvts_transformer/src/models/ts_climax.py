@@ -356,7 +356,6 @@ class ClimaX(nn.Module):
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0
             self.register_buffer("relative_coords", relative_coords)
-
         elif relative_pos_encoding == "alibi":
             # FIXED bias for relative offsets. Each head has a different function.
             # Code from https://github.com/ofirpress/attention_with_linear_biases/issues/5
