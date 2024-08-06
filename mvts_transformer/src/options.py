@@ -149,7 +149,7 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn", "climax_smooth_plot"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")

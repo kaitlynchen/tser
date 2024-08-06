@@ -91,6 +91,8 @@ def main(config):
         from models.climax_with_convit_blocks import model_factory
     elif config["model"] is not None and config["model"] == "local_cnn":
         from models.local_cnn import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth_plot":
+        from models.ts_climax_timestep import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -323,7 +325,7 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth") and config["smooth_attention"]
+    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth" or config["model"] == "climax_smooth_plot") and config["smooth_attention"]
     use_smoothing = need_attn_weights and config["task"] == "regression"
     smoothing_lambda = config["reg_lambda"]
 
