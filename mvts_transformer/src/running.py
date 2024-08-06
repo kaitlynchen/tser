@@ -257,13 +257,14 @@ def validate(
         if keep_predictions:
             aggr_metrics, per_batch, predictions, targets = val_evaluator.evaluate(
                 epoch,
+                config,
                 keep_predictions=True,
                 require_padding=require_padding,
                 keep_all=True,
                 need_attn_weights=need_attn_weights
             )
         else:
-            aggr_metrics, per_batch = val_evaluator.evaluate(epoch, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
+            aggr_metrics, per_batch = val_evaluator.evaluate(epoch, config, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
 
     eval_runtime = time.time() - eval_start_time
     logger.info(
@@ -362,6 +363,7 @@ class BaseRunner(object):
     def evaluate(
         self,
         epoch_num=None,
+        config=None,
         keep_predictions=False,
         require_padding=False,
         keep_all=True,
@@ -462,6 +464,7 @@ class UnsupervisedRunner(BaseRunner):
     def evaluate(
         self,
         epoch_num=None,
+        config=None,
         keep_predictions=False,
         require_padding=False,
         keep_all=True,
@@ -557,20 +560,28 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
+            # Plot dir if needed
+            if i == 0 and epoch_num % 100 == 0:
+                plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
+                os.makedirs(plot_dir, exist_ok=True)
+            else:
+                plot_dir = None
+
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
             if require_padding:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
+                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks)
+                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
             else:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device))
+                    predictions, attn_weights_layers = self.model(X.to(self.device), plot_dir=plot_dir)
                 else:
-                    predictions = self.model(X.to(self.device))
+                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
+            predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions)
             all_targets.append(targets)
 
@@ -589,35 +600,17 @@ class SupervisedRunner(BaseRunner):
 
             if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
 
-                # Plot example attention matrices
-                if epoch_num == config['epochs'] and i == 0:  # epoch_num is 1-based
-                    n_rows = 5  # Examples to plot
-                    n_cols = 4
-                    num_heads = attn_weights_layers.shape[1]  # Heads to plot
-                    fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-
-                    for r in range(n_rows):
-                        for c in range(n_cols):
-                            im = axeslist[r, c].imshow(attn_weights_layers[r, c*(num_heads//n_cols), :, :].detach().cpu().numpy(), vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
-                    plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-                    plt.colorbar(im)
-                    plt.suptitle("Example attention matrices")
-                    plt.savefig(os.path.join(config['plot_dir'], 'attention_matrices.png'))
-                    plt.close()
-
                 attn_smoothness_loss = 0
                 attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
-                attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                # attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                attn_smoothness_loss = ((attn_weights_layers[:, :, 2:] + attn_weights_layers[:, :, :-2] - 2*attn_weights_layers[:, :, 1:-1]) ** 2).sum(dim=2).mean()
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             supervised_smoothing_loss += total_loss.cpu().detach().numpy()
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
-                if (epoch_num==config["epochs"] or epoch_num==1) and i == 0:
-                    posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=config['plot_dir'], epoch_num=epoch_num)
-                else:
-                    posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=None)
+                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
                 posenc_loss += posenc_loss_batch.cpu().detach().numpy()
             else:
@@ -650,7 +643,7 @@ class SupervisedRunner(BaseRunner):
 
         return self.epoch_metrics
 
-    def evaluate(self, epoch_num=None, keep_predictions=False, require_padding=False, keep_all=True, plot=False, need_attn_weights=False):
+    def evaluate(self, epoch_num=None, config=None, keep_predictions=False, require_padding=False, keep_all=True, plot=False, need_attn_weights=False):
         self.model = self.model.eval()
 
         epoch_loss = 0  # total loss of epoch
@@ -671,17 +664,25 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
+            # Plot dir if needed
+            if i == 0 and epoch_num % 100 == 0 and config is not None:
+                plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
+                os.makedirs(plot_dir, exist_ok=True)
+            else:
+                plot_dir = None
+
             if require_padding:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), padding_masks)
+                    predictions, _ = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks)
+                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
             else:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device))
+                    predictions, _ = self.model(X.to(self.device), plot_dir=plot_dir)
                 else:
-                    predictions = self.model(X.to(self.device))
+                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
+            predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions.flatten().cpu().detach().numpy())
             all_targets.append(targets.flatten().cpu().detach().numpy())
 

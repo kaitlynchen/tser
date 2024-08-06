@@ -131,7 +131,11 @@ def collate_superv(data, max_len=None):
 
 class ClassiregressionDataset(Dataset):
 
-    def __init__(self, data, indices):
+    def __init__(self, data, indices, timestep_indices=None):
+        """
+        timestep_indices is a list of indices specifying which timesteps to use in order
+        (if None, uses all timesteps). This allows one to shuffle/permute the timesteps.
+        """
         super(ClassiregressionDataset, self).__init__()
 
         self.data = data  # this is a subclass of the BaseData class in data.py
@@ -139,6 +143,12 @@ class ClassiregressionDataset(Dataset):
         self.feature_df = self.data.feature_df.loc[self.IDs]
         self.labels_df = self.data.labels_df.loc[self.IDs]
         #self.time_df = self.data.time_df.loc[self.IDs]
+        self.timestep_indices = timestep_indices
+
+        # Calculate the mean/std label
+        self.label_mean = self.labels_df.values.mean()
+        self.label_std = self.labels_df.values.std()
+
 
     def __getitem__(self, ind):
         """
@@ -155,6 +165,8 @@ class ClassiregressionDataset(Dataset):
         X = self.feature_df.loc[self.IDs[ind]].values
         y = self.labels_df.loc[self.IDs[ind]].values  # (num_labels,) array
         #time = self.time_df.loc[self.IDs[ind]].values
+        if self.timestep_indices is not None:
+            X = X[self.timestep_indices, :]
 
         return torch.from_numpy(X), torch.from_numpy(y), self.IDs[ind]  #torch.from_numpy(time),
 
