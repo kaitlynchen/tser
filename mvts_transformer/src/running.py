@@ -547,6 +547,7 @@ class SupervisedRunner(BaseRunner):
             self.classification = False
 
     def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
+        train_start = time.time()
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
@@ -637,6 +638,8 @@ class SupervisedRunner(BaseRunner):
         epoch_loss = epoch_loss / total_samples
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
+        print("TRAIN EPOCH TIME:", time.time()-train_start)
+
 
         if keep_predictions:
             return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss

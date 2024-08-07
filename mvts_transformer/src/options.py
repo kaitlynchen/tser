@@ -206,7 +206,7 @@ class Options(object):
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead'], default='linear',
                                  help='Type of final pooling')
 
         # C-Mixup specific
