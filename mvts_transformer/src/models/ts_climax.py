@@ -700,13 +700,12 @@ class TransformerEncoder(nn.modules.Module):
 
         attn_weights_layers = None
 
-        # FOR VISUALIZATIONS: Compute Euclidean distance between each timestep's feature vectors.
-        # "output" is assumed to be shape [batch, seq_len, embed_dim].
-        # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then take the norm over embed_dim.
-        # Result is [batch, seq_len, seq_len]
-        feat_detached = output.detach().cpu()
-
         if plot_dir is not None:
+            # FOR VISUALIZATIONS: Compute Euclidean distance between each timestep's feature vectors.
+            # "output" is assumed to be shape [batch, seq_len, embed_dim].
+            # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then take the norm over embed_dim.
+            # Result is [batch, seq_len, seq_len]
+            feat_detached = output.detach().cpu()
             feature_distances_layers = [torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3)]
 
             # FOR VISUALIZATIONS: Compute cosine similarity between each timestep's feature vectors.

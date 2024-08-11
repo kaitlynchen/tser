@@ -611,9 +611,10 @@ class SupervisedRunner(BaseRunner):
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
-                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir)
-                total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
-                posenc_loss += posenc_loss_batch.cpu().detach().numpy()
+                if config['lambda_posenc_smoothness'] > 0:
+                    posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir)
+                    total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
+                    posenc_loss += posenc_loss_batch.cpu().detach().numpy()
             else:
                 assert config['lambda_posenc_smoothness'] == 0
 
@@ -638,8 +639,6 @@ class SupervisedRunner(BaseRunner):
         epoch_loss = epoch_loss / total_samples
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
-        print("TRAIN EPOCH TIME:", time.time()-train_start)
-
 
         if keep_predictions:
             return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss
@@ -647,6 +646,7 @@ class SupervisedRunner(BaseRunner):
         return self.epoch_metrics
 
     def evaluate(self, epoch_num=None, config=None, keep_predictions=False, require_padding=False, keep_all=True, plot=False, need_attn_weights=False):
+        eval_start = time.time()
         self.model = self.model.eval()
 
         epoch_loss = 0  # total loss of epoch
