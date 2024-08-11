@@ -54,11 +54,11 @@ def main(config):
     logger.info("Running:\n{}\n".format(" ".join(sys.argv)))  # command used to run
 
     if config["seed"] is not None:
-        # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Required due to CUBLAS https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Required due to CUBLAS https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
         torch.manual_seed(config["seed"])
         torch.cuda.manual_seed(config["seed"])
         torch.cuda.manual_seed_all(config["seed"])
-        # torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True)
         random.seed(config["seed"])
         np.random.seed(config["seed"])
 

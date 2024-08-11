@@ -547,7 +547,6 @@ class SupervisedRunner(BaseRunner):
             self.classification = False
 
     def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
-        train_start = time.time()
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
@@ -646,7 +645,6 @@ class SupervisedRunner(BaseRunner):
         return self.epoch_metrics
 
     def evaluate(self, epoch_num=None, config=None, keep_predictions=False, require_padding=False, keep_all=True, plot=False, need_attn_weights=False):
-        eval_start = time.time()
         self.model = self.model.eval()
 
         epoch_loss = 0  # total loss of epoch

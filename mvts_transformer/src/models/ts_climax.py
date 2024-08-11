@@ -723,8 +723,8 @@ class TransformerEncoder(nn.modules.Module):
             else:
               attn_weights_layers = torch.cat((attn_weights_layers, attn_weights), dim=1)  # attn_weights: [batch, n_layers*num_heads, seq_len, seq_len]
 
-            # DEBUGGING: Compute distances between timestep feature vectors
             if plot_dir is not None:
+                # FOR VISUALIZATIONS: Compute distances between timestep feature vectors
                 feat_detached = output.detach().cpu()
                 feature_distances_layers.append(torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3))
                 similarity_matrix_layers.append(F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3))
