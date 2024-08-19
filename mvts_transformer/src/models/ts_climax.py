@@ -700,19 +700,20 @@ class TransformerEncoder(nn.modules.Module):
 
         attn_weights_layers = None
 
-        # FOR VISUALIZATIONS: Compute Euclidean distance between each timestep's feature vectors.
-        # "output" is assumed to be shape [batch, seq_len, embed_dim].
-        # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then take the norm over embed_dim.
-        # Result is [batch, seq_len, seq_len]
-        feat_detached = output.detach().cpu()
-        feature_distances_layers = [torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3)]
+        if plot_dir is not None:
+            # FOR VISUALIZATIONS: Compute Euclidean distance between each timestep's feature vectors.
+            # "output" is assumed to be shape [batch, seq_len, embed_dim].
+            # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then take the norm over embed_dim.
+            # Result is [batch, seq_len, seq_len]
+            feat_detached = output.detach().cpu()
+            feature_distances_layers = [torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3)]
 
-        # FOR VISUALIZATIONS: Compute cosine similarity between each timestep's feature vectors.
-        # "output" is assumed to be shape [batch, seq_len, embed_dim].
-        # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then compute similarity over embed_dim.
-        # Result is [batch, seq_len, seq_len]
-        # See https://pytorch.org/docs/stable/generated/torch.nn.functional.cosine_similarity.html
-        similarity_matrix_layers = [F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3)]
+            # FOR VISUALIZATIONS: Compute cosine similarity between each timestep's feature vectors.
+            # "output" is assumed to be shape [batch, seq_len, embed_dim].
+            # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then compute similarity over embed_dim.
+            # Result is [batch, seq_len, seq_len]
+            # See https://pytorch.org/docs/stable/generated/torch.nn.functional.cosine_similarity.html
+            similarity_matrix_layers = [F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3)]
 
         # Compute forward pass
         for mod in self.layers:
@@ -722,10 +723,11 @@ class TransformerEncoder(nn.modules.Module):
             else:
               attn_weights_layers = torch.cat((attn_weights_layers, attn_weights), dim=1)  # attn_weights: [batch, n_layers*num_heads, seq_len, seq_len]
 
-            # DEBUGGING: Compute distances between timestep feature vectors
-            feat_detached = output.detach().cpu()
-            feature_distances_layers.append(torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3))
-            similarity_matrix_layers.append(F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3))
+            if plot_dir is not None:
+                # FOR VISUALIZATIONS: Compute distances between timestep feature vectors
+                feat_detached = output.detach().cpu()
+                feature_distances_layers.append(torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3))
+                similarity_matrix_layers.append(F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3))
 
         # VISUALIZATIONS
         if plot_dir is not None:
