@@ -54,7 +54,6 @@ def model_factory(config, data):
                           conv_transformer=config['conv_transformer'],
                           where_to_add_relpos=config['where_to_add_relpos'],
                           conv_projection=config['conv_projection'],
-                          skip_softmax_in_attn=config['skip_softmax_in_attn'],
                           local_mask=config['local_mask'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
@@ -117,7 +116,6 @@ class ClimaX(nn.Module):
         conv_transformer=False,
         where_to_add_relpos=False,
         conv_projection=False,
-        skip_softmax_in_attn=False,
         local_mask=-1
     ):
         super().__init__()
@@ -212,7 +210,7 @@ class ClimaX(nn.Module):
                                                  feedforward_dim, drop_rate * (1.0 - freeze))
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
-                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos, conv_projection=conv_projection, skip_softmax_in_attn=skip_softmax_in_attn)
+                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos, conv_projection=conv_projection)
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
         # self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
 
@@ -809,15 +807,15 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos=False, conv_projection=False, skip_softmax_in_attn=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos=False, conv_projection=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
-        if where_to_add_relpos == "before" and not skip_softmax_in_attn:
+        if where_to_add_relpos == "before":
             # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
             self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
             assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         else:
             # Custom attention if we want relative position offset to be applied after softmax
-            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos, skip_softmax_in_attn=skip_softmax_in_attn)
+            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -872,12 +870,11 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 # Note that the attention bias is added after softmax, and we further use a gating param to weight them.
 # ========================================================================================
 class Attention_Rel_Scl(nn.Module):
-    def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos, skip_softmax_in_attn, **kwargs):
+    def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos, **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.conv_projection = conv_projection
         self.where_to_add_relpos = where_to_add_relpos
-        self.skip_softmax_in_attn = skip_softmax_in_attn
         self.scale = emb_size ** -0.5
         # self.to_qkv = nn.Linear(inp, inner_dim * 3, bias=False)
 
@@ -945,10 +942,7 @@ class Attention_Rel_Scl(nn.Module):
             attn += attn_mask
 
         # Perform softmax
-        if self.skip_softmax_in_attn:
-            attn = nn.functional.normalize(attn, dim=-1)
-        else:
-            attn = nn.functional.softmax(attn, dim=-1)
+        attn = nn.functional.softmax(attn, dim=-1)
 
         # print("Init attn", attn[0, 0, 0:10, 0:10])
         if attn_mask is not None:

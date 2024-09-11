@@ -190,7 +190,6 @@ class Options(object):
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating"], default="before",
                                  help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
-        self.parser.add_argument('--skip_softmax_in_attn', action='store_true', help='If True, do not use softmax in attn (so we allow for negative weights)')
         self.parser.add_argument('--conv_projection', action='store_true',
                                  help="""If true, use conv instead of linear for Q/K/V""")
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',
