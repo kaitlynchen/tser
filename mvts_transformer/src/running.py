@@ -581,9 +581,10 @@ class SupervisedRunner(BaseRunner):
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
-            predictions = predictions * config["label_std"] + config["label_mean"]
-            all_predictions.append(predictions)
-            all_targets.append(targets)
+            if config['normalize_label']:
+                predictions = predictions * config["label_std"] + config["label_mean"]
+            all_predictions.append(predictions.flatten())
+            all_targets.append(targets.flatten())
 
             # (batch_size,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
@@ -610,10 +611,10 @@ class SupervisedRunner(BaseRunner):
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
-                if config['lambda_posenc_smoothness'] > 0:
-                    posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir)
-                    total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
-                    posenc_loss += posenc_loss_batch.cpu().detach().numpy()
+                # if config['lambda_posenc_smoothness'] > 0:
+                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
+                total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
+                posenc_loss += posenc_loss_batch.cpu().detach().numpy()
             else:
                 assert config['lambda_posenc_smoothness'] == 0
 
@@ -683,7 +684,8 @@ class SupervisedRunner(BaseRunner):
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
-            predictions = predictions * config["label_std"] + config["label_mean"]
+            if config['normalize_label']:
+                predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions.flatten().cpu().detach().numpy())
             all_targets.append(targets.flatten().cpu().detach().numpy())
 

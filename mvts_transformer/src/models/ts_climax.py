@@ -54,6 +54,7 @@ def model_factory(config, data):
                           conv_transformer=config['conv_transformer'],
                           where_to_add_relpos=config['where_to_add_relpos'],
                           conv_projection=config['conv_projection'],
+                          skip_softmax_in_attn=config['skip_softmax_in_attn'],
                           local_mask=config['local_mask'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
@@ -116,6 +117,7 @@ class ClimaX(nn.Module):
         conv_transformer=False,
         where_to_add_relpos=False,
         conv_projection=False,
+        skip_softmax_in_attn=False,
         local_mask=-1
     ):
         super().__init__()
@@ -210,7 +212,7 @@ class ClimaX(nn.Module):
                                                  feedforward_dim, drop_rate * (1.0 - freeze))
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
-                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos, conv_projection=conv_projection)
+                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos, conv_projection=conv_projection, skip_softmax_in_attn=skip_softmax_in_attn)
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
         # self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
 
@@ -478,7 +480,7 @@ class ClimaX(nn.Module):
             #             feature_distances_manual[i, j, k] = torch.linalg.norm(x[i, j, :] - x[i, k, :])
             # assert torch.allclose(feature_distances, feature_distances_manual)
 
-            min_value, max_value = torch.min(feature_distances), torch.max(feature_distances)
+            min_value, max_value = torch.quantile(feature_distances, 0.01), torch.quantile(feature_distances, 0.99)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
             for r in range(n_rows):
                 im = axeslist[r].imshow(feature_distances[r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
@@ -736,7 +738,7 @@ class TransformerEncoder(nn.modules.Module):
             # Plot Euclidean distance between timestep feature vectors
             n_cols = len(feature_distances_layers)
             feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # Convert this to similar format as attn_weights_layers [batch, n_matrices, seq_len, seq_len]
-            min_value, max_value = torch.min(feature_distances_layers), torch.max(feature_distances_layers)
+            min_value, max_value = torch.quantile(feature_distances_layers, 0.01), torch.quantile(feature_distances_layers, 0.99)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
             for r in range(n_rows):
                 for c in range(n_cols):
@@ -755,7 +757,7 @@ class TransformerEncoder(nn.modules.Module):
             # Plot cosine similarity between timestep feature vectors
             n_cols = len(similarity_matrix_layers)
             similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # Convert this to similar format as attn_weights_layers [batch, n_matrices, seq_len, seq_len]
-            min_value, max_value = torch.min(similarity_matrix_layers), torch.max(similarity_matrix_layers)
+            min_value, max_value = torch.quantile(similarity_matrix_layers, 0.01), torch.quantile(similarity_matrix_layers, 0.99)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
             for r in range(n_rows):
                 for c in range(n_cols):
@@ -775,10 +777,11 @@ class TransformerEncoder(nn.modules.Module):
             n_matrices = attn_weights_layers.shape[1]  # Total number of attention maps per example (n_layers*n_heads)
             n_cols = n_matrices//4
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-
+            min_value = torch.quantile(attn_weights_layers, 0.01)
+            max_value = torch.quantile(attn_weights_layers, 0.99)
             for r in range(n_rows):
                 for c in range(n_cols):
-                    im = axeslist[r, c].imshow(attn_weights_layers[r, c*(n_matrices//n_cols), :, :].detach().cpu().numpy(), vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
+                    im = axeslist[r, c].imshow(attn_weights_layers[r, c*(n_matrices//n_cols), :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)  #, vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
             plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
             plt.colorbar(im)
             plt.suptitle("Example attention matrices")
@@ -806,15 +809,15 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos=False, conv_projection=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos=False, conv_projection=False, skip_softmax_in_attn=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
-        if where_to_add_relpos == "before":
+        if where_to_add_relpos == "before" and not skip_softmax_in_attn:
             # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
             self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
             assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         else:
             # Custom attention if we want relative position offset to be applied after softmax
-            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
+            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos, skip_softmax_in_attn=skip_softmax_in_attn)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -869,11 +872,12 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 # Note that the attention bias is added after softmax, and we further use a gating param to weight them.
 # ========================================================================================
 class Attention_Rel_Scl(nn.Module):
-    def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos, **kwargs):
+    def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos, skip_softmax_in_attn, **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.conv_projection = conv_projection
         self.where_to_add_relpos = where_to_add_relpos
+        self.skip_softmax_in_attn = skip_softmax_in_attn
         self.scale = emb_size ** -0.5
         # self.to_qkv = nn.Linear(inp, inner_dim * 3, bias=False)
 
@@ -912,7 +916,7 @@ class Attention_Rel_Scl(nn.Module):
             # torch.nn.init.xavier_uniform_(self.query.weight)
 
         self.dropout = nn.Dropout(dropout)
-        self.gating_param = nn.Parameter(torch.zeros(num_heads), requires_grad=True)  # nn.Parameter(torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
+        self.gating_param = nn.Parameter(torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
         # self.to_out = nn.LayerNorm(emb_size)
 
     def forward(self, query, key, value, attn_mask, plot_dir=None, **kwargs):
@@ -941,17 +945,21 @@ class Attention_Rel_Scl(nn.Module):
             attn += attn_mask
 
         # Perform softmax
-        attn = nn.functional.softmax(attn, dim=-1)
+        if self.skip_softmax_in_attn:
+            attn = nn.functional.normalize(attn, dim=-1)
+        else:
+            attn = nn.functional.softmax(attn, dim=-1)
+
         # print("Init attn", attn[0, 0, 0:10, 0:10])
         if attn_mask is not None:
             attn_mask = rearrange(attn_mask, '(b h) l t -> b h l t', h=self.num_heads)
-            # print("Attn mask", attn_mask[0, 0:8, 0:8])
             content_attn = attn
             if self.where_to_add_relpos == 'after':
                 attn = content_attn + attn_mask
             elif self.where_to_add_relpos == "after_gating":
-                # print("Gating (Pr position)", torch.sigmoid(self.gating_param))
+                print("Gating (Pr position)", torch.sigmoid(self.gating_param))
                 gating = self.gating_param.view(1,-1,1,1)
+                print("Attn mask", F.softmax(attn_mask, dim=-1)[0, 10, 0:5, 0:5])
                 attn = (1.-torch.sigmoid(gating))*content_attn + torch.sigmoid(gating)*F.softmax(attn_mask, dim=-1)  # First term is original content attention, second term is position attention
                 attn /= attn.sum(dim=-1).unsqueeze(-1)
 
@@ -963,10 +971,11 @@ class Attention_Rel_Scl(nn.Module):
                 fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
 
                 for r in range(n_rows):
+
                     head_num = r * (attn.shape[1] // n_rows)
                     max_value = 0.1 #/attn.shape[2]
                     content_attn_head = content_attn[0, head_num, :, :]
-                    pos_attn_head = F.softmax(attn_mask, dim=-1)[0, head_num, :, :]
+                    pos_attn_head = attn_mask[0, head_num, :, :]  #F.softmax(attn_mask, dim=-1)
                     total_attn_head = attn[0, head_num, :, :]
                     axeslist[r, 0].imshow(content_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
                     axeslist[r, 1].imshow(pos_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
