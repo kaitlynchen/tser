@@ -600,7 +600,7 @@ class SupervisedRunner(BaseRunner):
                 total_loss = mean_loss
 
             if self.l1_reg:
-                total_loss += (self.l2_reg * l1_reg_loss(self.model))
+                total_loss += (self.l1_reg * l1_reg_loss(self.model))
 
             supervised_loss += total_loss.cpu().detach().numpy()
 

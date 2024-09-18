@@ -30,11 +30,11 @@ def l2_reg_loss(model):
 
 def l1_reg_loss(model):
     """
-    Returns L1 norm of """
+    Returns L1 norm of some linear layers
+    """
     l1_norm = 0.
     n_params = 0.
     for name, param in model.named_parameters():
-        print(name)
         # HACK list some names for now
         # In Torch MultiHeadAttention, linear layers are called self_attn.in_proj..., self_attn.out_proj
         # In TransformerBatchNormEncoderLayer, linear layers are called linaer1/linear2
@@ -43,6 +43,7 @@ def l1_reg_loss(model):
             l1_norm += param.abs().sum()
             n_params += param.numel()
     return l1_norm / n_params
+
 
 class NoFussCrossEntropyLoss(nn.CrossEntropyLoss):
     """
