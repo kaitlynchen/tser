@@ -18,7 +18,7 @@ import numpy as np
 import sklearn
 
 from utils import utils, analysis, visualization_utils
-from models.loss import l2_reg_loss
+from models.loss import l1_reg_loss, l2_reg_loss
 from datasets.dataset import (
     ImputationDataset,
     TransductionDataset,
@@ -342,6 +342,7 @@ class BaseRunner(object):
         device,
         loss_module,
         optimizer=None,
+        l1_reg=None,
         l2_reg=None,
         print_interval=10,
         console=True,
@@ -351,6 +352,7 @@ class BaseRunner(object):
         self.device = device
         self.optimizer = optimizer
         self.loss_module = loss_module
+        self.l1_reg = l1_reg
         self.l2_reg = l2_reg
         self.print_interval = print_interval
         self.printer = utils.Printer(console=console)
@@ -597,6 +599,9 @@ class SupervisedRunner(BaseRunner):
             else:
                 total_loss = mean_loss
 
+            if self.l1_reg:
+                total_loss += (self.l2_reg * l1_reg_loss(self.model))
+
             supervised_loss += total_loss.cpu().detach().numpy()
 
             if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
@@ -606,8 +611,10 @@ class SupervisedRunner(BaseRunner):
                 # attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
                 attn_smoothness_loss = ((attn_weights_layers[:, :, 2:] + attn_weights_layers[:, :, :-2] - 2*attn_weights_layers[:, :, 1:-1]) ** 2).sum(dim=2).mean()
                 total_loss += smoothing_lambda * attn_smoothness_loss
+            else:
+                attn_smoothness_loss = torch.tensor(0)
 
-            supervised_smoothing_loss += total_loss.cpu().detach().numpy()
+            supervised_smoothing_loss += attn_smoothness_loss.cpu().detach().numpy()
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):

@@ -28,6 +28,22 @@ def l2_reg_loss(model):
             return torch.sum(torch.square(param))
 
 
+def l1_reg_loss(model):
+    """
+    Returns L1 norm of """
+    l1_norm = 0.
+    n_params = 0.
+    for name, param in model.named_parameters():
+        print(name)
+        # HACK list some names for now
+        # In Torch MultiHeadAttention, linear layers are called self_attn.in_proj..., self_attn.out_proj
+        # In TransformerBatchNormEncoderLayer, linear layers are called linaer1/linear2
+        # In Attention_Rel_Scl, they are under query/key/value
+        if "linear1" in name or "linear2" in name or "self_attn" in name or "query" in name or "key" in name or "value" in name:
+            l1_norm += param.abs().sum()
+            n_params += param.numel()
+    return l1_norm / n_params
+
 class NoFussCrossEntropyLoss(nn.CrossEntropyLoss):
     """
     pytorch's CrossEntropyLoss is fussy: 1) needs Long (int64) targets only, and 2) only 1D.

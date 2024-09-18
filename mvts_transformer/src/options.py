@@ -139,6 +139,8 @@ class Options(object):
                                  help='Training batch size')
         self.parser.add_argument('--l2_reg', type=float, default=0,
                                  help='L2 weight regularization parameter')
+        self.parser.add_argument('--l1_reg', type=float, default=0,
+                                 help='L1 weight regularization parameter')
         self.parser.add_argument('--global_reg', action='store_true',
                                  help='If set, L2 regularization will be applied to all weights instead of only the output layer')
         self.parser.add_argument('--key_metric', choices={'loss', 'accuracy', 'precision'}, default='loss',
