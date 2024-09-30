@@ -76,6 +76,8 @@ class Options(object):
                                           'per_sample_std', 'per_sample_minmax'},
                                  default='standardization',
                                  help='If specified, will apply normalization on the input features of a dataset.')
+        self.parser.add_argument('--normalize_label', action='store_true', 
+                                 help="""If set, normalize the label (so the model predictions can have mean 0, std 1).""")
         self.parser.add_argument('--norm_from',
                                  help="""If given, will read normalization values (e.g. mean, std, min, max) from specified pickle file.
                             The columns correspond to features, rows correspond to mean, std or min, max.""")
@@ -137,6 +139,8 @@ class Options(object):
                                  help='Training batch size')
         self.parser.add_argument('--l2_reg', type=float, default=0,
                                  help='L2 weight regularization parameter')
+        self.parser.add_argument('--l1_reg', type=float, default=0,
+                                 help='L1 weight regularization parameter')
         self.parser.add_argument('--global_reg', action='store_true',
                                  help='If set, L2 regularization will be applied to all weights instead of only the output layer')
         self.parser.add_argument('--key_metric', choices={'loss', 'accuracy', 'precision'}, default='loss',
