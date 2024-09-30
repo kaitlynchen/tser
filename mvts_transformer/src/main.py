@@ -400,6 +400,7 @@ def main(config):
         device,
         loss_module,
         optimizer,
+        l1_reg=config["l1_reg"],
         l2_reg=output_reg,
         print_interval=config["print_interval"],
         console=config["console"],
