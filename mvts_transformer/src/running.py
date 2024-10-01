@@ -563,25 +563,25 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0:
-                plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
-                os.makedirs(plot_dir, exist_ok=True)
-            else:
-                plot_dir = None
+            # if i == 0 and epoch_num % 100 == 0:
+            #     plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
+            #     os.makedirs(plot_dir, exist_ok=True)
+            # else:
+            #     plot_dir = None
 
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
             if require_padding:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks)
             else:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions, attn_weights_layers = self.model(X.to(self.device))
                 else:
-                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device))
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
@@ -619,7 +619,7 @@ class SupervisedRunner(BaseRunner):
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
                 # if config['lambda_posenc_smoothness'] > 0:
-                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
+                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=None, epoch_num=epoch_num)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
                 posenc_loss += posenc_loss_batch.cpu().detach().numpy()
             else:
@@ -674,22 +674,22 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:
-                plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
-                os.makedirs(plot_dir, exist_ok=True)
-            else:
-                plot_dir = None
+            # if i == 0 and epoch_num % 100 == 0 and config is not None:
+            #     plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
+            #     os.makedirs(plot_dir, exist_ok=True)
+            # else:
+            #     plot_dir = None
 
             if require_padding:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions, _ = self.model(X.to(self.device), padding_masks)
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks)
             else:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions, _ = self.model(X.to(self.device))
                 else:
-                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device))
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
