@@ -2,15 +2,15 @@
 
 DATA=${1}
 
-for SEED in 0 
+for SEED in 0 1 2
 do
-    for REG in 0.01
+    for REG in 0 1e-5 1e-4 1e-3 1e-2 1e-1 0
     do
 
         # Baseline
         python main.py --comment "ClimaX ${DATA}" \
-            --seed $SEED --name ClimaX_smooth_${DATA}_BASELINE \
-            --records_file ${DATA}_20240810_BASELINE.xls \
+            --seed $SEED --name ClimaX_smooth_${DATA}_L1REG \
+            --records_file ${DATA}_20240810_L1REG.xls \
             --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
             --pattern TRAIN --val_ratio 0.2 --epochs 500 --lr 0.001 \
             --num_layers 3 --num_heads 16 --d_model 128 --dim_feedforward 256 \
