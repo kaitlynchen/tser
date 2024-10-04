@@ -41,6 +41,14 @@ def model_factory(config, data):
                           num_heads=config['num_heads'], num_classes=num_labels)
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
+
+def _get_activation_fn(activation):
+      if activation == "relu":
+          return F.relu
+      elif activation == "gelu":
+          return F.gelu
+      raise ValueError(
+          "activation should be relu/gelu, not {}".format(activation))
     
 class ClimaX(nn.Module):
     """Implements the ClimaX model as described in the paper,
@@ -74,6 +82,7 @@ class ClimaX(nn.Module):
         mlp_ratio=4.0,
         drop_path=0.1,
         drop_rate=0.1,
+        activation='gelu',
     ):
         super().__init__()
 
@@ -133,9 +142,20 @@ class ClimaX(nn.Module):
         # --------------------------------------------------------------------------
 
         self.initialize_weights()
+        self.act = _get_activation_fn(activation)
+        self.dropout1 = nn.Dropout(p=drop_rate)
 
         # final linear layer
         self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
+
+        self.linear_before_pool = nn.Linear(embed_dim, embed_dim)
+        final_emb_dim = embed_dim * max_seq_len
+        self.attention_pool = nn.Sequential(
+                nn.Linear(embed_dim, final_emb_dim),
+                nn.ReLU(),
+                nn.Linear(final_emb_dim, num_heads)
+        )
+        self.fc = nn.Linear(embed_dim * num_heads, num_classes)
 
     def initialize_weights(self):
         # initialize pos_emb and var_emb
@@ -224,6 +244,17 @@ class ClimaX(nn.Module):
 
         return x
 
+    def forward_pooling(self, x, plot_dir=None):
+        x = self.linear_before_pool(x)
+        attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
+        attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
+        attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
+        aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
+        aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
+        x = self.fc(aggregated_x)
+
+        return x
+
     def forward(self, x):
         """Forward pass through the model.
 
@@ -232,9 +263,9 @@ class ClimaX(nn.Module):
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
-        out_transformers = self.forward_encoder(x)  # B, L, D
-        preds = self.head(out_transformers)  # B, L, V*p*p
-        preds = preds.reshape(preds.shape[0], -1)
-        preds = self.output_layer(preds)       
+        preds = self.forward_encoder(x)
+        preds = self.act(preds)
+        preds = self.dropout1(preds)
+        preds = self.forward_pooling(preds)    
 
         return preds

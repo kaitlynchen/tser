@@ -34,7 +34,7 @@ def model_factory(config, data):
             raise x
 
     if (task == "imputation") or (task == "transduction"):
-        if config['model'] == 'climax_smooth':
+        if config['model'] == 'climax_smooth_pool':
             return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'],
                               d_ff=config['dim_feedforward'], dropout=config['dropout'],
                               activation=config['activation'], n_layers=config['num_layers'])
@@ -42,7 +42,7 @@ def model_factory(config, data):
         # dimensionality of labels
         num_labels = len(
             data.class_names) if task == "classification" else data.labels_df.shape[1]
-        if config['model'] == 'climax_smooth':
+        if config['model'] == 'climax_smooth_pool':
             return ClimaX(list([feat_dim]), device=config['device'], img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
                           stride=config['stride'], embed_dim=config['d_model'], depth=config['num_layers'], decoder_depth=config['num_decoder_layers'],
                           num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'],
@@ -584,11 +584,14 @@ class ClimaX(nn.Module):
         attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
         attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
         attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
+        B, H, T = attn_weights.shape
         aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
         aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
         x = self.fc(aggregated_x)
 
-        return x
+        attn_weights = attn_weights.unsqueeze(-1).expand((-1, -1, -1, T))
+
+        return x, attn_weights
 
     def forward(self, x, plot_dir=None):
         """Forward pass through the model.
@@ -599,13 +602,13 @@ class ClimaX(nn.Module):
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
-        preds, attn_weights = self.forward_encoder(x, plot_dir=plot_dir)
+        preds, enc_attn_weights = self.forward_encoder(x, plot_dir=plot_dir)
         preds = self.act(preds)
         preds = self.dropout1(preds)
         # preds = preds.reshape(preds.shape[0], -1)
         # preds = self.output_layer(preds)
-        preds = self.forward_pooling(preds)
-        return preds, attn_weights
+        preds, pool_attn_weights = self.forward_pooling(preds)
+        return preds, enc_attn_weights, pool_attn_weights
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])

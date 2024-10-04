@@ -93,6 +93,8 @@ def main(config):
         from models.local_cnn import model_factory
     elif config["model"] is not None and config["model"] == "climax_smooth_plot":
         from models.ts_climax_timestep import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth_pool":
+        from models.ts_climax_seqpool_smooth import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -325,8 +327,9 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth" or config["model"] == "climax_smooth_plot") and config["smooth_attention"]
+    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth" or config["model"] == "climax_smooth_plot" or config["model"] == "climax_smooth_pool") and config["smooth_attention"]
     use_smoothing = need_attn_weights and config["task"] == "regression"
+    use_pool_smoothing = use_smoothing and config["model"] == "climax_smooth_pool"
     smoothing_lambda = config["reg_lambda"]
 
     if config["test_only"] == "testset":  # Only evaluate and skip training
@@ -458,7 +461,7 @@ def main(config):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, use_pool_smoothing=use_pool_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
         train_epochs.append(epoch)
         train_losses_sup.append(supervised_loss)
         train_losses_smoothness.append(supervised_smoothness_loss)
