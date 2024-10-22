@@ -1,0 +1,9 @@
+for SEED in 0 1 2 3 4
+do
+    python mvts_transformer/src/main.py --output_dir output/test --comment "ClimaX with attention smoothing on AppliancesEnergy, testing" \
+                            --seed $SEED --name ClimaX_smooth_AppliancesEnergy_seed_${SEED}_test \
+                            --records_file climax_smooth_appliances_hyperparameter_test.xls --data_dir data/AppliancesEnergy --data_class tsra --pattern TRAIN \
+                            --test_pattern TEST --epochs 500 --lr 0.001 --num_layers 3 --num_heads 16 --dim_feedforward 256 --optimizer RAdam --batch_size 128 \
+                            --pos_encoding learnable --d_model 128 --task regression --normalization standardization --model climax_smooth --patch_length 16 \
+                            --stride 8 --reg_lambda 0.1 --smooth_attention
+done
