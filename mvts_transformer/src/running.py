@@ -621,7 +621,7 @@ class SupervisedRunner(BaseRunner):
                 # if config['lambda_posenc_smoothness'] > 0:
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
-                posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.int() * len(loss)  # put in same scale as batch_loss
+                posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * len(loss)  # put in same scale as batch_loss
             else:
                 assert config['lambda_posenc_smoothness'] == 0
 
