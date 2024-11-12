@@ -585,8 +585,8 @@ class SupervisedRunner(BaseRunner):
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
-            all_predictions.append(predictions.flatten())
-            all_targets.append(targets.flatten())
+            all_predictions.append(predictions.detach().flatten())
+            all_targets.append(targets.detach().flatten())
 
             # (batch_size,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
@@ -602,7 +602,7 @@ class SupervisedRunner(BaseRunner):
             if self.l1_reg:
                 total_loss += (self.l1_reg * l1_reg_loss(self.model))
 
-            supervised_loss += total_loss.cpu().detach().numpy()
+            supervised_loss += batch_loss.item()  # total_loss.cpu().detach().numpy()
 
             if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
 
@@ -614,14 +614,14 @@ class SupervisedRunner(BaseRunner):
             else:
                 attn_smoothness_loss = torch.tensor(0)
 
-            supervised_smoothing_loss += attn_smoothness_loss.cpu().detach().numpy()
+            supervised_smoothing_loss += (attn_smoothness_loss.item() * smoothing_lambda * len(loss))  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
                 # if config['lambda_posenc_smoothness'] > 0:
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
-                posenc_loss += posenc_loss_batch.cpu().detach().numpy()
+                posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * len(loss)  # put in same scale as batch_loss
             else:
                 assert config['lambda_posenc_smoothness'] == 0
 
@@ -644,6 +644,9 @@ class SupervisedRunner(BaseRunner):
 
         # average loss per sample for whole epoch
         epoch_loss = epoch_loss / total_samples
+        supervised_loss = supervised_loss / total_samples
+        posenc_loss = posenc_loss / total_samples
+
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
 

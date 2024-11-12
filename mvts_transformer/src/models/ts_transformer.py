@@ -315,7 +315,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         # add F.log_softmax and use NLLoss
         return output_layer
 
-    def forward(self, X, padding_masks):
+    def forward(self, X, padding_masks, **kwargs):
         """
         Args:
             X: (batch_size, seq_length, feat_dim) torch tensor of masked features (input)
