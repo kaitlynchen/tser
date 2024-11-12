@@ -26,7 +26,7 @@ def model_factory(config, data):
             data.class_names) if task == "classification" else data.labels_df.shape[1]
         if config['model'] == 'local_cnn':
             return LocalCNN(in_channels=feat_dim, max_len=max_seq_len, num_classes=num_labels, final_emb_dim=config['d_model'],
-                            conv_type=config['conv_type'], pool=config['pool'], pos_encoding=config['pos_encoding'])
+                            conv_type=config['conv_type'], pool=config['pool'], pos_encoding=config['pos_encoding'], n_heads=config['num_heads'])
         else:
             raise ValueError("Unsupported model", config['model'])
     else:
@@ -78,34 +78,55 @@ class LocalCNN(nn.Module):
                 nn.ReLU(),
                 nn.Conv1d(256, final_emb_dim, 5, 1, dilation=5, padding='same'),
             )
+        elif self.conv_type == "per_timestep":
+            self.conv = nn.Sequential(
+                nn.Conv1d(in_channels=in_channels, out_channels=64, kernel_size=1, stride=1),
+                nn.BatchNorm1d(64),
+                nn.ReLU(),
+                nn.Conv1d(64, 128, 1, 1),
+                nn.BatchNorm1d(128),
+                nn.ReLU(),
+                nn.Conv1d(128, 256, 1, 1),
+                nn.BatchNorm1d(256),
+                nn.ReLU(),
+                nn.Conv1d(256, final_emb_dim, 1, 1),
+            )
         else:
             raise ValueError("invalid conv_type")
 
-        # # Pos encoding for pooling
-        # self.pos_embed = None
-        # if pos_encoding == "learnable_sin_init":
-        #     self.pos_embed = nn.Parameter(torch.zeros(max_len, final_emb_dim), requires_grad=True)
-        #     pos_embed = get_1d_sincos_pos_embed_from_grid(
-        #         self.pos_embed.shape[-1],
-        #         np.arange(max_len)
-        #     )
-        #     self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
-        #     final_emb_dim_with_posenc = 2 * final_emb_dim
-        # elif pos_encoding == "none":
-        #     final_emb_dim_with_posenc = final_emb_dim
-        # else:
-        #     raise NotImplementedError("Only learnable_sin_init or none positional encoding implemented so far")
+        # Pos encoding for pooling
+        if pos_encoding == "learnable_sin_init":
+            assert "seqpool" in self.pool, "Pos encoding only makes sense with seqpool, seqpool_multihead, or seqpool_multihead_smoothed"
+            self.pos_embed = nn.Parameter(torch.zeros(max_len, final_emb_dim), requires_grad=True)
+            pos_embed = get_1d_sincos_pos_embed_from_grid(
+                self.pos_embed.shape[-1],
+                np.arange(max_len)
+            )
+            self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
+            final_emb_dim = 2 * final_emb_dim
+        elif pos_encoding == "none":
+            self.pos_embed = None
+        else:
+            raise NotImplementedError("Only learnable_sin_init or none positional encoding implemented so far")
 
         if self.pool == "seqpool":
             self.attention_pool = nn.Linear(final_emb_dim, 1)
-            self.fc = nn.Linear(final_emb_dim, num_classes)
-        elif self.pool == "seqpool_multihead":
+            self.fc = nn.Sequential(
+                nn.Linear(final_emb_dim, final_emb_dim),
+                nn.ReLU(),
+                nn.Linear(final_emb_dim, num_classes)
+            )      
+        elif self.pool == "seqpool_multihead" or self.pool == "seqpool_multihead_smoothed":
             self.attention_pool = nn.Sequential(
                 nn.Linear(final_emb_dim, final_emb_dim),
                 nn.ReLU(),
                 nn.Linear(final_emb_dim, n_heads)
             )
-            self.fc = nn.Linear(final_emb_dim*n_heads, num_classes)
+            self.fc = nn.Sequential(
+                nn.Linear(final_emb_dim*n_heads, final_emb_dim),
+                nn.ReLU(),
+                nn.Linear(final_emb_dim, num_classes)
+            )
 
         elif self.pool == "average":
             self.fc = nn.Sequential(
@@ -133,10 +154,14 @@ class LocalCNN(nn.Module):
         """
         x = x.permute((0, 2, 1))  # Convert to [batch, channel, time]
         x = self.conv(x)   # Convert to [batch, channel, time']  (may be fewer timesteps)
-        if self.pool == "seqpool" or self.pool == "seqpool_multihead":
+
+        if "seqpool" in self.pool:
             x = x.permute((0, 2, 1))  # Convert back to [batch, time, channel]. For each example & timestep, use all channels to predict an attention score
-            # if self.pos_embed is not None:
-            #     x = x + self.pos_embed
+            if self.pos_embed is not None:
+                # Concatenate positional embedding
+                # self.pos_embed initially has shape [time, channel]. Change to [batch, time, channel] by repeating.
+                pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
+                x = torch.cat((x, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
 
             if self.pool == "seqpool":
                 # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
@@ -148,9 +173,24 @@ class LocalCNN(nn.Module):
                 x = torch.matmul(F.softmax(self.attention_pool(x), dim=1).transpose(-1, -2), x).squeeze(-2)
                 x = self.fc(x)
             elif self.pool == "seqpool_multihead":
+                # Seqpool with multiple heads. Intuitively, different heads can
+                # focus on different parts of the sequence.
                 attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
                 attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
                 attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
+                aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
+                aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
+                x = self.fc(aggregated_x)
+            elif self.pool == "seqpool_multihead_smoothed":
+                # Same as seqpool_multihead above, but do a temporal smoothing
+                # on the attention weights for each head.
+                attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
+
+                # Smoothing
+                attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
+                attn_weights = F.avg_pool1d(attn_weights, kernel_size=5, stride=1, padding=2)
+
+                attn_weights = F.softmax(attn_weights, dim=2)  # [batch, n_heads, time]
                 aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
                 aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
                 x = self.fc(aggregated_x)
