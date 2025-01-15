@@ -131,7 +131,7 @@ def main(config):
         labels = None
 
     # Split dataset
-    if config['test_pattern'] is None:
+    if config['test_pattern'] is None:  # Use the pre-split fixed TEST set
         config['test_pattern'] = 'TEST'
     test_indices = None
 
