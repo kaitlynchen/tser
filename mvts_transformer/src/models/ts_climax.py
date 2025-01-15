@@ -158,14 +158,14 @@ class ClimaX(nn.Module):
                                          norm_layer=nn.BatchNorm1d)
             seq_len = int(max_seq_len // stride)
         else:
-            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim // 2)  # each patch has patch_size*num_variables elements
+            self.embed_layer = nn.Linear(patch_size*img_size[1])  # each patch has patch_size*num_variables elements
 
             # Number of tokens (patches) in the time dimension
             seq_len = int((max_seq_len - patch_size) / stride + 1)
         self.seq_len = seq_len
 
         # positional embedding
-        self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, embed_dim // 2, num_heads)
+        self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, num_heads)
 
         # --------------------------------------------------------------------------
 
@@ -227,7 +227,6 @@ class ClimaX(nn.Module):
         # final linear layer
         # self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
         # self.output_layer = nn.Linear(embed_dim * seq_len, num_classes)
-        self.pre_pool = nn.Linear(embed_dim, embed_dim)
         if self.pool == "seqpool":
             self.attention_pool = nn.Linear(embed_dim, 1)
             self.fc = nn.Sequential(
@@ -545,14 +544,14 @@ class ClimaX(nn.Module):
         # Add ABSOLUTE pos embedding if using.
         # At this point, X should be [batch, seq_len, embed_dim], and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
         if self.pos_embed is not None:
-            # NEW: Concatenate the positional embedding.
-            # self.pos_embed initially has shape [time, channel]. Change to [batch, time, channel] by repeating.
-            pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
-            x = torch.cat((x, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
+            # CURRENT: add the positional embedding
+            x = x + self.pos_embed
+            x = self.pos_drop(x)
 
-            # OLD: add the positional embedding
-            # x = x + self.pos_embed
-            # x = self.pos_drop(x)
+            # # ALTERNATIVE: Concatenate the positional embedding.
+            # # self.pos_embed initially has shape [time, channel]. Change to [batch, time, channel] by repeating.
+            # pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
+            # x = torch.cat((x, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
 
         # apply Transformer blocks. NOT USED ANYMORE
         # for blk in self.blocks:
@@ -614,7 +613,7 @@ class ClimaX(nn.Module):
 
         # POOLING. Note that x shape is [batch, time, channel] - differs from local_cnn
         if "seqpool" in self.pool:
-            # NOTE: Should we re-inject position embeddinghere?
+            # NOTE: Should we re-inject position embedding here?
 
             if self.pool == "seqpool":
                 # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
@@ -622,7 +621,6 @@ class ClimaX(nn.Module):
                 # Softmax normalizes it so that sum across the time dimension (for each example) is 1.
                 # Transpose it to [batch, 1, time], and then multiply with [batch, time, channel] -> [batch, 1, channel].
                 # Squeeze out the 1 to get [batch, channel].
-                # TODO add a positional encoding
                 preds = torch.matmul(F.softmax(self.attention_pool(preds), dim=1).transpose(-1, -2), preds).squeeze(-2)
                 preds = self.fc(preds)
             elif self.pool == "seqpool_multihead":
