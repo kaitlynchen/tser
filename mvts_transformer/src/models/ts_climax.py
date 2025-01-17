@@ -158,14 +158,14 @@ class ClimaX(nn.Module):
                                          norm_layer=nn.BatchNorm1d)
             seq_len = int(max_seq_len // stride)
         else:
-            self.embed_layer = nn.Linear(patch_size*img_size[1])  # each patch has patch_size*num_variables elements
+            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim)  # each patch has patch_size*num_variables elements
 
             # Number of tokens (patches) in the time dimension
             seq_len = int((max_seq_len - patch_size) / stride + 1)
         self.seq_len = seq_len
 
         # positional embedding
-        self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, num_heads)
+        self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, embed_dim, num_heads)
 
         # --------------------------------------------------------------------------
 
