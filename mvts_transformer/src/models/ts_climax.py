@@ -257,7 +257,6 @@ class ClimaX(nn.Module):
                 nn.Flatten(),  # Default converts to [batch, channel*time]
                 nn.Linear(embed_dim * seq_len, num_classes)
             )
-            print("SETUP FC", embed_dim, seq_len)
         else:
             raise ValueError("invalid pool")
 
@@ -269,7 +268,6 @@ class ClimaX(nn.Module):
             distance_matrix = torch.abs(indices.reshape((1, -1)) - indices.reshape((-1, 1)))  # [seq_len, seq_len]
             self.invalid_mask = torch.zeros((len(indices), len(indices)), device=self.device).bool()  # [seq_len, seq_len]
             self.invalid_mask[distance_matrix > self.local_mask] = True
-            print(self.invalid_mask)
         else:
             self.invalid_mask = None
 

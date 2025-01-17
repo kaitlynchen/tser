@@ -348,6 +348,6 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         output = output * padding_masks.unsqueeze(-1) # zero-out padding embeddings
         output = output.reshape(output.shape[0], -1) # (batch_size, seq_length * d_model)
-        output = self.output_layer(output)  # (batch_size, num_classes)
 
+        output = self.output_layer(output)  # (batch_size, num_classes)
         return output
