@@ -54,7 +54,8 @@ def model_factory(config, data):
                           conv_transformer=config['conv_transformer'],
                           where_to_add_relpos=config['where_to_add_relpos'],
                           conv_projection=config['conv_projection'],
-                          local_mask=config['local_mask'])
+                          local_mask=config['local_mask'],
+                          pool=config['pool'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -116,7 +117,8 @@ class ClimaX(nn.Module):
         conv_transformer=False,
         where_to_add_relpos=False,
         conv_projection=False,
-        local_mask=-1
+        local_mask=-1,
+        pool="linear",
     ):
         super().__init__()
 
@@ -133,6 +135,7 @@ class ClimaX(nn.Module):
         self.local_mask = local_mask
         self.where_to_add_relpos = where_to_add_relpos
         self.conv_projection = conv_projection
+        self.pool = pool
 
         # variable tokenization: separate embedding layer for each input variable
 
@@ -223,17 +226,48 @@ class ClimaX(nn.Module):
 
         # final linear layer
         # self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
-        self.output_layer = nn.Linear(embed_dim * seq_len, num_classes)
+        # self.output_layer = nn.Linear(embed_dim * seq_len, num_classes)
+        if self.pool == "seqpool":
+            self.attention_pool = nn.Linear(embed_dim, 1)
+            self.fc = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_classes)
+            )      
+        elif self.pool == "seqpool_multihead" or self.pool == "seqpool_multihead_smoothed":
+            self.attention_pool = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_heads)
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(embed_dim*num_heads, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_classes)
+            )
+
+        elif self.pool == "average":
+            self.fc = nn.Sequential(
+                nn.AdaptiveAvgPool1d(1),
+                nn.Flatten(),
+                nn.Linear(embed_dim, num_classes)
+            )
+        elif self.pool == "linear":
+            self.fc = nn.Sequential(
+                nn.Flatten(),  # Default converts to [batch, channel*time]
+                nn.Linear(embed_dim * seq_len, num_classes)
+            )
+        else:
+            raise ValueError("invalid pool")
+
 
         # Local mask. Restrict which pairs of timesteps can pay attention to each other
         if self.local_mask >= 0:
-
             # Note that if relative positional encoding is being used, this is redundant with "relative_coords"
             indices = torch.arange(0, seq_len, device=device)
             distance_matrix = torch.abs(indices.reshape((1, -1)) - indices.reshape((-1, 1)))  # [seq_len, seq_len]
-            self.invalid_mask = torch.zeros((len(indices), len(indices))).bool()  # [seq_len, seq_len]
+            self.invalid_mask = torch.zeros((len(indices), len(indices)), device=self.device).bool()  # [seq_len, seq_len]
             self.invalid_mask[distance_matrix > self.local_mask] = True
-            print(self.invalid_mask)
         else:
             self.invalid_mask = None
 
@@ -298,6 +332,7 @@ class ClimaX(nn.Module):
             # eRPE: learnable bias for each relative offset between timesteps
             # Define a parameter table of relative position bias
             self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads), requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+            nn.init.uniform_(self.relative_bias_table, -0.02, 0.02)
 
             # The attention matrix will have shape [time, time].
             # For entry (i, j), we want to look up the appropriate index in relative_bias_table,
@@ -305,18 +340,6 @@ class ClimaX(nn.Module):
             coords_t = torch.arange(seq_len, device=self.device)
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0. Each entry (i, j) contains (i - j) + seq_len - 1
-            self.register_buffer("relative_coords", relative_coords)
-
-        elif relative_pos_encoding == "erpe_symmetric":
-            # Same as eRPE, but offsets x and -x will now share a common offset.
-            # In other words, the offset only depends on the absolute distance, not the sign.
-            self.relative_bias_table = nn.Parameter(torch.zeros(seq_len, num_heads), requires_grad=True)  # Relative offsets range from (0) to (seq_len-1), inclusive
-
-            # The attention matrix will have shape [time, time].
-            # For entry (i, j), we want to look up the appropriate index in relative_bias_table,
-            # which will be |i - j|. "relative_coords" does this lookup.
-            coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains |i - j|
             self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "erpe_alibi_init":
@@ -420,9 +443,6 @@ class ClimaX(nn.Module):
     def initialize_weights(self):
         # NOTE: pos_embed initialization is moved to setup_pos_embed
 
-        # var_embed = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
-        # self.var_embed.data.copy_(torch.from_numpy(var_embed).float())
-
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -439,6 +459,10 @@ class ClimaX(nn.Module):
     def create_var_embedding(self, dim):
         # number of variables x embedding dim
         var_embed = nn.Parameter(torch.zeros(self.img_size[1], dim), requires_grad=True)
+
+        # Initialize with sincos, not sure if this is correct
+        sincos = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(self.img_size[1]))
+        var_embed.data.copy_(torch.from_numpy(sincos).float())
         return var_embed
 
     def aggregate_variables(self, x: torch.Tensor):
@@ -518,8 +542,14 @@ class ClimaX(nn.Module):
         # Add ABSOLUTE pos embedding if using.
         # At this point, X should be [batch, seq_len, embed_dim], and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
         if self.pos_embed is not None:
+            # CURRENT: add the positional embedding
             x = x + self.pos_embed
             x = self.pos_drop(x)
+
+            # # ALTERNATIVE: Concatenate the positional embedding.
+            # # self.pos_embed initially has shape [time, channel]. Change to [batch, time, channel] by repeating.
+            # pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
+            # x = torch.cat((x, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
 
         # apply Transformer blocks. NOT USED ANYMORE
         # for blk in self.blocks:
@@ -527,7 +557,7 @@ class ClimaX(nn.Module):
 
         # Construct mask for relative positional encoding.
         offset_mask = None
-        if self.relative_pos_encoding in ["erpe", "erpe_symmetric"]:  # erpe_symmetric can use the same code since we set "relative_coords" to use absolute distances
+        if self.relative_pos_encoding == "erpe":
             # self.relative_bias_table: [2*seq_len-1, num_heads]
             # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
             # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
@@ -577,12 +607,58 @@ class ClimaX(nn.Module):
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
-        preds, attn_weights = self.forward_encoder(x, plot_dir=plot_dir)
-        preds = self.act(preds)
-        preds = self.dropout1(preds)
-        preds = preds.reshape(preds.shape[0], -1)
-        preds = self.output_layer(preds)
-        return preds, attn_weights
+        preds, attn_weights_enc = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [batch, time, channel]
+
+        # POOLING. Note that x shape is [batch, time, channel] - differs from local_cnn
+        if "seqpool" in self.pool:
+            # NOTE: Should we re-inject position embedding here?
+
+            if self.pool == "seqpool":
+                # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
+                # attention_pool outputs [batch, time, 1].
+                # Softmax normalizes it so that sum across the time dimension (for each example) is 1.
+                # Transpose it to [batch, 1, time], and then multiply with [batch, time, channel] -> [batch, 1, channel].
+                # Squeeze out the 1 to get [batch, channel].
+                preds = torch.matmul(F.softmax(self.attention_pool(preds), dim=1).transpose(-1, -2), preds).squeeze(-2)
+                preds = self.fc(preds)
+            elif self.pool == "seqpool_multihead":
+                # Seqpool with multiple heads. Intuitively, different heads can
+                # focus on different parts of the sequence.
+                attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
+                attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
+                attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
+                aggregated_x = torch.matmul(attn_weights, preds)  # [batch, n_heads, channel]
+                aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
+                preds = self.fc(aggregated_x)
+            elif self.pool == "seqpool_multihead_smoothed":
+                # Same as seqpool_multihead above, but do a temporal smoothing
+                # on the attention weights for each head.
+                attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
+
+                # Smoothing
+                attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
+                attn_weights = F.avg_pool1d(attn_weights, kernel_size=5, stride=1, padding=2)
+
+                attn_weights = F.softmax(attn_weights, dim=2)  # [batch, n_heads, time]
+                aggregated_x = torch.matmul(attn_weights, preds)  # [batch, n_heads, channel]
+                aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
+                preds = self.fc(aggregated_x)
+        elif self.pool == "linear":
+            preds = self.act(preds)
+            preds = self.dropout1(preds)
+            preds = self.fc(preds)  # fc already contains a Flatten
+        elif self.pool == "average":
+            preds = preds.permute((0, 2, 1))  # Reshape to [batch, channel, time] to be compatible with AvgPool1d
+            preds = self.fc(preds)
+        else:
+            raise ValueError("Invalid pool")
+        return preds, attn_weights_enc  # TODO also return seqpool weights
+
+        # OLD CODE
+        # preds = preds.reshape(preds.shape[0], -1)
+        # preds = self.output_layer(preds)
+        # return preds, attn_weights
+
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -1252,6 +1328,7 @@ class ConvTransformerBlock(nn.Module):
 class ConvEmbed(nn.Module):
     """ Image to Conv Embedding
 
+    Source: https://github.com/microsoft/CvT/blob/main/lib/models/cls_cvt.py
     """
 
     def __init__(self,
