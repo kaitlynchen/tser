@@ -245,7 +245,18 @@ class ClimaX(nn.Module):
                 nn.ReLU(),
                 nn.Linear(embed_dim, num_classes)
             )
-
+        elif self.pool == "seqpool_multihead_posenc":
+            # Seqpool but concatenate absolute posenc right before
+            self.attention_pool = nn.Sequential(
+                nn.Linear(embed_dim*2, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_heads)
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(embed_dim*num_heads*2, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_classes)
+            )
         elif self.pool == "average":
             self.fc = nn.Sequential(
                 nn.AdaptiveAvgPool1d(1),
@@ -279,7 +290,7 @@ class ClimaX(nn.Module):
             # Simple learnable vector for each position
             self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
             nn.init.uniform_(self.pos_embed, -0.02, 0.02)
-        elif pos_encoding == "learnable_sin_init":
+        elif pos_encoding == "learnable_sin_init" or self.pool == "seqpool_multihead_posenc":
             # Simple learnable vector for each position, initialized with sinusoidal features
             self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
             pos_embed = get_1d_sincos_pos_embed_from_grid(
@@ -356,6 +367,26 @@ class ClimaX(nn.Module):
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0
             self.register_buffer("relative_coords", relative_coords)
+
+        elif relative_pos_encoding == "erpe_convit_init":
+            # Calculate initial bias with CONVIT linear decays for each head
+            bias_table_init = torch.zeros(2*seq_len-1, num_heads)
+            convit_heads = num_heads // 2
+            self.convit_slopes = torch.tensor([1.0 for i in range(convit_heads)], device=self.device)
+            self.convit_intercepts = torch.zeros((convit_heads), device=self.device)
+            self.convit_offsets =torch.tensor([-1 * (3.0 ** i) for i in range(convit_heads//2)] +
+                                                            [3.0 ** i for i in range(convit_heads//2)], device=self.device)
+            convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
+            bias_table_init[:, :convit_heads] = convit_biases
+            self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+            print("Bias table", bias_table_init)
+
+            # For each entry in the attention matrix, store the matching index in relative_bias_table
+            coords_t = torch.arange(seq_len, device=self.device)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
+            relative_coords += seq_len - 1  # shift to start from 0
+            self.register_buffer("relative_coords", relative_coords)
+
         elif relative_pos_encoding == "custom_rpe":
             # Custom relative position encoding. Some heads will be initialized to behave like ConViT,
             # with attention focused on a specific offset and decaying from there. Here, the offset,
@@ -369,7 +400,7 @@ class ClimaX(nn.Module):
 
             # Convit heads are initialized to focus attention around `convit_offsets`, with peak
             # intensity `convit_intercepts` and decay `convit_slopes`
-            self.convit_slopes = nn.Parameter(torch.tensor([0.5 for i in range(convit_heads)], device=self.device), requires_grad=True)
+            self.convit_slopes = nn.Parameter(torch.tensor([1.0 for i in range(convit_heads)], device=self.device), requires_grad=True)
             self.convit_intercepts = nn.Parameter(torch.zeros((convit_heads), device=self.device), requires_grad=True)
             self.convit_offsets = nn.Parameter(torch.tensor([-1 * (3.0 ** i) for i in range(convit_heads//2)] +
                                                             [3.0 ** i for i in range(convit_heads//2)], device=self.device), requires_grad=True)
@@ -398,6 +429,7 @@ class ClimaX(nn.Module):
         # Smoothness of absolute position encoding
         smoothness_loss = 0.
         if "learnable" in self.pos_encoding:
+            print("Plot absolute")
             # self.pos_embed has shape [seq_len, embed_dim]
             smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
 
@@ -422,6 +454,7 @@ class ClimaX(nn.Module):
                 plt.close()
 
         if "erpe" in self.relative_pos_encoding or self.relative_pos_encoding == "custom_rpe":
+            print("plot relative")
             # self.relative_bias_table has shape [2*seq_len-1, num_heads]
             rel_smoothness = ((self.relative_bias_table[1:, :] - self.relative_bias_table[:-1, :]) ** 2).mean()
             smoothness_loss += rel_smoothness
@@ -557,7 +590,8 @@ class ClimaX(nn.Module):
 
         # Construct mask for relative positional encoding.
         offset_mask = None
-        if self.relative_pos_encoding == "erpe":
+        if "erpe" in self.relative_pos_encoding:
+            print("Is erpe", self.relative_pos_encoding)
             # self.relative_bias_table: [2*seq_len-1, num_heads]
             # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
             # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
@@ -588,9 +622,12 @@ class ClimaX(nn.Module):
         # relative position encoding, set those mask entries to -inf
         if self.invalid_mask is not None:
             if offset_mask is None:
+                # In this case, offset_mask is [seq_len, seq_len]. PyTorch supports both 2D and 3D masks.
                 offset_mask = self.invalid_mask  # True at positions that are NOT ALLOWED to attend (too far)
             else:
-                offset_mask[self.invalid_mask] = float("-inf")
+                # Note: invalid_mask has shape [seq_len, seq_len], but offset_mask computed from
+                # relative dimension is of shape [batch*num_heads, seq_len, seq_len]
+                offset_mask[:, self.invalid_mask] = float("-inf")
 
         x, attn_weights = self.transformer_encoder(x, mask=offset_mask, plot_dir=plot_dir)  # after encoder. x: [batch, seq_len, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
         # x = self.head_linear(x)
@@ -611,7 +648,10 @@ class ClimaX(nn.Module):
 
         # POOLING. Note that x shape is [batch, time, channel] - differs from local_cnn
         if "seqpool" in self.pool:
-            # NOTE: Should we re-inject position embedding here?
+            # Concatenate positional embedding
+            if self.pool == "seqpool_multihead_posenc":
+                pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
+                preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
 
             if self.pool == "seqpool":
                 # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
@@ -621,7 +661,7 @@ class ClimaX(nn.Module):
                 # Squeeze out the 1 to get [batch, channel].
                 preds = torch.matmul(F.softmax(self.attention_pool(preds), dim=1).transpose(-1, -2), preds).squeeze(-2)
                 preds = self.fc(preds)
-            elif self.pool == "seqpool_multihead":
+            elif self.pool == "seqpool_multihead" or self.pool == "seqpool_multihead_posenc":
                 # Seqpool with multiple heads. Intuitively, different heads can
                 # focus on different parts of the sequence.
                 attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
@@ -885,15 +925,17 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos=False, conv_projection=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos="before", conv_projection=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
-        if where_to_add_relpos == "before":
-            # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
-            self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-            assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
-        else:
-            # Custom attention if we want relative position offset to be applied after softmax
-            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
+        # if where_to_add_relpos == "before":
+        #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
+        #     # TODO: Currently commenting this out so we can use the customized verson below.
+        #     # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
+        #     self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        #     assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
+        # else:
+        # Custom attention if we want relative position offset to be applied after softmax
+        self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -991,7 +1033,7 @@ class Attention_Rel_Scl(nn.Module):
             # torch.nn.init.xavier_uniform_(self.query.weight)
 
         self.dropout = nn.Dropout(dropout)
-        self.gating_param = nn.Parameter(torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
+        self.gating_param = nn.Parameter(torch.cat([-2*torch.ones(num_heads//2), 2*torch.ones(num_heads//2)]))
         # self.to_out = nn.LayerNorm(emb_size)
 
     def forward(self, query, key, value, attn_mask, plot_dir=None, **kwargs):
@@ -1018,6 +1060,8 @@ class Attention_Rel_Scl(nn.Module):
             # Reshape attn_mask to (batch_size, num_heads, seq_len, seq_len)
             attn_mask = rearrange(attn_mask, '(b h) l t -> b h l t', h=self.num_heads)
             attn += attn_mask
+
+        print("Attention forward", self.where_to_add_relpos, attn_mask.shape)
 
         # Perform softmax
         attn = nn.functional.softmax(attn, dim=-1)

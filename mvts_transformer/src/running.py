@@ -563,7 +563,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0:
+            if i == 0 and epoch_num % 100 == 0:  # TODO Temporary disabling plots
                 plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:
@@ -617,8 +617,10 @@ class SupervisedRunner(BaseRunner):
             supervised_smoothing_loss += (attn_smoothness_loss.item() * smoothing_lambda * len(loss))  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
-            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
+            print("Pos", config['pos_encoding'], "Rel", config['relative_pos_encoding'])
+            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding'])):
                 # if config['lambda_posenc_smoothness'] > 0:
+                print("inside if")
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
                 posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * len(loss)  # put in same scale as batch_loss
@@ -677,7 +679,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:
+            if i == 0 and epoch_num % 100 == 0 and config is not None:  # TODO temporarily disabling 
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:

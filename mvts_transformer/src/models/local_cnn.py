@@ -33,7 +33,7 @@ def model_factory(config, data):
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
 class LocalCNN(nn.Module):
-    def __init__(self, in_channels, max_len=144, num_classes=1, final_emb_dim=512, conv_type="hierarchical", pool="seqpool", pos_encoding="none", n_heads=8):
+    def __init__(self, in_channels, max_len=144, num_classes=1, final_emb_dim=256, conv_type="hierarchical", pool="seqpool", pos_encoding="none", n_heads=16):
         """
         conv_type can be hierarchical or local
 

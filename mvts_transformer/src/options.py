@@ -188,7 +188,7 @@ class Options(object):
                                  help='Dropout applied to most transformer encoder layers')
         self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'learnable_tape_init', 'none'}, default='fixed',
                                  help='Method for ABSOLUTE positional encoding')
-        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'custom_rpe', 'none'}, default='none',
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'erpe_convit_init', 'custom_rpe', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating"], default="before",
                                  help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
@@ -210,7 +210,7 @@ class Options(object):
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'seqpool_multihead_posenc'], default='linear',
                                  help='Type of final pooling')
 
         # C-Mixup specific

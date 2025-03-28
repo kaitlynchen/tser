@@ -7,10 +7,10 @@
 # 4) CNN_AppliancesEnergy_seqpool_multihead_per_timestep_TEST.xls: 2.05 (lr=1e-2)
 
 # DATA=${1}
-
-for DATA in AppliancesEnergy BenzeneConcentration BeijingPM10Quality BeijingPM25Quality IEEEPPG LiveFuelMoistureContent
+# IEEEPPG LiveFuelMoistureContent
+for DATA in BeijingPM25Quality
 do
-    for LR in 1e-3
+    for LR in 1e-3 1e-4
     do
         for POOL in seqpool_multihead
         do
@@ -19,18 +19,18 @@ do
                 for SEED in 0 1 2
                 do
 
-                    python main.py --comment "CNN_${DATA}_${POOL}_${CONV_TYPE}_VAL" \
-                        --seed $SEED --name CNN_${DATA} \
-                        --records_file CNN3_${DATA}_${POOL}_${CONV_TYPE}_VAL.xls \
-                        --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
-                        --pattern TRAIN --val_ratio 0.2 --epochs 500 --lr $LR \
-                        --optimizer RAdam --task regression --normalize_label \
-                        --model local_cnn --pool $POOL --conv_type $CONV_TYPE --pos_encoding learnable_sin_init  \
-                        --plot_loss --plot_accuracy
+                    # python main.py --comment "CNN_${DATA}_${POOL}_${CONV_TYPE}_VAL" \
+                    #     --seed $SEED --name CNN_${DATA} \
+                    #     --records_file CNN3_${DATA}_${POOL}_${CONV_TYPE}_VAL.xls \
+                    #     --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
+                    #     --pattern TRAIN --val_ratio 0.2 --epochs 500 --lr $LR \
+                    #     --optimizer RAdam --task regression --normalize_label \
+                    #     --model local_cnn --pool $POOL --conv_type $CONV_TYPE --pos_encoding learnable_sin_init  \
+                    #     --plot_loss --plot_accuracy
 
                     python main.py --comment "CNN_${DATA}_${POOL}_${CONV_TYPE}_TEST" \
                         --seed $SEED --name CNN_${DATA} \
-                        --records_file CNN3_${DATA}_${POOL}_${CONV_TYPE}_TEST.xls \
+                        --records_file output_repro/CNN_TUNING_${DATA}_${POOL}_${CONV_TYPE}_TEST.xls \
                         --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
                         --pattern TRAIN --val_pattern TEST --epochs 500 --lr $LR \
                         --optimizer RAdam --task regression --normalize_label \
