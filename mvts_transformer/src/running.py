@@ -618,7 +618,7 @@ class SupervisedRunner(BaseRunner):
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             print("Pos", config['pos_encoding'], "Rel", config['relative_pos_encoding'])
-            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding'])):
+            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or ('custom_rpe' == config['relative_pos_encoding'])):
                 # if config['lambda_posenc_smoothness'] > 0:
                 print("inside if")
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
