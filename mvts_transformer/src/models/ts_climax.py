@@ -425,50 +425,18 @@ class ClimaX(nn.Module):
 
 
     def posenc_smoothness_loss(self, logger, plot_dir=None, epoch_num=None):
-        file_prefix = "epoch{}".format(epoch_num) if epoch_num is not None else ""
 
         # Smoothness of absolute position encoding
         smoothness_loss = 0.
         if "learnable" in self.pos_encoding:
-            print("Plot absolute")
             # self.pos_embed has shape [seq_len, embed_dim]
             smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
-
-            if plot_dir is not None:
-                logger.info("Abs pos encoding smoothness: {}".format(smoothness_loss.item()))
-
-                # Plot positional encoding
-                im = plt.imshow(self.pos_embed.detach().cpu().numpy())
-                plt.xlabel("Embedding index")
-                plt.ylabel("Timestep")
-                plt.colorbar(im)
-                plt.title("Absolute positional embeddings")
-                plt.savefig(os.path.join(plot_dir, f'{file_prefix}_absolute_pos_encoding.png'))
-                plt.close()
-
-                # Compute pairwise distance between each pair of positions
-                pairwise_distances = torch.cdist(self.pos_embed.unsqueeze(0), self.pos_embed.unsqueeze(0)).squeeze(0)
-                im = plt.imshow(pairwise_distances.detach().cpu().numpy())
-                plt.colorbar(im)
-                plt.title("Pairwise distances between absolute pos encodings")
-                plt.savefig(os.path.join(plot_dir, f'{file_prefix}_absolute_pos_encoding_distances.png'))
-                plt.close()
+            logger.info("Abs pos encoding smoothness: {}".format(smoothness_loss.item()))
 
         if "erpe" in self.relative_pos_encoding or self.relative_pos_encoding == "custom_rpe":
-            print("plot relative")
             # self.relative_bias_table has shape [2*seq_len-1, num_heads]
             rel_smoothness = ((self.relative_bias_table[1:, :] - self.relative_bias_table[:-1, :]) ** 2).mean()
             smoothness_loss += rel_smoothness
-
-            if plot_dir is not None:
-                logger.info("Rel pos encoding smoothness: {}".format(rel_smoothness.item()))
-                im = plt.imshow(self.relative_bias_table.detach().cpu().numpy(), aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
-                plt.xlabel("Head number")
-                plt.ylabel("Relative offset (middle is 0)")
-                plt.colorbar(im)
-                plt.title("Relative attention biases")
-                plt.savefig(os.path.join(plot_dir, f'{file_prefix}_relative_pos_offsets.png'))
-                plt.close()
 
         return smoothness_loss
 
@@ -548,6 +516,36 @@ class ClimaX(nn.Module):
                 plt.suptitle("Distance between timestep INPUTS")
                 plt.savefig(os.path.join(plot_dir, 'timestep_input_distances.png'))
                 plt.close()
+
+            # Plot absolute positional encoding
+            if "learnable" in self.pos_encoding:
+                # Plot positional encoding
+                im = plt.imshow(self.pos_embed.detach().cpu().numpy())
+                plt.xlabel("Embedding index")
+                plt.ylabel("Timestep")
+                plt.colorbar(im)
+                plt.title("Absolute positional embeddings")
+                plt.savefig(os.path.join(plot_dir, 'absolute_pos_encoding.png'))
+                plt.close()
+
+                # Compute pairwise distance between each pair of positions
+                pairwise_distances = torch.cdist(self.pos_embed.unsqueeze(0), self.pos_embed.unsqueeze(0)).squeeze(0)
+                im = plt.imshow(pairwise_distances.detach().cpu().numpy())
+                plt.colorbar(im)
+                plt.title("Pairwise distances between absolute pos encodings")
+                plt.savefig(os.path.join(plot_dir, 'absolute_pos_encoding_distances.png'))
+                plt.close()
+
+            # Plot relative positional encoding
+            if "erpe" in self.relative_pos_encoding or self.relative_pos_encoding == "custom_rpe":
+                im = plt.imshow(self.relative_bias_table.detach().cpu().numpy(), aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
+                plt.xlabel("Head number")
+                plt.ylabel("Relative offset (middle is 0)")
+                plt.colorbar(im)
+                plt.title("Relative attention biases")
+                plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets.png'))
+                plt.close()
+
 
         if self.agg_vars:
             # tokenize each variable separately
@@ -1037,7 +1035,7 @@ class Attention_Rel_Scl(nn.Module):
             # torch.nn.init.xavier_uniform_(self.query.weight)
 
         self.dropout = nn.Dropout(dropout)
-        self.gating_param = nn.Parameter(torch.ones(num_heads))  # torch.cat([-5*torch.ones(num_heads//2), 5*torch.ones(num_heads//2)]))
+        self.gating_param = torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)])
         # self.to_out = nn.LayerNorm(emb_size)
 
     def forward(self, query, key, value, attn_mask, plot_dir=None, **kwargs):
@@ -1086,7 +1084,8 @@ class Attention_Rel_Scl(nn.Module):
                 attn = F.softmax(attn_mask, dim=-1)
 
             if plot_dir is not None:
-                print("Gating (Pr position)", torch.sigmoid(self.gating_param))
+                if self.where_to_add_relpos == "after_gating":
+                    print("Gating (Pr position)", torch.sigmoid(self.gating_param))
 
                 # PLOTTING ONLY
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads

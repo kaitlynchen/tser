@@ -104,6 +104,9 @@ class LocalCNN(nn.Module):
             )
             self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
             final_emb_dim = 2 * final_emb_dim
+        elif pos_encoding == "simple":
+            self.register_buffer('pos_embed', torch.linspace(0, 1, max_len))
+            final_emb_dim = final_emb_dim + 1
         elif pos_encoding == "none":
             self.pos_embed = None
         else:
@@ -116,7 +119,7 @@ class LocalCNN(nn.Module):
                 nn.ReLU(),
                 nn.Linear(final_emb_dim, num_classes)
             )      
-        elif self.pool == "seqpool_multihead" or self.pool == "seqpool_multihead_smoothed":
+        elif self.pool == "seqpool_multihead" or self.pool == "seqpool_multihead_smoothed" or self.pool == "seqpool_multihead_bias":
             self.attention_pool = nn.Sequential(
                 nn.Linear(final_emb_dim, final_emb_dim),
                 nn.ReLU(),
@@ -127,6 +130,11 @@ class LocalCNN(nn.Module):
                 nn.ReLU(),
                 nn.Linear(final_emb_dim, num_classes)
             )
+            if self.pool == "seqpool_multihead_bias":
+                self.bias_table = nn.Parameter(torch.zeros(max_len, n_heads))
+                torch.nn.init.kaiming_uniform_(self.bias_table.data)
+                print("Init bias table", self.bias_table)
+
 
         elif self.pool == "average":
             self.fc = nn.Sequential(
@@ -172,11 +180,15 @@ class LocalCNN(nn.Module):
                 # TODO add a positional encoding
                 x = torch.matmul(F.softmax(self.attention_pool(x), dim=1).transpose(-1, -2), x).squeeze(-2)
                 x = self.fc(x)
-            elif self.pool == "seqpool_multihead":
+            elif self.pool in ["seqpool_multihead", "seqpool_multihead_bias"]:
                 # Seqpool with multiple heads. Intuitively, different heads can
                 # focus on different parts of the sequence.
                 attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
-                attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
+                if self.pool == "seqpool_multihead_bias":
+                    bias_repeated = self.bias_table.unsqueeze(0)  # [1, time, n_heads]
+                    attn_weights = F.softmax(attn_weights + bias_repeated, dim=1)
+                else:
+                    attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
                 attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
                 aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
                 aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]

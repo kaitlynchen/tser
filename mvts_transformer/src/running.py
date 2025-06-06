@@ -604,20 +604,25 @@ class SupervisedRunner(BaseRunner):
 
             supervised_loss += batch_loss.item()  # total_loss.cpu().detach().numpy()
 
-            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
+            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]                    
 
                 attn_smoothness_loss = 0
                 attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
                 # attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
                 attn_smoothness_loss = ((attn_weights_layers[:, :, 2:] + attn_weights_layers[:, :, :-2] - 2*attn_weights_layers[:, :, 1:-1]) ** 2).sum(dim=2).mean()
                 total_loss += smoothing_lambda * attn_smoothness_loss
+            elif config["model"] == "local_cnn" and config["pool"] == "seqpool_multihead_bias":
+                # Smooth the final bias table
+                attn_smoothness_loss = (torch.diff(self.model.bias_table, dim=0) ** 2).mean()
+                # print("REGULARIZING BIAS", smoothing_lambda, self.model.bias_table)
+                total_loss += smoothing_lambda * attn_smoothness_loss
+
             else:
                 attn_smoothness_loss = torch.tensor(0)
 
             supervised_smoothing_loss += (attn_smoothness_loss.item() * smoothing_lambda * len(loss))  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
-            print("Pos", config['pos_encoding'], "Rel", config['relative_pos_encoding'])
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or ('custom_rpe' == config['relative_pos_encoding'])):
                 # if config['lambda_posenc_smoothness'] > 0:
                 print("inside if")
