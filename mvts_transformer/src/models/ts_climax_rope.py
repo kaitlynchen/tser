@@ -34,7 +34,7 @@ def model_factory(config, data):
             raise x
 
     if (task == "imputation") or (task == "transduction"):
-        if config['model'] == 'climax_smooth':
+        if config['model'] == 'climax_rope':
             return TSTEncoder(config['d_model'], config['d_model'], config['num_heads'],
                               d_ff=config['dim_feedforward'], dropout=config['dropout'],
                               activation=config['activation'], n_layers=config['num_layers'])
@@ -42,7 +42,7 @@ def model_factory(config, data):
         # dimensionality of labels
         num_labels = len(
             data.class_names) if task == "classification" else data.labels_df.shape[1]
-        if config['model'] == 'climax_smooth':
+        if config['model'] == 'climax_rope':
             return ClimaX(list([feat_dim]), device=config['device'], img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
                           stride=config['stride'], embed_dim=config['d_model'], depth=config['num_layers'], decoder_depth=config['num_decoder_layers'],
                           num_heads=config['num_heads'], feedforward_dim=config['dim_feedforward'],
@@ -168,47 +168,13 @@ class ClimaX(nn.Module):
 
         # positional embedding
         self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, embed_dim, num_heads)
-
+        self.sin, self.cos = precompute_sin_cos(self.seq_len, embed_dim, num_heads, device)
+        
         # --------------------------------------------------------------------------
 
         # ViT backbone
         self.pos_drop = nn.Dropout(p=drop_rate)
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]  # stochastic depth decay rule
-
-        # THIS IS NOT USED CURRENTLY
-        # if norm == 'BatchNorm':
-        #     norm_layer = nn.BatchNorm1d
-        # elif norm == 'LayerNorm':
-        #     norm_layer = nn.LayerNorm
-        # else:
-        #     raise ValueError("Unsupported norm layer")
-        # activation = _get_activation_fn(activation)
-        # self.blocks = nn.ModuleList(
-        #     [
-        #         Block(
-        #             embed_dim,
-        #             num_heads,
-        #             mlp_ratio,
-        #             qkv_bias=True,
-        #             drop_path=dpr[i],
-        #             norm_layer=norm_layer,  # @joshuafan customized to allow different normalization layers
-        #             attn_drop=drop_rate,  # @joshuafan changed: newest timm version does not have 'drop' parameter, only 'attn_drop' and 'proj_drop'
-        #             proj_drop=drop_rate
-        #         )
-        #         for i in range(depth)
-        #     ]
-        # )
-        # self.norm = nn.LayerNorm(embed_dim // 2)
-
-        # --------------------------------------------------------------------------
-
-        # # prediction head
-        # self.head = nn.ModuleList()
-        # for _ in range(decoder_depth):
-        #     self.head.append(nn.Linear(embed_dim, embed_dim))
-        #     self.head.append(nn.GELU())
-        # self.head.append(nn.Linear(embed_dim, embed_dim // 2))
-        # self.head = nn.Sequential(*self.head)
 
         if self.conv_transformer:
             encoder_layer = ConvTransformerBlock(embed_dim, num_heads, patch_size,
@@ -270,20 +236,6 @@ class ClimaX(nn.Module):
                 nn.Flatten(),  # Default converts to [batch, channel*time]
                 nn.Linear(embed_dim * seq_len, num_classes)
             )
-        elif self.pool == "final_seqpool_multihead_posenc":
-            self.attention_pool = nn.Sequential(
-                nn.Linear(embed_dim, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, num_heads)
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(embed_dim*num_heads, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, num_classes)
-            )
-            # create learnable positional bias for each head and timestep
-            self.final_pos_bias = nn.Parameter(torch.zeros(seq_len, num_heads), requires_grad=True)
-            nn.init.uniform_(self.final_pos_bias, -0.02, 0.02)
         else:
             raise ValueError("invalid pool")
 
@@ -306,7 +258,7 @@ class ClimaX(nn.Module):
             # Simple learnable vector for each position
             self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
             nn.init.uniform_(self.pos_embed, -0.02, 0.02)
-        elif pos_encoding == "learnable_sin_init" or self.pool == "seqpool_multihead_posenc" or self.pool == "final_seqpool_multihead_posenc":
+        elif pos_encoding == "learnable_sin_init" or self.pool == "seqpool_multihead_posenc":
             # Simple learnable vector for each position, initialized with sinusoidal features
             self.pos_embed = nn.Parameter(torch.zeros(seq_len, emb_dim), requires_grad=True)
             pos_embed = get_1d_sincos_pos_embed_from_grid(
@@ -383,27 +335,6 @@ class ClimaX(nn.Module):
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0
             self.register_buffer("relative_coords", relative_coords)
-
-        elif relative_pos_encoding == "erpe_convit_init":
-            # Calculate initial bias with CONVIT linear decays for each head
-            bias_table_init = torch.zeros(2*seq_len-1, num_heads)
-            self.convit_heads = (num_heads // 2) + 1
-            self.convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
-            self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-            self.convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
-                                               [3.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-            print("Convit offsets", self.convit_offsets, self.convit_slopes, self.convit_intercepts)
-            convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
-            bias_table_init[:, :self.convit_heads] = convit_biases
-            self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
-            print("Bias table", bias_table_init)
-
-            # For each entry in the attention matrix, store the matching index in relative_bias_table
-            coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
-            relative_coords += seq_len - 1  # shift to start from 0
-            self.register_buffer("relative_coords", relative_coords)
-            
         elif relative_pos_encoding == "custom_rpe":
             # Custom relative position encoding. Some heads will be initialized to behave like ConViT,
             # with attention focused on a specific offset and decaying from there. Here, the offset,
@@ -543,16 +474,12 @@ class ClimaX(nn.Module):
 
             # Plot Euclidean distance between timestep feature vectors
             feature_distances = torch.linalg.norm(x_detached.unsqueeze(1) - x_detached.unsqueeze(2), dim=3)  # [batch, time, time]
-            # feature_distances_manual = torch.zeros((x.shape[0], x.shape[1], x.shape[1]), device=x.device)
-            # for i in range(x.shape[0]):
-            #     for j in range(x.shape[1]):
-            #         for k in range(x.shape[1]):
-            #             feature_distances_manual[i, j, k] = torch.linalg.norm(x[i, j, :] - x[i, k, :])
-            # assert torch.allclose(feature_distances, feature_distances_manual)
-
+            
+            # Sample a subset of values for quantile computation
             sample_size = min(1000000, feature_distances.numel())
             sampled_values = feature_distances.view(-1)[torch.randint(feature_distances.numel(), (sample_size,))]
             min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.01, 0.99]))
+
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
             for r in range(n_rows):
                 im = axeslist[r].imshow(feature_distances[r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
@@ -601,10 +528,6 @@ class ClimaX(nn.Module):
             # pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
             # x = torch.cat((x, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
 
-        # apply Transformer blocks. NOT USED ANYMORE
-        # for blk in self.blocks:
-        #     x = blk(x)
-
         # Construct mask for relative positional encoding.
         offset_mask = None
         if self.relative_pos_encoding == "erpe":
@@ -633,6 +556,7 @@ class ClimaX(nn.Module):
 
         elif self.relative_pos_encoding == "alibi":
             offset_mask = self.alibi.repeat((x.shape[0], 1, 1))  # Repeat along the batch dimension, as PyTorch expects mask to be [batch*num_heads, seq_len, seq_len]
+     
 
         # If some positions are not allowed to attend, either use the Boolean mask, or if combining with
         # relative position encoding, set those mask entries to -inf
@@ -642,22 +566,12 @@ class ClimaX(nn.Module):
             else:
                 offset_mask[self.invalid_mask] = float("-inf")
 
-        x, attn_weights = self.transformer_encoder(x, mask=offset_mask, plot_dir=plot_dir)  # after encoder. x: [batch, seq_len, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
+        x, attn_weights = self.transformer_encoder(x, sin=self.sin, cos=self.cos, mask=offset_mask, plot_dir=plot_dir)  # after encoder. x: [batch, seq_len, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
         # x = self.head_linear(x)
         # x = self.norm(x)
 
         return x, attn_weights
 
-    def forward_pooling(self, x, plot_dir=None):
-        x = self.linear_before_pool(x) # [batch, time, embed_dim]
-        attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
-        attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
-        attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
-        aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
-        aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-        x = self.fc(aggregated_x)
-
-        return x
 
     def forward(self, x, plot_dir=None):
         """Forward pass through the model.
@@ -672,8 +586,7 @@ class ClimaX(nn.Module):
 
         # POOLING. Note that x shape is [batch, time, channel] - differs from local_cnn
         if "seqpool" in self.pool:
-            # NOTE: Should we re-inject position embedding here?
-
+            # Concatenate positional embedding
             if self.pool == "seqpool_multihead_posenc":
                 pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
                 preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
@@ -724,16 +637,6 @@ class ClimaX(nn.Module):
                 aggregated_x = torch.matmul(attn_weights, preds)  # [batch, n_heads, channel]
                 aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
                 preds = self.fc(aggregated_x)
-            elif self.pool == "final_seqpool_multihead_posenc":
-                attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
-                
-                # Add positional bias to attention scores before softmax
-                attn_weights = attn_weights + self.final_pos_bias.unsqueeze(0)  # [1, seq_len, num_heads] + [batch, time, n_heads]
-                attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
-                attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
-                aggregated_x = torch.matmul(attn_weights, preds)  # [batch, n_heads, channel]
-                aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-                preds = self.fc(aggregated_x)
         elif self.pool == "linear":
             preds = self.act(preds)
             preds = self.dropout1(preds)
@@ -750,6 +653,22 @@ class ClimaX(nn.Module):
         # preds = self.output_layer(preds)
         # return preds, attn_weights
 
+def precompute_sin_cos(seq_len, dim, num_heads, device):
+    head_dim = dim // num_heads
+
+    # Within each head, we only need head_dim/2 sinusoid pairs
+    half_dim = head_dim // 2
+
+    position = torch.arange(seq_len, dtype=torch.float, device=device).unsqueeze(1) # [seq_len, 1]
+    div_term = torch.exp(torch.arange(0, half_dim, 1, device=device).float() * (-torch.log(torch.tensor(10000.0, device=device)) / half_dim)) # [half_dim]
+    sin = torch.sin(position * div_term) # [seq_len, half_dim]
+    cos = torch.cos(position * div_term) # [seq_len, half_dim]
+
+    # Reshape to [1, 1, seq_len, half_dim] for broadcasting
+    sin = sin.unsqueeze(0).unsqueeze(0)
+    cos = cos.unsqueeze(0).unsqueeze(0)
+
+    return sin, cos
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -782,7 +701,7 @@ class TransformerEncoder(nn.modules.Module):
         self.enable_nested_tensor = enable_nested_tensor
         self.mask_check = mask_check
 
-    def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None, plot_dir: str = None) -> Tensor:
+    def forward(self, src: Tensor, sin: Tensor, cos: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None, plot_dir: str = None) -> Tensor:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
@@ -886,7 +805,7 @@ class TransformerEncoder(nn.modules.Module):
 
         # Compute forward pass
         for mod in self.layers:
-            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers, plot_dir=plot_dir)  # output: [batch, seq_len, embed_dim], attn_weights: [batch, num_heads, seq_len, seq_len]
+            output, attn_weights = mod(output, sin, cos, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers, plot_dir=plot_dir)  # output: [batch, seq_len, embed_dim], attn_weights: [batch, num_heads, seq_len, seq_len]
             if attn_weights_layers is None:
               attn_weights_layers = attn_weights
             else:
@@ -983,13 +902,9 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos='before', conv_projection=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
-        if where_to_add_relpos == "before":
-            # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
-            self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-            assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
-        else:
-            # Custom attention if we want relative position offset to be applied after softmax
-            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
+        
+        # Use AttentionWithRoPE as attention mechanism
+        self.self_attn = AttentionWithRoPE(d_model, nhead, attn_drop=dropout, proj_drop=dropout)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1004,7 +919,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 
         self.activation = F.gelu
 
-    def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
+    def forward(self, src: Tensor, sin: Tensor, cos: Tensor, src_mask: Optional[Tensor] = None,
                 src_key_padding_mask: Optional[Tensor] = None, plot_dir = None) -> Tensor:
         r"""Pass the input through the encoder layer.
 
@@ -1016,15 +931,10 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         Shape:
             see the docs in Transformer class.
         """
-        if type(self.self_attn) == Attention_Rel_Scl:
-            # Attention_Rel_Scl allows plot_dir
-            src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                                key_padding_mask=src_key_padding_mask, average_attn_weights=False, plot_dir=plot_dir)  # src2: [batch, seq_len, d_model], attn_output_weights: [batch, num_heads, seq_len, seq_len]
-        else:
-            src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                                key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [batch, seq_len, d_model], attn_output_weights: [batch, num_heads, seq_len, seq_len]
+        src2, attn_output_weights = self.self_attn(src, sin, cos, attn_mask=src_mask,
+                                                   key_padding_mask=src_key_padding_mask)  # src2: [batch, seq_len, d_model], attn_output_weights: [batch, num_heads, seq_len, seq_len]
 
-        src = src + self.dropout1(src2)  # (batch, seq_len, d_model)  TODO temporarily removed
+        src = src + self.dropout1(src2)  # (batch, seq_len, d_model)
         src = src.permute(0, 2, 1)  # (batch, d_model, seq_len)
         src = self.norm1(src)
         src = src.permute(0, 2, 1)  # restore (batch, seq_len, d_model)
@@ -1133,6 +1043,8 @@ class Attention_Rel_Scl(nn.Module):
                 attn = F.softmax(attn_mask, dim=-1)
 
             if plot_dir is not None:
+                print("Gating (Pr position)", torch.sigmoid(self.gating_param))
+
                 # PLOTTING ONLY
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads
                 n_rows = 4
@@ -1383,8 +1295,8 @@ class ConvTransformerBlock(nn.Module):
         super().__init__()
 
         self.norm1 = BatchNorm1d(d_model, eps=1e-5)
-        self.attn = Attention(
-            d_model, d_model, n_head, attn_drop=dropout, proj_drop=dropout,
+        self.attn = AttentionWithRoPE(
+            d_model, n_head, attn_drop=dropout, proj_drop=dropout,
             kernel_size=kernel_size  # stride=stride, padding=padding,
         )
 
@@ -1398,7 +1310,7 @@ class ConvTransformerBlock(nn.Module):
             drop=dropout
         )
 
-    def forward(self, x, src_mask=None, src_key_padding_mask=None):
+    def forward(self, x, sin, cos, src_mask=None, src_key_padding_mask=None):
         """
         Input/output: [batch, seq_len (TIME), embed_dim] or [B, T, D]
         """
@@ -1409,7 +1321,7 @@ class ConvTransformerBlock(nn.Module):
         x = self.norm1(x)
         x = x.permute((0, 2, 1))  # [batch, seq_len, embed_dim]
 
-        x, attn = self.attn(x, src_mask=src_mask)  # [batch, seq_len, embed_dim]
+        x, attn = self.attn(x, sin, cos, src_mask=src_mask)  # [batch, seq_len, embed_dim]
         x = res + self.drop_path(x)
 
         # Change shapes just for BatchNorm1d, then back
@@ -1455,3 +1367,83 @@ class ConvEmbed(nn.Module):
         if self.norm:
             x = self.norm(x)
         return x
+
+class AttentionWithRoPE(nn.Module):
+    # def __init__(self, dim, num_heads, attn_drop=0.0, proj_drop=0.0):
+    #     super().__init__()
+    #     self.num_heads = num_heads
+    #     self.scale = dim ** -0.5
+    #     self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
+    #     self.to_out = nn.Linear(dim, dim)
+    #     self.attn_drop = nn.Dropout(attn_drop)
+    #     self.proj_drop = nn.Dropout(proj_drop)
+
+    def __init__(self, dim, num_heads, attn_drop=0.0, proj_drop=0.0):
+        super().__init__()
+        self.num_heads = num_heads
+        self.scale = dim ** -0.5
+        self.to_qkv = nn.Linear(dim, dim * 3, bias=True)
+        self.to_qkv.weight.data[:, 0:dim*2] = 0.0
+        self.to_out = nn.Linear(dim, dim)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    @staticmethod
+    def apply_rotary_pos_emb(q, k, sin, cos):
+        # from hugging face implementation: https://github.com/huggingface/transformers/blob/v4.49.0/src/transformers/models/roformer/modeling_roformer.py#L309-L333
+        # stack reshape sin/cos for paired rotation
+        sin_pos = torch.stack([sin, sin], dim=-1).reshape(*sin.shape[:-1], -1)  # [1, 1, seq_len, embed_dim / head]
+        cos_pos = torch.stack([cos, cos], dim=-1).reshape(*cos.shape[:-1], -1)  # [1, 1, seq_len, embed_dim / head]
+        
+        # rotate query
+        rotate_half_query = torch.stack([-q[..., 1::2], q[..., ::2]], dim=-1).reshape_as(q)
+        q_out = q * cos_pos + rotate_half_query * sin_pos
+        
+        # rotate key
+        rotate_half_key = torch.stack([-k[..., 1::2], k[..., ::2]], dim=-1).reshape_as(k)
+        k_out = k * cos_pos + rotate_half_key * sin_pos
+        
+        return q_out, k_out
+
+    def forward(self, x, sin, cos, attn_mask=None, key_padding_mask=None):
+        """Input/output assumed to be [batch, seq_len, embed_dim]"""
+        device = x.device
+        sin = sin.to(device)
+        cos = cos.to(device)
+
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(device)
+        if key_padding_mask is not None:
+            key_padding_mask = key_padding_mask.to(device)
+
+        b, l, _ = x.shape
+        h = self.num_heads
+        qkv = self.to_qkv(x).chunk(3, dim=-1) # TODO: check that queries and keys are identical
+        q, k, v = map(lambda t: t.reshape(b, l, h, -1).transpose(1, 2), qkv)
+
+        # apply rotary positional embeddings
+        q, k = self.apply_rotary_pos_emb(q, k, sin, cos)
+
+        # compute attention
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+
+        # apply attention mask
+        if attn_mask is not None:
+            dots = dots.masked_fill(attn_mask == 0, float('-inf'))
+
+        # apply key padding mask
+        if key_padding_mask is not None:
+            dots = dots.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+
+        attn = dots.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        # apply attention to values
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).reshape(b, l, -1)
+
+        # apply dropout to output
+        out = self.to_out(out)
+        out = self.proj_drop(out)
+
+        return out, attn

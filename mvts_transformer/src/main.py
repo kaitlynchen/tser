@@ -95,6 +95,10 @@ def main(config):
         from models.ts_climax_timestep import model_factory
     elif config["model"] is not None and config["model"] == "climax_smooth_pool":
         from models.ts_climax_seqpool_smooth import model_factory
+    elif config["model"] is not None and config["model"] == "climax_max_pool":
+        from models.ts_climax_max_pool import model_factory
+    elif config["model"] is not None and config["model"] == "climax_seqpool":
+        from models.ts_climax_seqpool import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -327,7 +331,7 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth" or config["model"] == "climax_smooth_plot" or config["model"] == "climax_smooth_pool") and config["smooth_attention"]
+    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth" or config["model"] == "climax_smooth_plot" or config["model"] == "climax_smooth_pool" or config["model"] == "climax_max_pool" or config["model"] == "climax_seqpool") and config["smooth_attention"]
     use_smoothing = need_attn_weights and config["task"] == "regression"
     use_pool_smoothing = use_smoothing and config["model"] == "climax_smooth_pool"
     smoothing_lambda = config["reg_lambda"]

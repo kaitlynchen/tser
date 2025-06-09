@@ -153,7 +153,7 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn", "climax_smooth_plot"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn", "climax_smooth_plot", "climax_max_pool", "climax_seqpool"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -210,7 +210,7 @@ class Options(object):
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid'], default='linear',
                                  help='Type of final pooling')
 
         # C-Mixup specific
