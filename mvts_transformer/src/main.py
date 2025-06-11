@@ -58,6 +58,7 @@ def main(config):
         torch.manual_seed(config["seed"])
         torch.cuda.manual_seed(config["seed"])
         torch.cuda.manual_seed_all(config["seed"])
+        torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True)
         random.seed(config["seed"])
         np.random.seed(config["seed"])

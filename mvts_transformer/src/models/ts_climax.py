@@ -591,7 +591,6 @@ class ClimaX(nn.Module):
         # Construct mask for relative positional encoding.
         offset_mask = None
         if "erpe" in self.relative_pos_encoding:
-            print("Is erpe", self.relative_pos_encoding)
             # self.relative_bias_table: [2*seq_len-1, num_heads]
             # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
             # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
