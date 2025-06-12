@@ -94,6 +94,8 @@ class LocalCNN(nn.Module):
         else:
             raise ValueError("invalid conv_type")
 
+
+        # TODO - Make this consistent with Transformer
         # Pos encoding for pooling
         if pos_encoding == "learnable_sin_init":
             assert "seqpool" in self.pool, "Pos encoding only makes sense with seqpool, seqpool_multihead, or seqpool_multihead_smoothed"

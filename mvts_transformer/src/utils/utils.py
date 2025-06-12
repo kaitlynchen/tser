@@ -22,6 +22,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+
+def approx_min_max(values):
+    """
+    Returns 1st and 99th quantiles of the entries in 'values' (flattened).
+    If 'values' contains more than 100000 entries, take quantiles of a random subset
+    (since PyTorch quantile cannot handle large datasets).
+    """
+    sample_size = min(1000000, values.numel())
+    sampled_values = values.view(-1)[torch.randint(values.numel(), (sample_size,))]
+    min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.01, 0.99]).to(sampled_values.device))
+    return min_value, max_value
+
+
 ############################################################################################
 # C-Mixup code taken from https://github.com/huaxiuyao/C-Mixup/blob/main/src/algorithm.py
 ############################################################################################

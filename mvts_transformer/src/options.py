@@ -153,7 +153,7 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn", "climax_smooth_plot", "climax_max_pool", "climax_seqpool"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -186,9 +186,14 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'learnable_tape_init', 'none'}, default='fixed',
+        self.parser.add_argument('--pos_encoding', choices={'fixed_sin', 'learnable_zero_init', 'learnable_uniform_init',
+                                                            'learnable_sin_init', 'learnable_tape_init', 'none'}, default='learnable_random_init',
                                  help='Method for ABSOLUTE positional encoding')
-        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'erpe_convit_init', 'custom_rpe', 'none'}, default='none',
+        self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "before_seqpool_add", "before_seqpool_concat",
+                                                                             "pooling_before_softmax", "pooling_gating"], default="start_add",
+                                 help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
+                                                                     'erpe_alibi_init', 'erpe_convit_init', 'convit_like', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating", "only_relpos"], default="before",
                                  help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
@@ -210,7 +215,7 @@ class Options(object):
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_bias', 'seqpool_multihead_smoothed', 'seqpool_multihead_posenc'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid'], default='linear',
                                  help='Type of final pooling')
 
         # C-Mixup specific

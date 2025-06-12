@@ -9,7 +9,8 @@ from itertools import repeat, chain
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from sktime.utils import load_data
+# import sktime
+# from sktime.utils import load_data
 from sklearn.preprocessing import MinMaxScaler
 from datasets import utils
 
@@ -342,7 +343,7 @@ class TSRegressionArchive(BaseData):
             )
             labels_df = pd.DataFrame(labels, dtype=np.float32)
         elif self.config["task"] == "classification":
-            df, labels = load_data.load_from_tsfile_to_dataframe(
+            df, labels = utils.load_from_tsfile_to_dataframe(
                 filepath, return_separate_X_and_y=True, replace_missing_vals_with="NaN"
             )
             labels = pd.Series(labels, dtype="category")
@@ -352,7 +353,7 @@ class TSRegressionArchive(BaseData):
             )  # int8-32 gives an error when using nn.CrossEntropyLoss
         else:  # e.g. imputation
             try:
-                data = load_data.load_from_tsfile_to_dataframe(
+                data = utils.load_from_tsfile_to_dataframe(
                     filepath,
                     return_separate_X_and_y=True,
                     replace_missing_vals_with="NaN",

@@ -548,7 +548,7 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
 
-    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
+    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, use_pool_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
@@ -573,15 +573,19 @@ class SupervisedRunner(BaseRunner):
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
             if require_padding:
-                if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                if use_pool_smoothing:
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks)
+                elif need_attn_weights:
+                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks)
             else:
-                if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), plot_dir=plot_dir)
+                if use_pool_smoothing:
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device))
+                elif need_attn_weights:
+                    predictions, attn_weights_layers = self.model(X.to(self.device))
                 else:
-                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device))
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
@@ -604,17 +608,15 @@ class SupervisedRunner(BaseRunner):
 
             supervised_loss += batch_loss.item()  # total_loss.cpu().detach().numpy()
 
-            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]                    
-
+            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
                 attn_smoothness_loss = 0
                 attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
-                # attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
-                attn_smoothness_loss = ((attn_weights_layers[:, :, 2:] + attn_weights_layers[:, :, :-2] - 2*attn_weights_layers[:, :, 1:-1]) ** 2).sum(dim=2).mean()
-                total_loss += smoothing_lambda * attn_smoothness_loss
-            elif config["model"] == "local_cnn" and config["pool"] == "seqpool_multihead_bias":
-                # Smooth the final bias table
-                attn_smoothness_loss = (torch.diff(self.model.bias_table, dim=0) ** 2).mean()
-                # print("REGULARIZING BIAS", smoothing_lambda, self.model.bias_table)
+                attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+
+                if use_pool_smoothing:
+                    attn_weights_pool = attn_weights_pool.reshape(-1, attn_weights_pool.shape[2], attn_weights_pool.shape[3])
+                    attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
+
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             else:
@@ -625,7 +627,7 @@ class SupervisedRunner(BaseRunner):
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or ('custom_rpe' == config['relative_pos_encoding'])):
                 # if config['lambda_posenc_smoothness'] > 0:
-                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
+                posenc_loss_batch = self.model.posenc_smoothness_loss(logger)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
                 posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * len(loss)  # put in same scale as batch_loss
             else:
@@ -691,14 +693,14 @@ class SupervisedRunner(BaseRunner):
 
             if require_padding:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks)[0]
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks)
             else:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device))[0]
                 else:
-                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device))
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
