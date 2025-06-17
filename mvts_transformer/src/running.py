@@ -87,13 +87,6 @@ def setup(args):
     initial_timestamp = datetime.now()
     output_dir = config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
-    # if not os.path.isdir(output_dir):
-    #     raise IOError(
-    #         "Root directory '{}', where the directory of the experiment will be created, must exist".format(
-    #             output_dir
-    #         )
-    #     )
-
     output_dir = os.path.join(output_dir, config["experiment_name"])
 
     formatted_timestamp = initial_timestamp.strftime("%Y-%m-%d_%H-%M-%S")
@@ -564,7 +557,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0:  # TODO Temporary disabling plots
+            if i == 0 and epoch_num % 100 == 0:
                 plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:
@@ -593,7 +586,7 @@ class SupervisedRunner(BaseRunner):
             all_predictions.append(predictions.detach().flatten())
             all_targets.append(targets.detach().flatten())
 
-            # (M,) loss for each sample in the batch
+            # (B,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
             batch_loss = torch.sum(loss)
             # mean loss (over samples) used for optimization
@@ -619,14 +612,13 @@ class SupervisedRunner(BaseRunner):
                     attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
 
                 total_loss += smoothing_lambda * attn_smoothness_loss
-
             else:
                 attn_smoothness_loss = torch.tensor(0)
 
             supervised_smoothing_loss += (attn_smoothness_loss.item() * smoothing_lambda * len(loss))  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
-            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or ('custom_rpe' == config['relative_pos_encoding'])):
+            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or (config['relative_pos_encoding'] in ["convit", "convit_half"])):
                 # if config['lambda_posenc_smoothness'] > 0:
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
@@ -686,7 +678,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:  # TODO temporarily disabling 
+            if i == 0 and epoch_num % 100 == 0 and config is not None:
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:

@@ -154,6 +154,7 @@ class ClimaX(nn.Module):
         self.default_vars = default_vars
         self.max_len = max_seq_len
         self.num_layers = depth
+        self.num_heads = num_heads
         self.pos_encoding = pos_encoding
         self.where_to_add_abspos = where_to_add_abspos
         self.relative_pos_encoding = relative_pos_encoding
@@ -161,7 +162,6 @@ class ClimaX(nn.Module):
         self.agg_vars = agg_vars
         self.conv_transformer = conv_transformer
         self.device = device
-        self.num_heads = num_heads
         self.local_mask = local_mask
         self.conv_projection = conv_projection
         self.pool = pool
@@ -196,7 +196,7 @@ class ClimaX(nn.Module):
         self.seq_len = seq_len
 
         # Positional embedding
-        # Note: if absolute positional embedding inside added during the pooling attention,
+        # Note: if absolute positional embedding is added inside the pooling attention,
         # the embedding size is equal to the number of heads. Otherwise it's the normal embedding dim.
         if where_to_add_abspos in ["pooling_before_softmax", "pooling_gating"]:
             if self.pool == "seqpool":
@@ -419,7 +419,7 @@ class ClimaX(nn.Module):
             coords_t = torch.arange(seq_len, device=self.device)
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [T, T]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0
-            self.register_buffer("relative_coords", relative_coords)           
+            self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "convit_half":
             # Half-ConViT relative position encoding. Some heads will be initialized to behave like ConViT,
@@ -475,7 +475,6 @@ class ClimaX(nn.Module):
             # self.pos_embed has shape [T, C]
             # smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
             smoothness_loss += (self.pos_embed[1:, :] - self.pos_embed[:-1, :]).abs().mean()
-            logger.info("Abs pos encoding smoothness: {}".format(smoothness_loss.item()))
 
         # Smoothness of relative position encodings
         if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
@@ -914,7 +913,7 @@ class TransformerEncoder(nn.modules.Module):
         Returns:
             output: [B, T, D]
             attn_weights_layers: [L, B, H, T, T], attention matrix for each layer, example, head
-            embeddings_layers: [L+1, B, T, D], embedding at start + after each layer
+            embeddings_layers: [L+1, B, T, D], embeddings at start and after each layer
         """
         if src_key_padding_mask is not None:
             _skpm_dtype = src_key_padding_mask.dtype

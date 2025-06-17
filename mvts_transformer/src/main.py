@@ -519,7 +519,7 @@ def main(config):
         logger.info("Avg batch train. time: {} seconds".format(avg_batch_time))
         logger.info("Avg sample train. time: {} seconds".format(avg_sample_time))
 
-        # evaluate if first or last epoch or at specified interval.
+        # evaluate if first or last epoch or at specified interval
         if ((epoch == config["epochs"]) or (epoch == start_epoch + 1) or (epoch % config["val_interval"] == 0)):
             old_best_value = best_value
             aggr_metrics_val, best_metrics, best_value, predictions, targets = validate(
