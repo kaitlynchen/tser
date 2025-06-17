@@ -86,12 +86,13 @@ def setup(args):
     # Create output directory
     initial_timestamp = datetime.now()
     output_dir = config["output_dir"]
-    if not os.path.isdir(output_dir):
-        raise IOError(
-            "Root directory '{}', where the directory of the experiment will be created, must exist".format(
-                output_dir
-            )
-        )
+    os.makedirs(output_dir, exist_ok=True)
+    # if not os.path.isdir(output_dir):
+    #     raise IOError(
+    #         "Root directory '{}', where the directory of the experiment will be created, must exist".format(
+    #             output_dir
+    #         )
+    #     )
 
     output_dir = os.path.join(output_dir, config["experiment_name"])
 
@@ -574,25 +575,25 @@ class SupervisedRunner(BaseRunner):
 
             if require_padding:
                 if use_pool_smoothing:
-                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks)
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
                 elif need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
+                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
                 else:
                     predictions = self.model(X.to(self.device), padding_masks)
             else:
                 if use_pool_smoothing:
-                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device))
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), plot_dir=plot_dir)
                 elif need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device))
+                    predictions, attn_weights_layers = self.model(X.to(self.device), plot_dir=plot_dir)
                 else:
-                    predictions = self.model(X.to(self.device))
+                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions.detach().flatten())
             all_targets.append(targets.detach().flatten())
 
-            # (batch_size,) loss for each sample in the batch
+            # (M,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
             batch_loss = torch.sum(loss)
             # mean loss (over samples) used for optimization
@@ -608,9 +609,9 @@ class SupervisedRunner(BaseRunner):
 
             supervised_loss += batch_loss.item()  # total_loss.cpu().detach().numpy()
 
-            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
+            if use_smoothing:  # attn_weights_layers: [B, L*H, T, T]
                 attn_smoothness_loss = 0
-                attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
+                attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
                 attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
 
                 if use_pool_smoothing:
@@ -693,14 +694,14 @@ class SupervisedRunner(BaseRunner):
 
             if require_padding:
                 if need_attn_weights:
-                    predictions = self.model(X.to(self.device), padding_masks)[0]
+                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)[0]
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks)
+                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
             else:
                 if need_attn_weights:
-                    predictions = self.model(X.to(self.device))[0]
+                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)[0]
                 else:
-                    predictions = self.model(X.to(self.device))
+                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]

@@ -5,12 +5,24 @@ Code for the main models we are testing. Includes original MVTS Transformer, alo
 - Relative positional embeddings (offset biases)
 - Absolute positional embeddings
 - SeqPool + positional embeddings there
+
+We use the following letters to annotate shapes:
+B: batch (examples)
+T_orig: timesteps in original data
+T: timesteps after initial patching (i.e. number of patches)
+P: patch size (timesteps in a single patch)
+V: number of variables ("channels") in original data
+D: 'channels' or embedding dimension for each timestep
+H: number of heads
+L: number of layers
+
 """
 
 
 from typing import Optional, Any
 import math
 
+from models.ts_climax_rope import AttentionWithRoPE
 import torch
 import torch.nn as nn
 import numpy as np
@@ -136,11 +148,12 @@ class ClimaX(nn.Module):
     ):
         super().__init__()
 
-        self.img_size = img_size
+        self.img_size = img_size  # Should be [n_examples*T_orig, V]
         self.patch_size = patch_size
         self.stride = stride
         self.default_vars = default_vars
         self.max_len = max_seq_len
+        self.num_layers = depth
         self.pos_encoding = pos_encoding
         self.where_to_add_abspos = where_to_add_abspos
         self.relative_pos_encoding = relative_pos_encoding
@@ -148,188 +161,132 @@ class ClimaX(nn.Module):
         self.agg_vars = agg_vars
         self.conv_transformer = conv_transformer
         self.device = device
+        self.num_heads = num_heads
         self.local_mask = local_mask
         self.conv_projection = conv_projection
         self.pool = pool
 
-        # variable tokenization: separate embedding layer for each input variable
-
-        # variable embedding to denote which variable each token belongs to
-        # helps in aggregating variables
-
         if self.agg_vars:
+            # Variable tokenization: create tokens for each variable, of size "patch_size"
+            # Here we use the same embedding layer for all variables.
+            # TODO: In Climax code, I think they use separate embedding layers for each input?
+            # https://github.com/microsoft/ClimaX/blob/main/src/climax/arch.py 
             self.embed_layer = nn.Linear(patch_size, embed_dim)
 
+            # Variable embedding to denote which variable each token belongs to
+            # helps in aggregating variables
+            self.var_embed = self.create_var_embedding(embed_dim)  # [V, D]
+
             # variable aggregation: a learnable query and a single-layer cross attention
-            self.var_embed = self.create_var_embedding(embed_dim)
-            self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+            self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)  # [1, 1, D]
             self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
             seq_len = int((max_seq_len - patch_size) / stride + 1)
 
         elif self.conv_transformer:
             # Convolutional encoder
             self.embed_layer = ConvEmbed(patch_size, img_size[1], embed_dim,
-                                         stride, padding=int(np.ceil((patch_size-stride)/2)),  # Ensures that num_patches is num_timesteps/stride
+                                         stride, padding=int(np.ceil((patch_size-stride)/2)),  # Ensures that num_patches (T) is num_timesteps/stride
                                          norm_layer=nn.BatchNorm1d)
             seq_len = int(max_seq_len // stride)
         else:
-            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim)  # each patch has patch_size*num_variables elements
+            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim)  # Each patch has patch_size*num_variables (P*V) elements. Map to embed_dim (D).
 
-            # Number of tokens (patches) in the time dimension
+            # Number of tokens (patches) in the time dimension (T)
             seq_len = int((max_seq_len - patch_size) / stride + 1)
         self.seq_len = seq_len
 
         # Positional embedding
         # Note: if absolute positional embedding inside added during the pooling attention,
-        # the embeeding size is equal to the number of heads. Otherwise it's the normal embedding dim.
+        # the embedding size is equal to the number of heads. Otherwise it's the normal embedding dim.
         if where_to_add_abspos in ["pooling_before_softmax", "pooling_gating"]:
-            absolute_emb_dim = self.num_heads
+            if self.pool == "seqpool":
+                absolute_emb_dim = 1
+            else:
+                absolute_emb_dim = num_heads
         else:
             absolute_emb_dim = embed_dim
-        self.setup_posenc(pos_encoding, relative_pos_encoding, seq_len, absolute_emb_dim, num_heads)
-
-        # --------------------------------------------------------------------------
-
-        # ViT backbone
+        self.setup_absolute_posenc(pos_encoding, seq_len, absolute_emb_dim)
+        self.setup_relative_posenc(relative_pos_encoding, seq_len, self.num_layers, num_heads)
         self.pos_drop = nn.Dropout(p=drop_rate)
-        dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]  # stochastic depth decay rule
 
-        # THIS IS NOT USED CURRENTLY
-        # if norm == 'BatchNorm':
-        #     norm_layer = nn.BatchNorm1d
-        # elif norm == 'LayerNorm':
-        #     norm_layer = nn.LayerNorm
-        # else:
-        #     raise ValueError("Unsupported norm layer")
-        # activation = _get_activation_fn(activation)
-        # self.blocks = nn.ModuleList(
-        #     [
-        #         Block(
-        #             embed_dim,
-        #             num_heads,
-        #             mlp_ratio,
-        #             qkv_bias=True,
-        #             drop_path=dpr[i],
-        #             norm_layer=norm_layer,  # @joshuafan customized to allow different normalization layers
-        #             attn_drop=drop_rate,  # @joshuafan changed: newest timm version does not have 'drop' parameter, only 'attn_drop' and 'proj_drop'
-        #             proj_drop=drop_rate
-        #         )
-        #         for i in range(depth)
-        #     ]
-        # )
-        # self.norm = nn.LayerNorm(embed_dim // 2)
+        # Pooling gating if applicable
+        if where_to_add_abspos == "pooling_gating":
+            self.pooling_gating_param = nn.Parameter(torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)]))
 
-        # --------------------------------------------------------------------------
-
-        # # prediction head
-        # self.head = nn.ModuleList()
-        # for _ in range(decoder_depth):
-        #     self.head.append(nn.Linear(embed_dim, embed_dim))
-        #     self.head.append(nn.GELU())
-        # self.head.append(nn.Linear(embed_dim, embed_dim // 2))
-        # self.head = nn.Sequential(*self.head)
-
+        # Define single encoder layer
         if self.conv_transformer:
             encoder_layer = ConvTransformerBlock(embed_dim, num_heads, patch_size,
                                                  feedforward_dim, drop_rate * (1.0 - freeze))
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos, conv_projection=conv_projection)
+        
+        # Create TransformerEncoder with multiple layers
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
-        # self.head_linear = nn.Linear(embed_dim, embed_dim // 2)
 
+        # Activation/dropout
         self.act = _get_activation_fn(activation)
         self.dropout1 = nn.Dropout(p=drop_rate)
 
-        # --------------------------------------------------------------------------
-
+        # TODO: Try not initializing weights and stick with default (Kaiming uniform)?
         self.initialize_weights()
 
-        # final linear layer
-        # self.output_layer = nn.Linear(embed_dim // 2 * int((max_seq_len - patch_size) / stride + 1), num_classes)
-        # self.output_layer = nn.Linear(embed_dim * seq_len, num_classes)
+        # Input dim to pooling: if concatenating positional embedding right before seqpool, multiply by 2
+        pool_input_dim = 2 * embed_dim if self.where_to_add_abspos == "before_seqpool_concat" else embed_dim
         if self.pool == "seqpool":
-            self.attention_pool = nn.Linear(embed_dim, 1)
+            self.attention_pool = nn.Linear(pool_input_dim, 1)
             self.fc = nn.Sequential(
-                nn.Linear(embed_dim, embed_dim),
+                nn.Linear(pool_input_dim, embed_dim),
                 nn.ReLU(),
                 nn.Linear(embed_dim, num_classes)
             )      
-        elif self.pool in ["seqpool_multihead"]:  #, "seqpool_multihead_smoothed", "learnable_seqpool_multihead"]:
-            if self.abs_pos_location == "before_seqpool_concat":
-                # If concatenating absolute positional embedding before seqpool, 
-                self.attention_pool = nn.Sequential(
-                    nn.Linear(embed_dim*2, embed_dim),
-                    nn.ReLU(),
-                    nn.Linear(embed_dim, num_heads)
-                )
-                self.fc = nn.Sequential(
-                    nn.Linear(embed_dim*num_heads*2, embed_dim),
-                    nn.ReLU(),
-                    nn.Linear(embed_dim, num_classes)
-                )     
-            else:
-                self.attention_pool = nn.Sequential(
-                    nn.Linear(embed_dim, embed_dim),
-                    nn.ReLU(),
-                    nn.Linear(embed_dim, num_heads)
-                )
-                self.fc = nn.Sequential(
-                    nn.Linear(embed_dim*num_heads, embed_dim),
-                    nn.ReLU(),
-                    nn.Linear(embed_dim, num_classes)
-                )
-
+        elif self.pool in ["seqpool_multihead", "seqpool_multihead_smoothed"]:
+            self.attention_pool = nn.Sequential(
+                nn.Linear(pool_input_dim, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_heads)
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(pool_input_dim*num_heads, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_classes)
+            )
         elif self.pool == "average":
             self.fc = nn.Sequential(
                 nn.AdaptiveAvgPool1d(1),
                 nn.Flatten(),
                 nn.Linear(embed_dim, num_classes)
             )
-        elif self.pool == "max":
-            
         elif self.pool == "linear":
             self.fc = nn.Sequential(
-                nn.Flatten(),  # Default converts to [batch, channel*time]
+                nn.Flatten(),  # Default converts to [B, T*D]
                 nn.Linear(embed_dim * seq_len, num_classes)
             )
-        # elif self.pool == "final_seqpool_multihead_posenc":
-        #     self.attention_pool = nn.Sequential(
-        #         nn.Linear(embed_dim, embed_dim),
-        #         nn.ReLU(),
-        #         nn.Linear(embed_dim, num_heads)
-        #     )
-        #     self.fc = nn.Sequential(
-        #         nn.Linear(embed_dim*num_heads, embed_dim),
-        #         nn.ReLU(),
-        #         nn.Linear(embed_dim, num_classes)
-        #     )
-        #     # create learnable positional bias for each head and timestep
-        #     self.final_pos_bias = nn.Parameter(torch.zeros(seq_len, num_heads), requires_grad=True)
-        #     nn.init.uniform_(self.final_pos_bias, -0.02, 0.02)
         else:
             raise ValueError("invalid pool")
-
 
         # Local mask. Restrict which pairs of timesteps can pay attention to each other
         if self.local_mask >= 0:
             # Note that if relative positional encoding is being used, this is redundant with "relative_coords"
-            indices = torch.arange(0, seq_len, device=device)
-            distance_matrix = torch.abs(indices.reshape((1, -1)) - indices.reshape((-1, 1)))  # [seq_len, seq_len]
-            self.invalid_mask = torch.zeros((len(indices), len(indices)), device=self.device).bool()  # [seq_len, seq_len]
+            indices = torch.arange(0, seq_len, device=device)  # [T]
+            distance_matrix = torch.abs(indices.reshape((1, -1)) - indices.reshape((-1, 1)))  # [T, T]
+            self.invalid_mask = torch.zeros((len(indices), len(indices)), device=self.device).bool()  # [T, T]
             self.invalid_mask[distance_matrix > self.local_mask] = True
         else:
             self.invalid_mask = None
 
 
-    def setup_posenc(self, pos_encoding, relative_pos_encoding, seq_len, absolute_emb_dim, num_heads):
+    def setup_absolute_posenc(self, pos_encoding, seq_len, absolute_emb_dim):
+        """
+        Setup absolute positional encoding. Typically this is a vector for each timestep,
+        or matrix [L, C].
+        """
 
-        # ABSOLUTE POSITION ENCODING: vector for each timestep, or matrix of size [seq_len, absolute_emb_dim]
         if "learnable" in pos_encoding:
             # Learnable vector for each position (timestep)
-            self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)
+            self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)  # [T, D]
 
-            if pos_encoding == "learnable_uniform_init":
+            if pos_encoding == "learnable_uniform_init" or pos_encoding == "learnable":
                 # Uniform random initialization
                 nn.init.uniform_(self.pos_embed, -0.02, 0.02)
             elif pos_encoding == "learnable_sin_init":
@@ -350,24 +307,6 @@ class ClimaX(nn.Module):
             else:
                 assert pos_encoding == "learnable_zero_init"
 
-
-        # elif pos_encoding == "learnable_sin_init" or self.pool == "seqpool_multihead_posenc" or self.pool == "final_seqpool_multihead_posenc":
-        #     # Simple learnable vector for each position, initialized with sinusoidal features
-        #     self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)
-        #     pos_embed = get_1d_sincos_pos_embed_from_grid(
-        #         self.pos_embed.shape[-1],
-        #         np.arange(seq_len)
-        #     )
-        #     self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
-        # elif pos_encoding == "learnable_tape_init":
-        #     # Simple learnable vector for each position, initialized with sinusoidal features (using TAPE trick to determine frequencies)
-        #     self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)
-        #     pos_embed = get_1d_sincos_pos_embed_from_grid(
-        #         self.pos_embed.shape[-1],
-        #         np.arange(seq_len),
-        #         max_len = seq_len
-        #     )
-        #     self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
         elif pos_encoding == "fixed":
             # FIXED sinusoidal vector for each position
             # Code from Zerveas TST repo, https://github.com/gzerveas/mvts_transformer/blob/master/src/models/ts_transformer.py#L65
@@ -384,6 +323,17 @@ class ClimaX(nn.Module):
         else:
             raise ValueError("Invalid value of absolute_pos_embed (must be: learnable, learnable_sin_init, fixed, none)")
 
+
+    def setup_relative_posenc(self, relative_pos_encoding, seq_len, num_layers, num_heads):
+        """
+        Setup relative positional encoding. Typically, for each layer we have
+        a matrix of biases, with a value for each of the 2T-1 relative offsets
+        between timesteps (and for each layer/head). Shape: [L (layers), 2T-1, H (heads)].
+
+        The entire matrix is usually a learnable parameter (unless relative_pos_encoding
+        is 'convit_half' or 'convit', for which we only allow 'linear decays from some peak', 
+        with the slope/peak being learnable).
+        """
         # Helper function for ALIBI
         def get_slopes(n):
             def get_slopes_power_of_2(n):
@@ -402,23 +352,26 @@ class ClimaX(nn.Module):
         # attention matrix before softmax or after softmax (see `where_to_add_relpos`)
         if "erpe" in relative_pos_encoding:
             # Bias table for each relative offset.
-            # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive.
-            # Thus, the table has shape (2*seq_len - 1, num_heads).
+            # Relative offsets range from (T-1) to -(T-1), inclusive.
+            # Thus, the table has shape [L, 2T-1, H] (since we have a bias for each layer and head).
             # Consider different initializations.
             if relative_pos_encoding == "erpe":
-                bias_table_init = torch.zeros(2*seq_len-1, num_heads)
+                bias_table_init = torch.zeros(num_layers, 2*seq_len-1, num_heads)
             elif relative_pos_encoding == "erpe_uniform_init":
-                bias_table_init = torch.zeros(2*seq_len-1, num_heads)
+                bias_table_init = torch.zeros(num_layers, 2*seq_len-1, num_heads)
                 nn.init.uniform_(bias_table_init, -0.02, 0.02)
             elif relative_pos_encoding == "erpe_alibi_init":
                 # Calculate initial bias table using ALIBI linear functions for each head.
                 # Note that the linear function is multiplying "slope" with absolute |distance|.
-                slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
+                slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [H]
                 bias_table_init = torch.zeros(2*seq_len-1, num_heads)
                 bias_table_init[0:seq_len-1] = torch.arange(start=seq_len-1, end=0, step=-1, device=self.device).unsqueeze(1) * slopes
                 bias_table_init[seq_len-1:] = torch.arange(start=0, end=seq_len, device=self.device).unsqueeze(1) * slopes
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
             elif relative_pos_encoding == "erpe_convit_init":
-                # Calculate initial bias with CONVIT linear decays for each head
+                # Calculate initial bias with CONVIT linear decays for half of heads (remaining are zero init).
                 bias_table_init = torch.zeros(2*seq_len-1, num_heads)
                 self.convit_heads = (num_heads // 2) + 1
                 self.convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
@@ -426,82 +379,77 @@ class ClimaX(nn.Module):
                 self.convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
                                                 [3.0 ** i for i in range(self.convit_heads//2)], device=self.device)
                 print("Convit offsets", self.convit_offsets, self.convit_slopes, self.convit_intercepts)
-                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
+                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
                 bias_table_init[:, :self.convit_heads] = convit_biases
-            
-            # # eRPE: learnable bias for each relative offset between timesteps
-            # # Define a parameter table of relative position bias
-            # self.relative_bias_table = nn.Parameter(torch.zeros(2*seq_len-1, num_heads), requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
-            # nn.init.uniform_(self.relative_bias_table, -0.02, 0.02)
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
 
             # Define a parameter table of relative position bias
-            self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+            self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (T-1) to -(T-1), inclusive. Shape: [L, 2T-1, H]
 
-            # The attention matrix will have shape [time, time].
+            # The attention matrix will have shape [T, T].
             # For entry (i, j), we want to look up the appropriate index in relative_bias_table,
             # which will be (i - j) + seq_len - 1. "relative_coords" does this lookup.
             coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
-            relative_coords += seq_len - 1  # shift to start from 0. Each entry (i, j) contains (i - j) + seq_len - 1
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [T, T]. Each entry (i, j) contains (i - j)
+            relative_coords += seq_len - 1  # shift to start from 0. Each entry (i, j) contains (i - j) + T - 1
             self.register_buffer("relative_coords", relative_coords)
 
-        # elif relative_pos_encoding == "erpe_alibi_init":
-        #     # Calculate initial bias table using ALIBI linear functions for each head.
-        #     # Note that the linear function is multiplying "slope" with absolute |distance|.
-        #     slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
-        #     bias_table_init = torch.zeros(2*seq_len-1, num_heads)
-        #     bias_table_init[0:seq_len-1] = torch.arange(start=seq_len-1, end=0, step=-1, device=self.device).unsqueeze(1) * slopes
-        #     bias_table_init[seq_len-1:] = torch.arange(start=0, end=seq_len, device=self.device).unsqueeze(1) * slopes
-        #     self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+        elif relative_pos_encoding == "convit":
+            # ConViT-style relative position encoding. Because time-series are 1D (instead of 2D images),
+            # we can simplify so that we just learn offset, intercept, and slope of linearly decaying functions
+            # centered around a "focus point". These are used to construct the relative position bias table.
+            assert num_heads % 2 == 0, "Assuming an even number of heads in convit_half relative position encoding"
+            self.convit_heads = num_heads
 
-        #     # For each entry in the attention matrix, store the matching index in relative_bias_table
-        #     coords_t = torch.arange(seq_len, device=self.device)
-        #     relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
-        #     relative_coords += seq_len - 1  # shift to start from 0
-        #     self.register_buffer("relative_coords", relative_coords)
+            # Convit heads are initialized to focus attention around `convit_offsets`, with peak
+            # intensity `convit_intercepts` and decay `convit_slopes`
+            convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
+            convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
+            convit_offsets = torch.tensor([0] + [-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                                          [2.0 ** i for i in range(self.convit_heads//2 - 1)], device=self.device)
 
-        # elif relative_pos_encoding == "erpe_convit_init":
-        #     # Calculate initial bias with CONVIT linear decays for each head
-        #     bias_table_init = torch.zeros(2*seq_len-1, num_heads)
-        #     self.convit_heads = (num_heads // 2) + 1
-        #     self.convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
-        #     self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-        #     self.convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
-        #                                        [3.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-        #     print("Convit offsets", self.convit_offsets, self.convit_slopes, self.convit_intercepts)
-        #     convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
-        #     bias_table_init[:, :self.convit_heads] = convit_biases
-        #     self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
-        #     print("Bias table", bias_table_init)
+            # Repeat for each layer. These have shape [L, H]
+            self.convit_slopes = nn.Parameter(convit_slopes.repeat(num_layers, 1), requires_grad=True)
+            self.convit_intercepts = nn.Parameter(convit_intercepts.repeat(num_layers, 1), requires_grad=True)
+            self.convit_offsets = nn.Parameter(convit_offsets.repeat(num_layers, 1), requires_grad=True)
 
-        #     # For each entry in the attention matrix, store the matching index in relative_bias_table
-        #     coords_t = torch.arange(seq_len, device=self.device)
-        #     relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
-        #     relative_coords += seq_len - 1  # shift to start from 0
-        #     self.register_buffer("relative_coords", relative_coords)
-        # elif relative_pos_encoding == "convit_like":
-        #     # Custom relative position encoding. Some heads will be initialized to behave like ConViT,
-        #     # with attention focused on a specific offset and decaying from there. Here, the offset,
-        #     # slope, and intercept are all learnable. Other heads will be randomly initialized and
-        #     # fully learnable (like ERPE).
-        #     self.convit_heads = (num_heads // 2) + 1
-        #     self.normal_heads = num_heads - self.convit_heads
+            # For each entry in the attention matrix, store the matching index in relative_bias_table
+            coords_t = torch.arange(seq_len, device=self.device)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [T, T]. Each entry (i, j) contains (i - j)
+            relative_coords += seq_len - 1  # shift to start from 0
+            self.register_buffer("relative_coords", relative_coords)           
 
-        #     # Normal heads have purely learnable relative positional embeddings
-        #     self.normal_biases = nn.Parameter(torch.zeros(2*seq_len-1, self.normal_heads), requires_grad=True)  # Relative offsets range from (seq_len-1) to -(seq_len-1), inclusive
+        elif relative_pos_encoding == "convit_half":
+            # Half-ConViT relative position encoding. Some heads will be initialized to behave like ConViT,
+            # with attention focused on a specific offset and decaying from there. Here, the offset,
+            # slope, and intercept are all learnable. Other heads will be randomly initialized and
+            # fully learnable (like ERPE).
+            assert num_heads % 2 == 0, "Assuming an even number of heads in convit_half relative position encoding"
+            self.convit_heads = (num_heads // 2) + 1
+            self.normal_heads = num_heads - self.convit_heads
 
-        #     # Convit heads are initialized to focus attention around `convit_offsets`, with peak
-        #     # intensity `convit_intercepts` and decay `convit_slopes`
-        #     self.convit_slopes = nn.Parameter(torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device), requires_grad=True)
-        #     self.convit_intercepts = nn.Parameter(torch.zeros((self.convit_heads), device=self.device), requires_grad=True)
-        #     self.convit_offsets = nn.Parameter(torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
-        #                                                     [3.0 ** i for i in range(self.convit_heads//2)], device=self.device), requires_grad=True)
+            # Normal heads have purely learnable relative positional embeddings
+            self.normal_biases = nn.Parameter(torch.zeros(num_layers, 2*seq_len-1, self.normal_heads), requires_grad=True)  # Relative offsets range from (T-1) to -(T-1), inclusive
 
-        #     # For each entry in the attention matrix, store the matching index in relative_bias_table
-        #     coords_t = torch.arange(seq_len, device=self.device)
-        #     relative_coords = coords_t[:, None] - coords_t[None, :]  # [seq_len, seq_len]. Each entry (i, j) contains (i - j)
-        #     relative_coords += seq_len - 1  # shift to start from 0
-        #     self.register_buffer("relative_coords", relative_coords)
+            # Convit heads are initialized to focus attention around `convit_offsets`, with peak
+            # intensity `convit_intercepts` and decay `convit_slopes`
+            convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
+            convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
+            convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
+                                          [3.0 ** i for i in range(self.convit_heads//2 - 1)], device=self.device)
+
+            # Repeat for each layer. These have shape [L, H]
+            self.convit_slopes = nn.Parameter(convit_slopes.repeat(num_layers, 1), requires_grad=True)
+            self.convit_intercepts = nn.Parameter(convit_intercepts.repeat(num_layers, 1), requires_grad=True)
+            self.convit_offsets = nn.Parameter(convit_offsets.repeat(num_layers, 1), requires_grad=True)
+
+            # For each entry in the attention matrix, store the matching index in relative_bias_table
+            coords_t = torch.arange(seq_len, device=self.device)
+            relative_coords = coords_t[:, None] - coords_t[None, :]  # [T, T]. Each entry (i, j) contains (i - j)
+            relative_coords += seq_len - 1  # shift to start from 0
+            self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "alibi":
             # FIXED bias for relative offsets. Each head has a different function.
@@ -509,34 +457,38 @@ class ClimaX(nn.Module):
 
             # For each entry in the attention matrix, store the matching index in relative_bias_table
             coords_t = torch.arange(seq_len, device=self.device)
-            relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [seq_len, seq_len]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
+            relative_coords = torch.abs(coords_t[:, None] - coords_t[None, :])  # [T, T]. Each entry (i, j) contains ABS|i-j|. Note that this is different from the above eRPE approach.
             self.register_buffer("relative_coords", relative_coords)
 
             self.slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [num_heads]
-            self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [num_heads, 1, 1] * [seq_len, seq_len] -> [num_heads, seq_len, seq_len]
+            self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [H, 1, 1] * [T, T] -> [H, T, T]
 
 
     def posenc_smoothness_loss(self, logger):
+        """
+        Computes smoothness of both absolute and relative positional embedding tables.
+        TODO: Currently these are computed slightly differently, maybe make this consistent?
+        """
         # Smoothness of absolute position encoding
         smoothness_loss = 0.
         if "learnable" in self.pos_encoding:
-            # self.pos_embed has shape [seq_len, embed_dim]
-            smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
+            # self.pos_embed has shape [T, C]
+            # smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
+            smoothness_loss += (self.pos_embed[1:, :] - self.pos_embed[:-1, :]).abs().mean()
             logger.info("Abs pos encoding smoothness: {}".format(smoothness_loss.item()))
 
         # Smoothness of relative position encodings
-        if "erpe" in self.relative_pos_encoding or self.relative_pos_encoding == "convit_like":
-            # self.relative_bias_table has shape [2*seq_len-1, num_heads]
-            rel_smoothness = ((self.relative_bias_table[1:, :] - self.relative_bias_table[:-1, :]) ** 2).mean()
+        if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
+            # self.relative_bias_table has shape [L, 2*T-1, C]
+            # rel_smoothness = ((self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]) ** 2).mean()
+            rel_smoothness = (self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]).abs().mean()
             smoothness_loss += rel_smoothness
 
         return smoothness_loss
 
 
-
     def initialize_weights(self):
         # NOTE: pos_embed initialization is moved to setup_pos_embed
-
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -550,283 +502,207 @@ class ClimaX(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+
     def create_var_embedding(self, dim):
-        # number of variables x embedding dim
+        # number of variables x embedding dim: [V, D]
         var_embed = nn.Parameter(torch.zeros(self.img_size[1], dim), requires_grad=True)
 
         # Initialize with sincos, not sure if this is correct
-        sincos = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(self.img_size[1]))
+        sincos = get_1d_sincos_pos_embed_from_grid(var_embed.shape[-1], np.arange(self.img_size[1]))
         var_embed.data.copy_(torch.from_numpy(sincos).float())
         return var_embed
 
+
     def aggregate_variables(self, x: torch.Tensor):
         """
-        x: B, V, L, D
+        Input x: [B, V, T, D]
+        Returns: [B, T, D]
         """
-        b, _, l, _ = x.shape
-        x = torch.einsum("bvld->blvd", x)
-        x = x.flatten(0, 1)  # BxL, V, D
+        b, _, t, _ = x.shape
+        x = rearrange(x, "b v t d -> (b t) v d")  # Permute/reshape to [B*T, V, D]
 
-        var_query = self.var_query.repeat_interleave(x.shape[0], dim=0)
-        x, _ = self.var_agg(var_query, x, x)  # BxL, D
-        # query, key, value
+        # self.var_query: [1, 1, D]
+        var_query = self.var_query.repeat_interleave(x.shape[0], dim=0)  # [B*T, 1, D]. The query only has 1 variable.
 
-        x = x.squeeze()
-
-        x = x.unflatten(dim=0, sizes=(b, l))  # B, L, D
-
+        # Pass query, key, value through var_agg (MultiheadAttention)
+        x, _ = self.var_agg(var_query, x, x)  # [B*T, 1, D]  # Aggregate variables' embeddings, based on how similar each variable in "x" is to the query embedding
+        x = rearrange(x, '(b t) 1 d -> b t d', t=t)  
         return x
 
+
     def forward_encoder(self, x: torch.Tensor, plot_dir: str = None):
-        # x: `[B, T, V]` shape.
-
-        if plot_dir is not None:
-            # Plot an example input and distances between timesteps (just for comparison with later)
-            x_detached = x.detach().cpu()
-            visualization_utils.plot_time_series(x_detached[0, :, :].numpy(), os.path.join(plot_dir, 'example_x0.png'))
-            n_rows = 5  # Examples to plot
-            n_cols = 1
-
-            # Plot Euclidean distance between timestep feature vectors
-            feature_distances = torch.linalg.norm(x_detached.unsqueeze(1) - x_detached.unsqueeze(2), dim=3)  # [batch, time, time]
-            # feature_distances_manual = torch.zeros((x.shape[0], x.shape[1], x.shape[1]), device=x.device)
-            # for i in range(x.shape[0]):
-            #     for j in range(x.shape[1]):
-            #         for k in range(x.shape[1]):
-            #             feature_distances_manual[i, j, k] = torch.linalg.norm(x[i, j, :] - x[i, k, :])
-            # assert torch.allclose(feature_distances, feature_distances_manual)
-            sample_size = min(1000000, feature_distances.numel())
-            sampled_values = feature_distances.view(-1)[torch.randint(feature_distances.numel(), (sample_size,))]
-            min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.01, 0.99]))
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-            for r in range(n_rows):
-                im = axeslist[r].imshow(feature_distances[r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
-                if r == 0:
-                    axeslist[r].set_title(f"Input")
-            plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-            plt.colorbar(im)
-            plt.suptitle("Distance between timestep INPUTS")
-            plt.savefig(os.path.join(plot_dir, 'timestep_input_distances.png'))
-            plt.close()
-
-            # Plot absolute positional encoding
-            if "learnable" in self.pos_encoding:
-                # Plot positional encoding
-                im = plt.imshow(self.pos_embed.detach().cpu().numpy())
-                plt.xlabel("Embedding index")
-                plt.ylabel("Timestep")
-                plt.colorbar(im)
-                plt.title("Absolute positional embeddings")
-                plt.savefig(os.path.join(plot_dir, 'pos_encoding.png'))
-                plt.close()
-
-                # Compute pairwise distance between each pair of positions
-                pairwise_distances = torch.cdist(self.pos_embed.unsqueeze(0), self.pos_embed.unsqueeze(0)).squeeze(0)
-                im = plt.imshow(pairwise_distances.detach().cpu().numpy())
-                plt.colorbar(im)
-                plt.title("Pairwise distances between absolute pos encodings")
-                plt.savefig(os.path.join(plot_dir, 'pos_encoding_distances.png'))
-                plt.close()
-
-            # Plot relative positional encoding
-            if "erpe" in self.relative_pos_encoding or self.relative_pos_encoding == "convit_like":
-                im = plt.imshow(self.relative_bias_table.detach().cpu().numpy(), aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
-                plt.xlabel("Head number")
-                plt.ylabel("Relative offset (middle is 0)")
-                plt.colorbar(im)
-                plt.title("Relative attention biases")
-                plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets.png'))
-                plt.close()
+        """
+        Initial part of the forward method, including the patching, positional encoding setup, Transformer encoder
+        Input: x: [B, T_orig, V]
+        Returns x: [B, T, D]. attn_weights: [B, L*H, T, T]
+        """
 
         if self.agg_vars:
-            # tokenize each variable separately
-            x = x.permute(0, 2, 1) # B, V, T
-            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, L, D
-            x = self.embed_layer(x)
+            # Tokenize each variable separately. Each patch contains one variable, P timesteps.
+            x = rearrange(x, "b t_orig v -> b v t_orig")  # [B, V, T_orig]
+            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride)  # [B, V, T, P]
+            x = self.embed_layer(x)  # [B, V, T, D]
 
             # add variable embedding
-            var_embed = self.var_embed # V, D
-            var_embed = var_embed.unsqueeze(0).unsqueeze(2) # 1, V, 1, D
-            x = x + var_embed  # B, V, L, D
+            var_embed = self.var_embed  # [V, D]
+            var_embed = var_embed.unsqueeze(0).unsqueeze(2)  # [1, V, 1, D]
+            x = x + var_embed  # [B, V, T, D]
 
             # variable aggregation
-            x = self.aggregate_variables(x)  # B, L, D
+            x = self.aggregate_variables(x)  # [B, T, D]
 
         elif self.conv_transformer:
-            x = x.permute(0, 2, 1) # B, V, T  [batch, channel, time (num_patches)]
-            x = self.embed_layer(x)  # [batch, embed_dim, num_patches]
-            x = x.permute(0, 2, 1)  # [batch, num_patches (seq_len), embed_dim]
+            x = rearrange(x, "b t_orig v -> b v t_orig")  # [B, V (variables), T_orig (original timesteps)]
+            x = self.embed_layer(x)  # [B, D (embed_dim), T (num_patches)]
+            x = rearrange(x, "b d t -> b t d")  # [B, T, D]
         else:
-            x = x.permute(0, 2, 1) # B, V, T
-            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # B, V, num_patches, patch_size
-            x = x.permute(0, 2, 1, 3)  # B, num_patches, V, patch_size
-            x = x.reshape((x.shape[0], x.shape[1], -1))  # B, num_patches, V*patch_size
-            x = self.embed_layer(x)
+            x = rearrange(x, "b t_orig v -> b v t_orig")
+            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
+            x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
+            x = self.embed_layer(x)  # [B, T, D]
 
         # Add ABSOLUTE pos embedding if using.
-        # At this point, X should be [batch, seq_len, embed_dim], and pos_embed should be [seq_len, embed_dim]. (seq_len = number of patches along time dimension)
-        if self.pos_embed is not None:
+        # At this point, X should be [B, T, D], and pos_embed should be [T, D]. (T = number of patches along time dimension)
+        if self.pos_embed is not None and self.where_to_add_abspos == "start_add":
             # CURRENT: add the positional embedding
             x = x + self.pos_embed
             x = self.pos_drop(x)
 
-            # # ALTERNATIVE: Concatenate the positional embedding.
-            # # self.pos_embed initially has shape [time, channel]. Change to [batch, time, channel] by repeating.
-            # pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
-            # x = torch.cat((x, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
-
-        # apply Transformer blocks. NOT USED ANYMORE
-        # for blk in self.blocks:
-        #     x = blk(x)
-
         # Construct mask for relative positional encoding.
         offset_mask = None
         if "erpe" in self.relative_pos_encoding:
-            # self.relative_bias_table: [2*seq_len-1, num_heads]
-            # self.relative_coords: [seq_len, seq_len] - ID of offset between timesteps
+            # self.relative_bias_table: [L (layers), 2T-1, H (heads)]
+            # self.relative_coords: [T, T] - ID of offset between timesteps
             # To construct relative embedding matrix, flatten the "offset matrix" (relative_coords),
             # and use these as indices into the relative bias table.
             # Then reshape to construct the real bias matrix (same shape as attention matrix)
-            num_heads = self.relative_bias_table.shape[1]
-            flattened_indices = self.relative_coords.flatten()  # [seq_len*seq_len]
-            offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)  # [seq_len, seq_len, heads]
-            offset_mask = offset_mask.permute(2, 0, 1).repeat((x.shape[0], 1, 1))  # [batch*num_heads, seq_len, seq_len]
-        elif self.relative_pos_encoding == "convit_like":
+            num_heads = self.relative_bias_table.shape[2]
+            flattened_indices = self.relative_coords.flatten()  # [T*T]
+            offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices).reshape(self.num_layers, self.seq_len, self.seq_len, num_heads)  # [L, T, T, H]
+            offset_mask = rearrange(offset_mask, 'l t0 t1 h -> l h t0 t1')
+            offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
+
+        elif self.relative_pos_encoding == "convit":
             # Set up bias table
-            convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2*seq_len-1, num_convit_heads]
-            bias_table = torch.cat([self.normal_biases, convit_biases], dim=1)
+            bias_table = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(0).unsqueeze(2) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2T-1, H_convit]
             self.relative_bias_table = bias_table
             if plot_dir is not None:
                 print("CONVIT: Offset", self.convit_offsets, "Intercepts", self.convit_intercepts, "Slope", self.convit_slopes)
 
             # Compute the actual offset matrix
             num_heads = self.relative_bias_table.shape[1]
-            flattened_indices = self.relative_coords.flatten()  # [seq_len*seq_len]
-            offset_mask = self.relative_bias_table.index_select(dim=0, index=flattened_indices).reshape(self.seq_len, self.seq_len, num_heads)  # [seq_len, seq_len, heads]
-            offset_mask = offset_mask.permute(2, 0, 1).repeat((x.shape[0], 1, 1))  # [batch*num_heads, seq_len, seq_len]
+            flattened_indices = self.relative_coords.flatten()  # [T*T]
+            offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices).reshape(self.num_layers, self.seq_len, self.seq_len, num_heads)  # [layers, T, T, H]
+            offset_mask = rearrange(offset_mask, 'l t0 t1 h -> l h t0 t1')
+            offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [layers, B*H, T, T]
+
+        elif self.relative_pos_encoding == "convit_half":
+            # Set up bias table
+            convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(0).unsqueeze(2) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2T-1, H_convit]
+            bias_table = torch.cat([self.normal_biases, convit_biases], dim=2)
+            self.relative_bias_table = bias_table
+            if plot_dir is not None:
+                print("CONVIT: Offset", self.convit_offsets, "Intercepts", self.convit_intercepts, "Slope", self.convit_slopes)
+
+            # Compute the actual offset matrix
+            num_heads = self.relative_bias_table.shape[2]
+            flattened_indices = self.relative_coords.flatten()  # [T*T]
+            offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices).reshape(self.num_layers, self.seq_len, self.seq_len, num_heads)  # [L, T, T, H]
+            offset_mask = rearrange(offset_mask, 'l t0 t1 h -> l h t0 t1')  # [L, H, T, T]
+            offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
 
         elif self.relative_pos_encoding == "alibi":
-            offset_mask = self.alibi.repeat((x.shape[0], 1, 1))  # Repeat along the batch dimension, as PyTorch expects mask to be [batch*num_heads, seq_len, seq_len]
+            # self.alibi: [H, T, T]
+            offset_mask = self.alibi.repeat((self.num_layers, x.shape[0], 1, 1))  # Repeat along the layer and batch dimension: TransformerEncoder expects mask to be [L, B*H, T, T]
 
         # If some positions are not allowed to attend, either use the Boolean mask, or if combining with
         # relative position encoding, set those mask entries to -inf
         if self.invalid_mask is not None:
             if offset_mask is None:
-                # In this case, offset_mask is [seq_len, seq_len]. PyTorch supports both 2D and 3D masks.
-                offset_mask = self.invalid_mask  # True at positions that are NOT ALLOWED to attend (too far)
+                # If there is no relative position offset mask, create one from the
+                # invalid mask with shape [L, T, T]. At each layer, the mask is True
+                # at positions that are NOT ALLOWED to attend (too far).
+                offset_mask = self.invalid_mask.repeat(self.num_layers, 1, 1)
             else:
-                # Note: invalid_mask has shape [seq_len, seq_len], but offset_mask computed from
-                # relative dimension is of shape [batch*num_heads, seq_len, seq_len]
-                offset_mask[:, self.invalid_mask] = float("-inf")
+                # Note: invalid_mask has shape [L, T, T], but offset_mask computed from
+                # relative dimension is of shape [B*H, T, T]
+                offset_mask[:, :, self.invalid_mask] = float("-inf")
 
-        x, attn_weights = self.transformer_encoder(x, mask=offset_mask, plot_dir=plot_dir)  # after encoder. x: [batch, seq_len, embed_dim]. attn_weights: [batch, n_layer*n_head, seq_len, seq_len]
-        # x = self.head_linear(x)
-        # x = self.norm(x)
+        # Pass through encoder
+        x, attn_weights, embeddings_layers = self.transformer_encoder(x, masks=offset_mask, plot_dir=plot_dir)  # x: [B, T, D]. attn_weights: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
+        return x, attn_weights, embeddings_layers
 
-        return x, attn_weights
-
-    def forward_pooling(self, x, plot_dir=None):
-        x = self.linear_before_pool(x) # [batch, time, embed_dim]
-        attn_weights = self.attention_pool(x)  # [batch, time, n_heads]
-        attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
-        attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
-        aggregated_x = torch.matmul(attn_weights, x)  # [batch, n_heads, channel]
-        aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-        x = self.fc(aggregated_x)
-
-        return x
 
     def forward(self, x, plot_dir=None):
         """Forward pass through the model.
 
         Args:
-            x: `[batch_size, seq_length, feat_dim]` shape.
+            x: `[B, T_orig, V]` shape.
             plot_dir: if provided, plot attention matrices and distances between timestep feature vectors at each layer.
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
         """
-        preds, attn_weights_enc = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [batch, time, channel]
 
-        # POOLING. Note that x shape is [batch, time, channel] - differs from local_cnn
+        # ENCODER forward pass
+        preds, attn_weights_enc, embeddings_layers = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [B, T, D], attn_weights_enc: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
+
+        # POOLING. Note that x shape is [B, T, D] - differs from local_cnn
         if "seqpool" in self.pool:
             # If specified - inject absolute positional embedding before seqpool
             if self.where_to_add_abspos == "before_seqpool_concat":
-                pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)
-                preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [batch, time, 2*channel]
+                # self.pos_embed: [L, D]
+                pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)  # [B, T, D]
+                preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [B, T, 2D]
             elif self.where_to_add_abspos == "before_seqpool_add":
-                preds = preds + self.pos_embed
+                preds = preds + self.pos_embed  # [B, T, D]
 
+            # Compute pooling attention scores
             if self.where_to_add_abspos == "pooling_before_softmax":
-                pooling_attn = F.softmax(self.attention_pool(preds) + self.pos_embed, dim=1)
+                pooling_attn = F.softmax(self.attention_pool(preds) + self.pos_embed, dim=1)  # [B, T, H]
             elif self.where_to_add_abspos == "pooling_gating":
-                pooling_content_attn = F.softmax(self.attention_pool(preds), dim=1)  # [batch, time, heads]
-                pooling_pos_attn = F.softmax(self.pos_embed, dim=0).unsqueeze(0)  # [1, time, heads]
-                pooling_gating = self.pooling_gating_param.view(1,1,-1)  # [1, 1, heads]
+                # Content and positional attention
+                pooling_content_attn = F.softmax(self.attention_pool(preds), dim=1)  # [B, T, H]
+                pooling_pos_attn = F.softmax(self.pos_embed, dim=0).unsqueeze(0)  # [1, T, H]
 
+                # Combine them with gating
+                pooling_gating = self.pooling_gating_param.view(1,1,-1)  # [1, 1, H]
+                print("Pooling gating", pooling_gating.shape, pooling_gating, pooling_content_attn.shape, pooling_pos_attn.shape)
                 pooling_attn = (1.-torch.sigmoid(pooling_gating)) * pooling_content_attn + torch.sigmoid(pooling_gating) * pooling_pos_attn
-                pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [batch, time, heads]
+                pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [B, T, H]
+            else:
+                pooling_attn = F.softmax(self.attention_pool(preds), dim=1)  # [B, T, H]
 
-
+            # Do the pooling
             if self.pool == "seqpool":
                 # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
-                # attention_pool outputs [batch, time, 1].
+                # pooling_attn outputs [B, T, 1].
                 # Softmax normalizes it so that sum across the time dimension (for each example) is 1.
-                # Transpose it to [batch, 1, time], and then multiply with [batch, time, channel] -> [batch, 1, channel].
-                # Squeeze out the 1 to get [batch, channel].
+                # Transpose it to [B, 1, T], and then multiply with [B, T, D] -> [batch, 1, D.
+                # Squeeze out the 1 to get [B, D].
                 # NOTE: not yet compatible with absolute positional embeddings inside the pooling.
-                preds = torch.matmul(pooling_attn.transpose(-1, -2), preds).squeeze(-2)
+                pooling_attn = rearrange(pooling_attn, 'b t 1 -> b 1 t')
+
+                # [B, 1, T] x [B, T, D] -> [B, 1, D] -> [B, D]
+                preds = torch.matmul(pooling_attn, preds).squeeze(-2)
                 preds = self.fc(preds)
 
-            # elif self.pool == "seqpool_multihead":
-                 
-            # elif self.pool == "learnable_seqpool_multihead":
-            #     # Seqpool with multiple heads and absolute positional embeddings applied before attention.
-                
-            #     # initialize learnable absolute positional embeddings
-            #     self.pool_pos_embed = nn.Parameter(torch.zeros(1, preds.shape[1], preds.shape[2], device=self.device), requires_grad=True) # [1, seq_len, embed_dim]
-            #     nn.init.uniform_(self.pool_pos_embed, -0.02, 0.02)
-
-            #     # add positional embeddings to input (both already on self.device)
-            #     preds = preds + self.pool_pos_embed
-
-            #     attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
-            #     attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
-            #     attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
-            #     aggregated_x = torch.matmul(attn_weights, preds)  # [batch, n_heads, channel]
-            #     aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-            #     preds = self.fc(aggregated_x)
             elif self.pool == "seqpool_multihead":  #  or self.pool == "seqpool_multihead_posenc":
                 # Seqpool with multiple heads. Intuitively, different heads can
                 # focus on different parts of the sequence.
-                # attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
-                # attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
-                pooling_attn = pooling_attn.permute((0, 2, 1))  # [batch, n_heads, time]
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [batch, n_heads, channel]
-                aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-                preds = self.fc(aggregated_x)
+                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
+                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
+                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
+                preds = self.fc(aggregated_x)  # [B, num_classes]
             elif self.pool == "seqpool_multihead_smoothed":
                 # Same as seqpool_multihead above, but do a temporal smoothing
                 # on the attention weights for each head.
-                # attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
-
-                # Smoothing
-                pooling_attn = pooling_attn.permute((0, 2, 1))  # [batch, n_heads, time]
+                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
                 pooling_attn = F.avg_pool1d(pooling_attn, kernel_size=5, stride=1, padding=2)
+                pooling_attn = F.softmax(pooling_attn, dim=2)  # [B, H, T]
+                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
+                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
+                preds = self.fc(aggregated_x)  # [B, num_classes]
 
-                pooling_attn = F.softmax(pooling_attn, dim=2)  # [batch, n_heads, time]
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [batch, n_heads, channel]
-                aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-                preds = self.fc(aggregated_x)
-            # elif self.pool == "final_seqpool_multihead_posenc":
-            #     attn_weights = self.attention_pool(preds)  # [batch, time, n_heads]
-                
-            #     # Add positional bias to attention scores before softmax
-            #     attn_weights = attn_weights + self.final_pos_bias.unsqueeze(0)  # [1, seq_len, num_heads] + [batch, time, n_heads]
-            #     attn_weights = F.softmax(attn_weights, dim=1)  # [batch, time, n_heads]
-            #     attn_weights = attn_weights.permute((0, 2, 1))  # [batch, n_heads, time]
-            #     aggregated_x = torch.matmul(attn_weights, preds)  # [batch, n_heads, channel]
-            #     aggregated_x = aggregated_x.reshape((aggregated_x.shape[0], -1))  # [batch, n_heads*channel]
-            #     preds = self.fc(aggregated_x)
         elif self.pool == "linear":
             preds = self.act(preds)
             preds = self.dropout1(preds)
@@ -836,12 +712,160 @@ class ClimaX(nn.Module):
             preds = self.fc(preds)
         else:
             raise ValueError("Invalid pool")
-        return preds, attn_weights_enc  # TODO also return seqpool weights
 
-        # OLD CODE
-        # preds = preds.reshape(preds.shape[0], -1)
-        # preds = self.output_layer(preds)
-        # return preds, attn_weights
+
+        if plot_dir is not None:
+
+            # ALL VISUALIZATIONS of timestep distances/similarities, positional encodings, and
+            # attention matrices. Exception: attention breakdown is in Attention_Rel_Scl.forward()
+
+            # Plot an example input and distances between timesteps (just for comparison with later)
+            orig_input = x.detach().cpu()  # [B, T_orig, V]
+            visualization_utils.plot_time_series(orig_input[0, :, :].numpy(), os.path.join(plot_dir, 'example_x0.png'))
+
+            # Compute similarities/distances between timestep feature vectors at each layer.
+            # Start from the input variables
+            feature_distances_layers = [torch.linalg.norm(orig_input.unsqueeze(1) - orig_input.unsqueeze(2), dim=3)]  # [B, T_orig, T_orig]
+            similarity_matrix_layers = [F.cosine_similarity(orig_input.unsqueeze(1), orig_input.unsqueeze(2), dim=3)]  # [B, T_orig, T_orig]
+
+            # Continue to latent embeddings (before encoder, and after each layer)
+            for layer_idx in range(self.num_layers + 1):
+                embed = embeddings_layers[layer_idx, :, :, :].detach().cpu()  # [B, T, D]
+
+                # The unsqueeze operations convert embed into [B, 1, T, D] and [B, T, 1, D].
+                # Subtracting them produces [B, T, T, D] (due to broadcasting), then take norm/similarity over the D dimension
+                # Result is [B, T, T]
+                feature_distances_layers.append(torch.linalg.norm(embed.unsqueeze(1) - embed.unsqueeze(2), dim=3))  # Append [B, T, T]
+                similarity_matrix_layers.append(F.cosine_similarity(embed.unsqueeze(1), embed.unsqueeze(2), dim=3))  # Append [B, T, T]
+
+            # Create a plot, where each row is an exmaple, and each column is a layer.
+            # Plot distances between timestep feature vectors at each layer
+            n_rows = 5  # Examples to plot
+            n_cols = len(feature_distances_layers)
+            feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
+            min_value, max_value = utils.approx_min_max(feature_distances_layers)
+            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
+            for r in range(n_rows):
+                for c in range(n_cols):
+                    im = axeslist[r, c].imshow(feature_distances_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    if r == 0:
+                        if c == 0:
+                            axeslist[r, c].set_title("Initial input")
+                        if c < n_cols-1:
+                            axeslist[r, c].set_title(f"Before layer {c+1}")
+                        else:
+                            axeslist[r, c].set_title(f"Final")
+                    if c == 0:
+                        axeslist[r, c].set_ylabel(f"Example {r+1}", rotation=0, size='large', labelpad=30)
+            fig.colorbar(im, ax=axeslist, shrink=0.4)  #[r,c])
+            fig.suptitle("Distance between timestep feature vectors")
+            plt.savefig(os.path.join(plot_dir, 'timestep_distances.png'))
+            plt.close()
+
+            # Plot cosine similarity between timestep feature vectors (at each layer)
+            n_cols = len(similarity_matrix_layers)
+            similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
+            min_value, max_value = utils.approx_min_max(similarity_matrix_layers)
+            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
+            for r in range(n_rows):
+                for c in range(n_cols):
+                    im = axeslist[r, c].imshow(similarity_matrix_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    if r == 0:
+                        if c == 0:
+                            axeslist[r, c].set_title("Initial input")
+                        if c < n_cols-1:
+                            axeslist[r, c].set_title(f"Before layer {c+1}")
+                        else:
+                            axeslist[r, c].set_title(f"Final")
+                    if c == 0:
+                        axeslist[r, c].set_ylabel(f"Example {r+1}", rotation=0, size='large', labelpad=30)
+            fig.colorbar(im, ax=axeslist, shrink=0.4)  # [r,c])
+            fig.suptitle("Cos similarity between timestep feature vectors")
+            plt.savefig(os.path.join(plot_dir, 'timestep_similarities.png'))
+            plt.close()
+
+            # Plot attention matrices: for each example, plot random subset of layers/heads. attn_weights_enc: [L, B, H, T, T]
+            attn_matrices = rearrange(attn_weights_enc, "l b h t0 t1 -> b (l h) t0 t1")  # Reshape to [B, L*H (num matrices), T, T]
+            min_value, max_value = utils.approx_min_max(attn_matrices)
+
+            # Random subset of heads/layers
+            n_matrices = attn_matrices.shape[1]  # Total number of attention maps per example (L*H)
+            n_cols = self.num_layers * 2
+            matrix_indices = np.sort(np.random.choice(np.arange(n_matrices), n_cols, replace=False))
+            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
+            for r in range(n_rows):
+                for c in range(n_cols):
+                    m = matrix_indices[c]
+                    im = axeslist[r, c].imshow(attn_matrices[r, m, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)  #, vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
+                    if r == 0:
+                        layer_idx = m // self.num_heads
+                        head_idx = m % self.num_heads
+                        axeslist[r, c].set_title(f"Layer {layer_idx}, Head {head_idx}")
+                    if c == 0:
+                        axeslist[r, c].set_ylabel(f"Example {r+1}", rotation=0, size='large', labelpad=30)
+            fig.colorbar(im, ax=axeslist, shrink=0.4)  # [r, c])
+            fig.suptitle("Example attention matrices")
+            plt.savefig(os.path.join(plot_dir, 'attention_matrices.png'))
+            plt.close()
+
+            # Plot absolute positional encoding
+            if "learnable" in self.pos_encoding:
+                # Plot positional encoding
+                fig, ax = plt.subplots(1, 1, figsize=(0.05*self.pos_embed.shape[1]+2, 0.05*self.pos_embed.shape[0]), layout="constrained")
+                im = ax.imshow(self.pos_embed.detach().cpu().numpy())  # pos_embed: [T, D]
+                ax.set_xlabel("Embedding index")
+                ax.set_ylabel("Timestep")
+                fig.colorbar(im, ax=ax, shrink=0.4)
+                fig.suptitle("Absolute positional embeddings")
+                plt.savefig(os.path.join(plot_dir, 'pos_encoding.png'))
+                plt.close()
+
+                # Compute pairwise distance between each pair of positions
+                pairwise_distances = torch.cdist(self.pos_embed.unsqueeze(0), self.pos_embed.unsqueeze(0)).squeeze(0)
+                fig, ax = plt.subplots(1, 1, figsize=(0.05*pairwise_distances.shape[1], 0.05*pairwise_distances.shape[0]), layout="constrained")
+                im = ax.imshow(pairwise_distances.detach().cpu().numpy())
+                fig.colorbar(im)
+                fig.suptitle("Pairwise distances between absolute pos encodings")
+                plt.savefig(os.path.join(plot_dir, 'pos_encoding_distances.png'))
+                plt.close()
+
+            # Plot relative positional encoding for each layer
+            if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
+                n_rows = 1
+                n_cols = self.num_layers
+                min_value, max_value = utils.approx_min_max(self.relative_bias_table)
+
+                # self.relative_bias_table is [L (layers), 2T-1 (time offsets), H (heads)]
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*self.relative_bias_table.shape[2]+3, 0.03*n_rows*self.relative_bias_table.shape[1]), layout="constrained")
+                for c in range(n_cols):  # Loop through each layer
+                    im = axeslist[c].imshow(self.relative_bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
+                    axeslist[c].set_xlabel("Head number")
+                    axeslist[c].set_ylabel("Relative offset (middle is 0)")
+                    axeslist[c].set_title(f"Layer {c}")
+                fig.colorbar(im, ax=axeslist, shrink=0.4)
+                fig.suptitle("Relative attention biases")
+                plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets.png'))
+                plt.close()
+
+            # SeqPool attention weights. Each plot is an example: within that, rows are timesteps and columns are heads.
+            if self.pool in ["seqpool_multihead", "seqpool_multihead_smoothed"]:
+                n_rows = 1
+                n_cols = 5
+                min_value, max_value = utils.approx_min_max(pooling_attn)
+
+                # pooling_attn is [B, H, T]
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*pooling_attn.shape[1]+3, 0.03*n_rows*pooling_attn.shape[2]), layout="constrained")
+                for c in range(n_cols):
+                    im = axeslist[c].imshow(rearrange(pooling_attn[c, :, :], 'h t -> t h').detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x)
+                    axeslist[c].set_xlabel("Head number")
+                    axeslist[c].set_ylabel("Timestep")
+                    axeslist[c].set_title(f"Example {c}")
+                fig.colorbar(im, ax=axeslist, shrink=0.4)
+                fig.suptitle("Pooling attention")
+                plt.savefig(os.path.join(plot_dir, 'seqpool_attn_weights.png'))
+                plt.close()
+
+        return preds, attn_weights_enc
 
 
 def _get_clones(module, N):
@@ -875,17 +899,22 @@ class TransformerEncoder(nn.modules.Module):
         self.enable_nested_tensor = enable_nested_tensor
         self.mask_check = mask_check
 
-    def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None, plot_dir: str = None) -> Tensor:
+    def forward(self, src: Tensor, masks: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None, plot_dir: str = None) -> Tensor:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
-            src: the sequence to the encoder (required). Must be of shape [BATCH, TIME, EMBED_DIM]
-            mask: the mask for the src sequence (optional).
+            src: the sequence to the encoder (required). Must be of shape [B, T, D]
+            masks: for each layer, the mask for the src sequence (optional). Shape: [L, B*H, T, T]
             src_key_padding_mask: the mask for the src keys per batch (optional).
             plot_dir: if provided, plot attention matrices and distances between timestep feature vectors
 
         Shape:
             see the docs in Transformer class.
+        
+        Returns:
+            output: [B, T, D]
+            attn_weights_layers: [L, B, H, T, T], attention matrix for each layer, example, head
+            embeddings_layers: [L+1, B, T, D], embedding at start + after each layer
         """
         if src_key_padding_mask is not None:
             _skpm_dtype = src_key_padding_mask.dtype
@@ -923,8 +952,8 @@ class TransformerEncoder(nn.modules.Module):
             why_not_sparsity_fast_path = "mask_check enabled, and src and src_key_padding_mask was not left aligned"
         elif output.is_nested:
             why_not_sparsity_fast_path = "NestedTensor input is not supported"
-        elif mask is not None:
-            why_not_sparsity_fast_path = "src_key_padding_mask and mask were both supplied"
+        elif masks is not None:
+            why_not_sparsity_fast_path = "src_key_padding_mask and masks were both supplied"
         elif first_layer.self_attn.num_heads % 2 == 1:
             why_not_sparsity_fast_path = "num_head is odd"
         elif torch.is_autocast_enabled():
@@ -960,101 +989,25 @@ class TransformerEncoder(nn.modules.Module):
                 output = torch._nested_tensor_from_mask(output, src_key_padding_mask.logical_not(), mask_check=False)
                 src_key_padding_mask_for_layers = None
 
-        attn_weights_layers = None
-
-        if plot_dir is not None:
-            # FOR VISUALIZATIONS: Compute Euclidean distance between each timestep's feature vectors.
-            # "output" is assumed to be shape [batch, seq_len, embed_dim].
-            # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then take the norm over embed_dim.
-            # Result is [batch, seq_len, seq_len]
-            feat_detached = output.detach().cpu()
-            feature_distances_layers = [torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3)]
-
-            # FOR VISUALIZATIONS: Compute cosine similarity between each timestep's feature vectors.
-            # "output" is assumed to be shape [batch, seq_len, embed_dim].
-            # Via broadcasting, we convert this to [batch, seq_len, seq_len, embed_dim], then compute similarity over embed_dim.
-            # Result is [batch, seq_len, seq_len]
-            # See https://pytorch.org/docs/stable/generated/torch.nn.functional.cosine_similarity.html
-            similarity_matrix_layers = [F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3)]
+        attn_weights_layers = []
+        embeddings_layers = [output]  # Also store the pre-encoder embedding
 
         # Compute forward pass
-        for mod in self.layers:
-            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers, plot_dir=plot_dir)  # output: [batch, seq_len, embed_dim], attn_weights: [batch, num_heads, seq_len, seq_len]
-            if attn_weights_layers is None:
-              attn_weights_layers = attn_weights
-            else:
-              attn_weights_layers = torch.cat((attn_weights_layers, attn_weights), dim=1)  # attn_weights: [batch, n_layers*num_heads, seq_len, seq_len]
+        for layer_idx, mod in enumerate(self.layers):
+            mask = masks[layer_idx] if masks is not None else None
+            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers, plot_dir=plot_dir)  # output: [B, T, D], attn_weights: [B, H, T, T]
+            attn_weights_layers.append(attn_weights)
+            embeddings_layers.append(output)
 
-            if plot_dir is not None:
-                # FOR VISUALIZATIONS: Compute distances between timestep feature vectors
-                feat_detached = output.detach().cpu()
-                feature_distances_layers.append(torch.linalg.norm(feat_detached.unsqueeze(1) - feat_detached.unsqueeze(2), dim=3))
-                similarity_matrix_layers.append(F.cosine_similarity(feat_detached.unsqueeze(1), feat_detached.unsqueeze(2), dim=3))
-
-        # VISUALIZATIONS
-        if plot_dir is not None:
-            n_rows = 5  # Examples to plot
-
-            feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # Convert this to similar format as attn_weights_layers [batch, n_matrices, seq_len, seq_len]
-
-            # Compute quantiles on a subset of the data to avoid memory issues
-            n_cols = len(feature_distances_layers)
-            min_value, max_value = utils.approx_min_max(feature_distances_layers)
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-            for r in range(n_rows):
-                for c in range(n_cols):
-                    im = axeslist[r, c].imshow(feature_distances_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
-                    if r == 0:
-                        if c < n_cols-1:
-                            axeslist[r, c].set_title(f"Before layer {c+1}")
-                        else:
-                            axeslist[r, c].set_title(f"Final")
-            plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-            plt.colorbar(im)
-            plt.suptitle("Distance between timestep feature vectors")
-            plt.savefig(os.path.join(plot_dir, 'timestep_distances.png'))
-            plt.close()
-
-            # Plot cosine similarity between timestep feature vectors
-            similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # Convert this to similar format as attn_weights_layers [batch, n_matrices, seq_len, seq_len]
-            n_cols = len(similarity_matrix_layers)
-            min_value, max_value = utils.approx_min_max(similarity_matrix_layers)
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-            for r in range(n_rows):
-                for c in range(n_cols):
-                    im = axeslist[r, c].imshow(similarity_matrix_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
-                    if r == 0:
-                        if c < n_cols-1:
-                            axeslist[r, c].set_title(f"Before layer {c+1}")
-                        else:
-                            axeslist[r, c].set_title(f"Final")
-            plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-            plt.colorbar(im)
-            plt.suptitle("Cos similarity between timestep feature vectors")
-            plt.savefig(os.path.join(plot_dir, 'timestep_similarities.png'))
-            plt.close()
-
-            # Plot attention matrices
-            n_matrices = attn_weights_layers.shape[1]  # Total number of attention maps per example (n_layers*n_heads)
-            n_cols = n_matrices//4
-            min_value, max_value = utils.approx_min_max(attn_weights_layers)
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
-            for r in range(n_rows):
-                for c in range(n_cols):
-                    im = axeslist[r, c].imshow(attn_weights_layers[r, c*(n_matrices//n_cols), :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)  #, vmin=0, vmax=3/attn_weights_layers.shape[2])  #0/attn_weights_layers.shape[1])
-            plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-            plt.colorbar(im)
-            plt.suptitle("Example attention matrices")
-            plt.savefig(os.path.join(plot_dir, 'attention_matrices.png'))
-            plt.close()
-
+        attn_weights_layers = torch.stack(attn_weights_layers, dim=0)  # [L, B, H, T, T]
+        embeddings_layers = torch.stack(embeddings_layers, dim=0)  # [L+1, B, T, D]
         if convert_to_nested:
             output = output.to_padded_tensor(0.)
 
         if self.norm is not None:
             output = self.norm(output)
 
-        return output, attn_weights_layers
+        return output, attn_weights_layers, embeddings_layers
 
 class TransformerBatchNormEncoderLayer(nn.modules.Module):
     r"""This transformer encoder layer block is made up of self-attn and feedforward network.
@@ -1069,7 +1022,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, where_to_add_relpos='before', conv_projection=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none', where_to_add_relpos='before', conv_projection=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         # if where_to_add_relpos == "before":
         #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
@@ -1078,8 +1031,12 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         #     self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         #     assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         # else:
-        # Custom attention if we want relative position offset to be applied after softmax
-        self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
+        
+        if relative_pos_encoding == "rope":
+            self.self_attn = AttentionWithRoPE(d_model, nhead, attn_drop=dropout, proj_drop=dropout)
+        else:
+            # Custom attention if we want relative position offset to be applied after softmax
+            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1094,13 +1051,14 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 
         self.activation = F.gelu
 
+
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
                 src_key_padding_mask: Optional[Tensor] = None, plot_dir = None) -> Tensor:
         r"""Pass the input through the encoder layer.
 
         Args:
-            src: the sequence to the encoder layer (required). Shape: [batch, seq_len, embed_dim]
-            src_mask: the mask for the src sequence (optional).
+            src: the sequence to the encoder layer (required). Shape: [B, T, D]
+            src_mask: the mask for the src sequence (optional). Shape: [B*H, T, T]
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
         Shape:
@@ -1109,20 +1067,20 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         if type(self.self_attn) == Attention_Rel_Scl:
             # Attention_Rel_Scl allows plot_dir
             src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                                key_padding_mask=src_key_padding_mask, average_attn_weights=False, plot_dir=plot_dir)  # src2: [batch, seq_len, d_model], attn_output_weights: [batch, num_heads, seq_len, seq_len]
+                                key_padding_mask=src_key_padding_mask, average_attn_weights=False, plot_dir=plot_dir)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
         else:
             src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                                key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [batch, seq_len, d_model], attn_output_weights: [batch, num_heads, seq_len, seq_len]
+                                key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
 
-        src = src + self.dropout1(src2)  # (batch, seq_len, d_model)  TODO temporarily removed
-        src = src.permute(0, 2, 1)  # (batch, d_model, seq_len)
+        src = src + self.dropout1(src2)  # (B, T, D)  TODO temporarily removed
+        src = rearrange(src, 'b t d -> b d t')  # Convert to [B, D, T] only for normalization (which expects channel dim first)
         src = self.norm1(src)
-        src = src.permute(0, 2, 1)  # restore (batch, seq_len, d_model)
+        src = rearrange(src, 'b d t -> b t d')  # Restore [B, T, D]
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)  # (batch, seq_len, d_model)
-        src = src.permute(0, 2, 1)  # (batch, d_model, seq_len)
+        src = src + self.dropout2(src2)  # (B, T, D)
+        src = rearrange(src, 'b t d -> b d t')
         src = self.norm2(src)
-        src = src.permute(0, 2, 1)  # restore (batch, seq_len, d_model)
+        src = rearrange(src, 'b d t -> b t d')  # Restore [B, T, D]
         return src, attn_output_weights
 
 
@@ -1140,7 +1098,6 @@ class Attention_Rel_Scl(nn.Module):
         self.conv_projection = conv_projection
         self.where_to_add_relpos = where_to_add_relpos
         self.scale = emb_size ** -0.5
-        # self.to_qkv = nn.Linear(inp, inner_dim * 3, bias=False)
 
         if conv_projection:
             self.key = nn.Sequential(OrderedDict([
@@ -1172,55 +1129,50 @@ class Attention_Rel_Scl(nn.Module):
             self.value.weight.data.copy_(torch.eye(emb_size))
             self.query.weight.data.copy_(torch.eye(emb_size))
 
-            # torch.nn.init.xavier_uniform_(self.key.weight)
-            # torch.nn.init.xavier_uniform_(self.value.weight)
-            # torch.nn.init.xavier_uniform_(self.query.weight)
-
         self.dropout = nn.Dropout(dropout)
-        self.gating_param = torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)])
-        self.pooling_gating_param = torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)])
-        # self.to_out = nn.LayerNorm(emb_size)
+        self.gating_param = nn.Parameter(torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)]))
+
 
     def forward(self, query, key, value, attn_mask, plot_dir=None, **kwargs):
         """
-        Input (query/key/value) should be [batch, seq_len, embed_dim]. They can be identical
+        Input (query/key/value) should be [B, T, D]. They can be identical
         as the linear projections happen inside the method.
-        Mask should be [batch_size*num_heads, seq_len, seq_len]
+        Mask should be [B*H, T, T]
 
-        Output is [batch, seq_len, embed_dim], and attn matrix [batch, num_heads, seq_len, seq_len]
+        Output is [B, T, D], and attn matrix [B, H, T, T]
         """
-        batch_size, seq_len, _ = query.shape
-        # return torch.zeros_like(query), torch.eye((seq_len)).unsqueeze(0).unsqueeze(0).repeat((batch_size, self.num_heads, 1, 1))
+        assert query.shape == key.shape
+        assert query.shape == value.shape
 
-        k = self.key(key).reshape(batch_size, seq_len, self.num_heads, -1).permute(0, 2, 3, 1)
-        v = self.value(value).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
-        q = self.query(query).reshape(batch_size, seq_len, self.num_heads, -1).transpose(1, 2)
-        # k shape = (batch_size, num_heads, d_head, seq_len)
-        # v,q shape = (batch_size, num_heads, seq_len, d_head)
+        # self.key, self.value, self.query output [B, T, D]. Reshape/permute to extract the head dimension.
+        k = self.key(key)  # [B, T, D]
+        k = rearrange(k, 'b t (h d_h) -> b h d_h t', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, d_head, T]
+        v = self.value(value)  # [B, T, D]
+        v = rearrange(v, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, T, d_head]
+        q = self.query(query)  # [B, T, D]
+        q = rearrange(q, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, T, d_head]
+        # # k shape = [B, H, d_head, T]
+        # # v,q shape = [B, H, T, d_head]
 
-        attn = torch.matmul(q, k) * self.scale  # attn shape (batch_size, num_heads, seq_len, seq_len)
+        attn = torch.matmul(q, k) * self.scale  # attn shape [B, H, T, T]
 
         if attn_mask is not None:
-            # Reshape attn_mask to (batch_size, num_heads, seq_len, seq_len)
-            attn_mask = rearrange(attn_mask, '(b h) l t -> b h l t', h=self.num_heads)
+            # Reshape attn_mask from [B*H, T, T] to [B, H, T, T]
+            attn_mask = rearrange(attn_mask, '(b h) t0 t1 -> b h t0 t1', h=self.num_heads)
 
         # Add mask (relative position encoding) before softmax if specified
         if self.where_to_add_relpos == 'before' and attn_mask is not None:
             attn += attn_mask
 
-        # print("Attention forward", self.where_to_add_relpos, attn_mask.shape)
-
         # Perform softmax
-        attn = nn.functional.softmax(attn, dim=-1)
+        attn = nn.functional.softmax(attn, dim=-1)  # [B, H, T, T]
 
-        # print("Init attn", attn[0, 0, 0:10, 0:10])
         if attn_mask is not None:
             content_attn = attn
             if self.where_to_add_relpos == 'after':
                 attn = content_attn + attn_mask
             elif self.where_to_add_relpos == "after_gating":
                 gating = self.gating_param.view(1,-1,1,1)
-                # print("Attn mask", F.softmax(attn_mask, dim=-1)[0, 10, 0:5, 0:5])
                 attn = (1.-torch.sigmoid(gating))*content_attn + torch.sigmoid(gating)*F.softmax(attn_mask, dim=-1)  # First term is original content attention, second term is position attention
                 attn /= attn.sum(dim=-1).unsqueeze(-1)
             elif self.where_to_add_relpos == "only_relpos":
@@ -1234,11 +1186,11 @@ class Attention_Rel_Scl(nn.Module):
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads
                 n_rows = 4
                 n_cols = 3
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
 
                 for r in range(n_rows):
                     head_num = r * (attn.shape[1] // n_rows)
-                    max_value = 0.1 #/attn.shape[2]
+                    max_value = 0.1  #/attn.shape[2]
                     content_attn_head = content_attn[0, head_num, :, :]
                     if self.where_to_add_relpos == "after_gating" or self.where_to_add_relpos == "only_relpos":
                         pos_attn_head = F.softmax(attn_mask[0, head_num, :, :], dim=-1)
@@ -1252,21 +1204,14 @@ class Attention_Rel_Scl(nn.Module):
                         axeslist[r, 0].set_title("Content attn")
                         axeslist[r, 1].set_title("Position attn")
                         axeslist[r, 2].set_title("Combined attn")
-                plt.tight_layout(rect=[0, 0.03, 0.95, 0.95])
-                plt.colorbar(im)
-                plt.suptitle("Attn breakdown, single example (each row is one head)")
+                fig.colorbar(im, ax=axeslist[r])
+                fig.suptitle("Attn breakdown, single example (each row is one head)")
                 plt.savefig(os.path.join(plot_dir, 'attention_breakdown.png'))
                 plt.close()
 
-        # print("Final attn", attn[0, 0, 0:10, 0:10])
-        out = torch.matmul(attn, v)
+        out = torch.matmul(attn, v)  # [B, H, T, T] * [B, H, T, d_head] -> [B, H, T, d_head]
         # out.shape = (batch_size, num_heads, seq_len, d_head)
-        out = out.transpose(1, 2)
-        # out.shape == (batch_size, seq_len, num_heads, d_head)
-        out = out.reshape(batch_size, seq_len, -1)
-        # out.shape == (batch_size, seq_len, d_model)
-        # out = self.to_out(out)
-        # print("Out", out[0, 0:10, :])
+        out = rearrange(out, 'b h t d_h -> b t (h d_h)')  # Reunify the heads, output is [B, T, D]
         return out, attn
 
 
@@ -1544,7 +1489,7 @@ class ConvEmbed(nn.Module):
 
     def forward(self, x):
         """
-        Input [batch, in_chans, time] or [B, D, T]
+        Input [batch, in_chans, time] or [B, V, T]
         Output [batch, embed_dim, time] or [B, D, T]
         """
         x = self.proj(x)

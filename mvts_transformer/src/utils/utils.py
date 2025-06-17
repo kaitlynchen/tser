@@ -31,7 +31,7 @@ def approx_min_max(values):
     (since PyTorch quantile cannot handle large datasets).
     """
     sample_size = min(1000000, values.numel())
-    sampled_values = values.view(-1)[torch.randint(values.numel(), (sample_size,))]
+    sampled_values = values.flatten()[torch.randint(values.numel(), (sample_size,))]  # NOTE: changed view(-1) to flatten()
     min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.01, 0.99]).to(sampled_values.device))
     return min_value, max_value
 

@@ -186,14 +186,15 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed_sin', 'learnable_zero_init', 'learnable_uniform_init',
-                                                            'learnable_sin_init', 'learnable_tape_init', 'none'}, default='learnable_random_init',
-                                 help='Method for ABSOLUTE positional encoding')
+        self.parser.add_argument('--pos_encoding', choices={'fixed_sin', 'learnable', 'learnable_zero_init', 'learnable_uniform_init',
+                                                            'learnable_sin_init', 'learnable_tape_init', 'none'}, default='learnable_uniform_init',
+                                 help='Method for ABSOLUTE positional encoding. learnable defaults to learnable_uniform_init')
         self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "before_seqpool_add", "before_seqpool_concat",
                                                                              "pooling_before_softmax", "pooling_gating"], default="start_add",
                                  help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
-                                                                     'erpe_alibi_init', 'erpe_convit_init', 'convit_like', 'none'}, default='none',
+                                                                     'erpe_alibi_init', 'erpe_convit_init',
+                                                                     'convit', 'convit_half', 'rope', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating", "only_relpos"], default="before",
                                  help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
@@ -205,9 +206,9 @@ class Options(object):
                                  help='Normalization layer to be used internally in transformer encoder')
         self.parser.add_argument('--class_token', action='store_true',
                                  help='If set, will append class token to help predict global class')
-        self.parser.add_argument('--stride', type=int, default=0,
+        self.parser.add_argument('--stride', type=int, default=1,
                                  help='Stride between patches or convolutions')
-        self.parser.add_argument('--patch_length', type=int, default=64,
+        self.parser.add_argument('--patch_length', type=int, default=1,
                                  help='Number of time steps in each patch')
         self.parser.add_argument('--num_decoder_layers', type=int, default=2,
                                  help='Number of decoder layers')
