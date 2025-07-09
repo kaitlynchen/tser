@@ -1,12 +1,17 @@
 """
-Simple linear regression baselines only
+Runs simple scikit-learn baselines, ignoring the temporal structure of the data
+(just treating each timestep-variable as an independent feature).
+
+See repro_scripts/run_sklearn.sh for usage.
 """
 
 import random
 
 from sklearn.linear_model import Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from optimizers import get_optimizer
 from models.loss import get_loss_module
 from datasets.datasplit import split_dataset
@@ -28,6 +33,7 @@ import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.stats import loguniform
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
@@ -131,7 +137,8 @@ def main(config):
         )
 
     if config["val_pattern"]:  # used if val data come from different files / file patterns
-        raise ValueError("Validation set not supported for linear.")
+        raise ValueError("""Validation set not supported for sklearn models; we use cross-validation within the train set for hyperparameter selection.
+                        Please do not set --val_pattern or --val_ratio. Instead, set --test_pattern TEST""")
         val_data = data_class(config["data_dir"], pattern=config["val_pattern"], n_proc=-1, config=config)
         if config["baseline"] == 2 and config["proportion"]:
             trimmed_val_data = None
@@ -166,7 +173,8 @@ def main(config):
     # Note: currently a validation set must exist, either with `val_pattern` or `val_ratio`
     # Using a `val_pattern` means that `val_ratio` == 0 and `test_ratio` == 0
     if config["val_ratio"] > 0:
-        raise ValueError("Validation set not supported for linear.")
+        raise ValueError("""Validation set not supported for sklearn models; we use cross-validation within the train set for hyperparameter selection.
+                        Please do not set --val_pattern or --val_ratio. Instead, set --test_pattern TEST""")
         train_indices, val_indices = split_dataset(
             data_indices=my_data.all_IDs,
             validation_method=validation_method,
@@ -230,6 +238,8 @@ def main(config):
                 os.path.join(config["output_dir"], "normalization.pickle"), "wb"
             ) as f:
                 pickle.dump(norm_dict, f, pickle.HIGHEST_PROTOCOL)
+            # normalizer = Normalizer(**norm_dict)  # Ensure validation/test are normalized in the same way
+
     if normalizer is not None:
         if len(val_indices):
             val_data.feature_df.loc[val_indices] = normalizer.normalize(
@@ -240,54 +250,75 @@ def main(config):
                 test_data.feature_df.loc[test_indices]
             )
 
-    print("Train data", my_data.feature_df.loc[train_indices].shape, my_data.labels_df.loc[train_indices].shape)
+    print("Train data", my_data.feature_df.loc[train_indices].shape, my_data.labels_df.loc[train_indices].shape)  # feature_df should have shape [n_examples*time, variables]; labels_df should have shape [n_examples, 1]
     print("Test data", test_data.feature_df.loc[test_indices].shape, test_data.labels_df.loc[test_indices].shape)
 
+    # Note that feature_df has a row for each example/timestep. Thus, if you do .loc on a single train_idx,
+    # we return all "timesteps" rows for that example, which is shape [time, variables].
     X_train = np.empty((len(train_indices), my_data.max_seq_len, my_data.feature_df.shape[1]))
     for i, train_idx in enumerate(train_indices):
-        X_train[i] = my_data.feature_df.loc[train_idx]  # RHS is [timesteps, variables]
+        X_train[i] = my_data.feature_df.loc[train_idx]  # RHS is [time, variables]
     X_test = np.empty((len(test_indices), my_data.max_seq_len, my_data.feature_df.shape[1]))
     for i, test_idx in enumerate(test_indices):
         X_test[i] = test_data.feature_df.loc[test_idx]
     Y_train = my_data.labels_df.loc[train_indices].to_numpy()
     Y_test = test_data.labels_df.loc[test_indices].to_numpy()
-    print("Shape test", X_train.shape, X_test.shape, Y_train.shape, Y_test.shape)  # X: [n_examples, n_timsteps, n_vars]  Y: [n_examples]
+    print("Shape test", X_train.shape, X_test.shape, Y_train.shape, Y_test.shape)  # X: [n_examples, time, variables]  Y: [n_examples]
 
     # Flatten
     #X_train = X_train.mean(axis=1)
     #X_test = X_test.mean(axis=1)
-    X_train = X_train.reshape((X_train.shape[0], -1))
+    X_train = X_train.reshape((X_train.shape[0], -1))  # [n_examples, time*variables]
     X_test = X_test.reshape((X_test.shape[0], -1))
-    Y_train = Y_train.flatten()
+    Y_train = Y_train.flatten()  # [n_examples]
     Y_test = Y_test.flatten()
     print("Shape test after flatten", X_train.shape, X_test.shape, Y_train.shape, Y_test.shape)
-
 
     # Train model
     if args.model == "ridge":
         model = Ridge(random_state=args.seed)
-        hyperparams = {"alpha": [0, 0.01, 0.1, 1, 10, 100, 1000]}
+        search_params = {"alpha": [0, 0.01, 0.1, 1, 10, 100, 1000]}
+        regressor = GridSearchCV(model, search_params, cv=3)
     elif args.model == "lasso":
         model = Lasso(random_state=args.seed)
-        hyperparams = {"alpha": [0, 0.01, 0.1, 1, 10, 100, 1000]}
-    regressor = GridSearchCV(model, hyperparams, cv=10)
+        search_params = {"alpha": [0.01, 0.1, 1, 10, 100, 1000]}
+        regressor = GridSearchCV(model, search_params, cv=3)
+    elif args.model == "random_forest":
+        model = RandomForestRegressor(random_state=args.seed)
+        
+        # Source for hyperparams: https://github.com/ChangWeiTan/TS-Extrinsic-Regression/blob/master/models/classical_models.py
+        search_params = {
+            "n_estimators": [100, 500, 1000],
+            "max_depth": [5, 10, 15, 20],
+            "min_samples_leaf": [1, 5, 10, 15]
+        }
+        regressor = RandomizedSearchCV(model, search_params, cv=3, random_state=args.seed)
+    elif args.model == "xgboost":
+        model = XGBRegressor(random_state=args.seed)
+        search_params = {
+            "n_estimators": [100, 500, 1000],
+            "max_depth": [5, 10, 15, 20],
+            "learning_rate": loguniform(0.01, 0.1)  #loc=0.01, scale=0.1)
+        }
+        regressor = RandomizedSearchCV(model, search_params, cv=3, random_state=args.seed)
     regressor = regressor.fit(X_train, Y_train)
     predictions_test = regressor.predict(X_test)
     rmse_test = np.sqrt(mean_squared_error(Y_test, predictions_test))
     print("RMSE", rmse_test)
-    coefs = regressor.best_estimator_.coef_.reshape((my_data.max_seq_len, my_data.feature_df.shape[1]))
-    print("Coefs", coefs.shape, coefs)
 
-    # Visualizations
+    # Plot true vs predicted
     visualization_utils.plot_single_scatter_file(predictions_test, Y_test, "predicted", "true", config['plot_dir'],
                                                  title_description=f"{config['model']} flattened",
                                                  filename_description="test", should_align=True)
 
     # Plot time series
-    visualization_utils.plot_time_series(coefs, os.path.join(config['plot_dir'], f"{config['model']}_coefs.png"))
     visualization_utils.plot_time_series(X_train[0].reshape((my_data.max_seq_len, my_data.feature_df.shape[1])),
                                          os.path.join(config['plot_dir'], f"{config['model']}_example_x0.png"))
 
+    # For linear models, plot coefficients
+    if model in ["ridge", "lasso", "linear"]:
+        coefs = regressor.best_estimator_.coef_.reshape((my_data.max_seq_len, my_data.feature_df.shape[1]))
+        visualization_utils.plot_time_series(coefs, os.path.join(config['plot_dir'], f"{config['model']}_coefs.png"))
 
 if __name__ == "__main__":
     args = Options().parse()  # `argsparse` object

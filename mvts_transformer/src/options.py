@@ -65,7 +65,7 @@ class Options(object):
                                  help="Proportion of the dataset to be used as a validation set")
         self.parser.add_argument('--pattern', type=str,
                                  help='Regex pattern used to select files contained in `data_dir`. If None, all data will be used.')
-        self.parser.add_argument('--val_pattern', type=str,
+        self.parser.add_argument('--val_pattern', type=str, default="",
                                  help="""Regex pattern used to select files contained in `data_dir` exclusively for the validation set.
                             If None, a positive `val_ratio` will be used to reserve part of the common data set.""")
         self.parser.add_argument('--test_pattern', type=str, default='TEST',
@@ -153,7 +153,8 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn", "climax_smooth_plot", "climax_max_pool", "climax_seqpool"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "climax_smooth_plot", "climax_max_pool", "climax_seqpool",
+                                                     "ridge", "lasso", "random_forest", "xgboost", "local_cnn"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -189,11 +190,11 @@ class Options(object):
         self.parser.add_argument('--pos_encoding', choices={'fixed_sin', 'learnable', 'learnable_zero_init', 'learnable_uniform_init',
                                                             'learnable_sin_init', 'learnable_tape_init', 'none'}, default='learnable_uniform_init',
                                  help='Method for ABSOLUTE positional encoding. learnable defaults to learnable_uniform_init')
-        self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "before_seqpool_add", "before_seqpool_concat",
+        self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "before_pool_add", "before_pool_concat",
                                                                              "pooling_before_softmax", "pooling_gating"], default="start_add",
                                  help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
-                                                                     'erpe_alibi_init', 'erpe_convit_init',
+                                                                     'erpe_alibi_init', 'erpe_convit_init', 'erpe_convalibi_init',
                                                                      'convit', 'convit_half', 'rope', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating", "only_relpos"], default="before",

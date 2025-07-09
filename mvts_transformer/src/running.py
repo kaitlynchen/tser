@@ -556,12 +556,12 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
-            # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0:
-                plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
-                os.makedirs(plot_dir, exist_ok=True)
-            else:
-                plot_dir = None
+            # Plot dir if needed. Currently None so we don't plot for training batches (only validation)
+            plot_dir = None
+            # if i == 0 and epoch_num % 100 == 0:
+            #     plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
+            #     os.makedirs(plot_dir, exist_ok=True)
+            # else:
 
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)

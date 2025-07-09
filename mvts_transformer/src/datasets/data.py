@@ -46,7 +46,7 @@ class Normalizer(object):
         """
         if self.norm_type == "standardization":
             if self.mean is None:
-                self.mean = df.mean()
+                self.mean = df.mean()  # NOTE: mean() is per variable (column)
                 self.std = df.std()
             return (df - self.mean) / (self.std + np.finfo(float).eps)
 
