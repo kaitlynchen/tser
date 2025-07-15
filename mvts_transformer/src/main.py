@@ -59,7 +59,7 @@ def main(config):
         torch.cuda.manual_seed(config["seed"])
         torch.cuda.manual_seed_all(config["seed"])
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True, warn_only=True)  # a few operations such as AdaptiveMaxPool2d do not have deterministic implementations
         random.seed(config["seed"])
         np.random.seed(config["seed"])
 
@@ -332,9 +332,9 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth" or config["model"] == "climax_smooth_plot" or config["model"] == "climax_smooth_pool" or config["model"] == "climax_max_pool" or config["model"] == "climax_seqpool") and config["smooth_attention"]
+    need_attn_weights=(config["model"] in ["smooth", "climax_smooth", "convit_smooth", "climax_smooth_plot", "climax_smooth_pool", "climax_max_pool", "climax_seqpool", "local_cnn"]) and config["smooth_attention"]
     use_smoothing = need_attn_weights and config["task"] == "regression"
-    use_pool_smoothing = use_smoothing and config["model"] == "climax_smooth_pool"
+    use_pool_smoothing = use_smoothing  # and config["model"] == "climax_smooth_pool"
     smoothing_lambda = config["reg_lambda"]
 
     if config["test_only"] == "testset":  # Only evaluate and skip training

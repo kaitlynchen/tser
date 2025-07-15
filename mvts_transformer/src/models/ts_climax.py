@@ -205,13 +205,9 @@ class ClimaX(nn.Module):
                 absolute_emb_dim = num_heads
         else:
             absolute_emb_dim = embed_dim
-        self.setup_absolute_posenc(pos_encoding, seq_len, absolute_emb_dim)
+        utils.setup_absolute_posenc(self, pos_encoding, seq_len, absolute_emb_dim)
         self.setup_relative_posenc(relative_pos_encoding, seq_len, self.num_layers, num_heads)
         self.pos_drop = nn.Dropout(p=drop_rate)
-
-        # Pooling gating if applicable
-        if where_to_add_abspos == "pooling_gating":
-            self.pooling_gating_param = nn.Parameter(torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)]))
 
         # Define single encoder layer
         if self.conv_transformer:
@@ -231,39 +227,8 @@ class ClimaX(nn.Module):
         # TODO: Try not initializing weights and stick with default (Kaiming uniform)?
         self.initialize_weights()
 
-        # Input dim to pooling: if concatenating positional embedding right before pool, multiply by 2
-        pool_input_dim = 2 * embed_dim if self.where_to_add_abspos == "before_pool_concat" else embed_dim
-        if self.pool == "seqpool":
-            self.attention_pool = nn.Linear(pool_input_dim, 1)
-            self.fc = nn.Sequential(
-                nn.Linear(pool_input_dim, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, num_classes)
-            )      
-        elif self.pool in ["seqpool_multihead", "seqpool_multihead_smoothed"]:
-            self.attention_pool = nn.Sequential(
-                nn.Linear(pool_input_dim, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, num_heads)
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(pool_input_dim*num_heads, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, num_classes)
-            )
-        elif self.pool == "average":
-            self.fc = nn.Sequential(
-                nn.AdaptiveAvgPool1d(1),
-                nn.Flatten(),
-                nn.Linear(pool_input_dim, num_classes)
-            )
-        elif self.pool == "linear":
-            self.fc = nn.Sequential(
-                nn.Flatten(),  # Default converts to [B, T*D]
-                nn.Linear(pool_input_dim * seq_len, num_classes)
-            )
-        else:
-            raise ValueError("invalid pool")
+        # Initialize pooling
+        utils.setup_pooling(self, embed_dim, num_heads, seq_len, num_classes)
 
         # Local mask. Restrict which pairs of timesteps can pay attention to each other
         if self.local_mask >= 0:
@@ -274,54 +239,6 @@ class ClimaX(nn.Module):
             self.invalid_mask[distance_matrix > self.local_mask] = True
         else:
             self.invalid_mask = None
-
-
-    def setup_absolute_posenc(self, pos_encoding, seq_len, absolute_emb_dim):
-        """
-        Setup absolute positional encoding. Typically this is a vector for each timestep,
-        or matrix [T, D].
-        """
-
-        if "learnable" in pos_encoding:
-            # Learnable vector for each position (timestep)
-            self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)  # [T, D]
-
-            if pos_encoding == "learnable_uniform_init" or pos_encoding == "learnable":
-                # Uniform random initialization
-                nn.init.uniform_(self.pos_embed, -0.02, 0.02)
-            elif pos_encoding == "learnable_sin_init":
-                # Initialize with sinusoidal features
-                pos_embed = get_1d_sincos_pos_embed_from_grid(
-                    self.pos_embed.shape[-1],
-                    np.arange(seq_len)
-                )
-                self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
-            elif pos_encoding == "learnable_tape_init":
-                # Initialize with sinusoidal features (using TAPE trick to determine frequencies)
-                pos_embed = get_1d_sincos_pos_embed_from_grid(
-                    self.pos_embed.shape[-1],
-                    np.arange(seq_len),
-                    max_len=seq_len
-                )
-                self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
-            else:
-                assert pos_encoding == "learnable_zero_init"
-
-        elif pos_encoding == "fixed":
-            # FIXED sinusoidal vector for each position
-            # Code from Zerveas TST repo, https://github.com/gzerveas/mvts_transformer/blob/master/src/models/ts_transformer.py#L65
-            scale_factor = 1.0  # Hardcode default value
-            pe = torch.zeros(seq_len, absolute_emb_dim)  # positional encoding
-            position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
-            div_term = torch.exp(torch.arange(0, absolute_emb_dim, 2).float() * (-math.log(10000.0) / absolute_emb_dim))
-            pe[:, 0::2] = torch.sin(position * div_term)
-            pe[:, 1::2] = torch.cos(position * div_term)
-            pos_embed = scale_factor * pe  #.unsqueeze(0).transpose(0, 1) do not need to create extra dimension
-            self.register_buffer('pos_embed', pos_embed)  # this stores the variable in the state_dict (used for non-trainable variables)
-        elif pos_encoding == "none":
-            self.pos_embed = None
-        else:
-            raise ValueError("Invalid value of absolute_pos_embed (must be: learnable, learnable_sin_init, fixed, none)")
 
 
     def setup_relative_posenc(self, relative_pos_encoding, seq_len, num_layers, num_heads):
@@ -383,26 +300,23 @@ class ClimaX(nn.Module):
                 print("Convit offsets", self.convit_offsets, self.convit_slopes, self.convit_intercepts)
                 convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
                 bias_table_init[:, :self.convit_heads] = convit_biases
-                bias_table_init = torch.clamp(bias_table_init, min=-5)
+                # bias_table_init = torch.clamp(bias_table_init, min=-5)
 
                 # Duplicate for each layer
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
             
             elif relative_pos_encoding == "erpe_convalibi_init":
-
                 # Convit heads
                 self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
+                self.convit_slopes = torch.tensor([0.5 for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
                 self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-                print("Convit offsets", self.convit_offsets, self.convit_slopes, self.convit_intercepts)
                 convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
- 
+
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(0, -np.log2(seq_len), steps=self.alibi_heads, device=self.device)
-                print("Log slopes", log_slopes)
+                log_slopes = torch.linspace(-1, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = 2 ** log_slopes
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
@@ -410,7 +324,7 @@ class ClimaX(nn.Module):
 
                 # Combine
                 bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
-                bias_table_init = torch.clamp(bias_table_init, min=-5)
+                # bias_table_init = torch.clamp(bias_table_init, min=-5)
 
                 # Duplicate for each layer
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
@@ -524,7 +438,7 @@ class ClimaX(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
+            # nn.init.xavier_uniform_(m.weight)  # TODO
             # trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
@@ -681,77 +595,11 @@ class ClimaX(nn.Module):
 
         # ENCODER forward pass
         preds, attn_weights_enc, embeddings_layers = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [B, T, D], attn_weights_enc: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
-
-        # If specified - inject absolute positional embedding before pooling
-        if self.where_to_add_abspos == "before_pool_concat":
-            # self.pos_embed: [L, D]
-            pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(x.shape[0], 1, 1)  # [B, T, D]
-            preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [B, T, 2D]
-        elif self.where_to_add_abspos == "before_pool_add":
-            preds = preds + self.pos_embed  # [B, T, D]
-
-        # POOLING. Note that "preds" shape is [B, T, D]
-        if "seqpool" in self.pool:
-            # Compute pooling attention scores
-            if self.where_to_add_abspos == "pooling_before_softmax":
-                pooling_attn = F.softmax(self.attention_pool(preds) + self.pos_embed, dim=1)  # [B, T, H]
-            elif self.where_to_add_abspos == "pooling_gating":
-                # Content and positional attention
-                pooling_content_attn = F.softmax(self.attention_pool(preds), dim=1)  # [B, T, H]
-                pooling_pos_attn = F.softmax(self.pos_embed, dim=0).unsqueeze(0)  # [1, T, H]
-
-                # Combine them with gating
-                pooling_gating = self.pooling_gating_param.view(1,1,-1)  # [1, 1, H]
-                print("Pooling gating", pooling_gating.shape, pooling_gating, pooling_content_attn.shape, pooling_pos_attn.shape)
-                pooling_attn = (1.-torch.sigmoid(pooling_gating)) * pooling_content_attn + torch.sigmoid(pooling_gating) * pooling_pos_attn
-                pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [B, T, H]
-            else:
-                pooling_attn = F.softmax(self.attention_pool(preds), dim=1)  # [B, T, H]
-
-            # Do the pooling
-            if self.pool == "seqpool":
-                # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
-                # pooling_attn outputs [B, T, 1].
-                # Softmax normalizes it so that sum across the time dimension (for each example) is 1.
-                # Transpose it to [B, 1, T], and then multiply with [B, T, D] -> [batch, 1, D.
-                # Squeeze out the 1 to get [B, D].
-                # NOTE: not yet compatible with absolute positional embeddings inside the pooling.
-                pooling_attn = rearrange(pooling_attn, 'b t 1 -> b 1 t')
-
-                # [B, 1, T] x [B, T, D] -> [B, 1, D] -> [B, D]
-                preds = torch.matmul(pooling_attn, preds).squeeze(-2)
-                preds = self.fc(preds)
-
-            elif self.pool == "seqpool_multihead":  #  or self.pool == "seqpool_multihead_posenc":
-                # Seqpool with multiple heads. Intuitively, different heads can
-                # focus on different parts of the sequence.
-                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
-                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
-                preds = self.fc(aggregated_x)  # [B, num_classes]
-            elif self.pool == "seqpool_multihead_smoothed":
-                # Same as seqpool_multihead above, but do a temporal smoothing
-                # on the attention weights for each head.
-                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
-                pooling_attn = F.avg_pool1d(pooling_attn, kernel_size=5, stride=1, padding=2)
-                pooling_attn = F.softmax(pooling_attn, dim=2)  # [B, H, T]
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
-                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
-                preds = self.fc(aggregated_x)  # [B, num_classes]
-
-        elif self.pool == "linear":
-            preds = self.act(preds)
-            preds = self.dropout1(preds)
-            preds = self.fc(preds)  # fc already contains a Flatten
-        elif self.pool == "average":
-            preds = preds.permute((0, 2, 1))  # Reshape to [batch, channel, time] to be compatible with AvgPool1d
-            preds = self.fc(preds)
-        else:
-            raise ValueError("Invalid pool")
-
+        
+        # Pooling
+        preds, pooling_attn = utils.forward_pooling(self, preds)
 
         if plot_dir is not None:
-
             # ALL VISUALIZATIONS of timestep distances/similarities, positional encodings, and
             # attention matrices. Exception: attention breakdown is in Attention_Rel_Scl.forward()
 
@@ -778,12 +626,12 @@ class ClimaX(nn.Module):
             # Plot distances between timestep feature vectors at each layer
             n_rows = 5  # Examples to plot
             n_cols = len(feature_distances_layers)
-            feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
+            # feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
             min_value, max_value = utils.approx_min_max(feature_distances_layers)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
             for r in range(n_rows):
                 for c in range(n_cols):
-                    im = axeslist[r, c].imshow(feature_distances_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    im = axeslist[r, c].imshow(feature_distances_layers[r][c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     if r == 0:
                         if c == 0:
                             axeslist[r, c].set_title("Initial input")
@@ -800,12 +648,12 @@ class ClimaX(nn.Module):
 
             # Plot cosine similarity between timestep feature vectors (at each layer)
             n_cols = len(similarity_matrix_layers)
-            similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
+            # similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
             min_value, max_value = utils.approx_min_max(similarity_matrix_layers)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
             for r in range(n_rows):
                 for c in range(n_cols):
-                    im = axeslist[r, c].imshow(similarity_matrix_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    im = axeslist[r, c].imshow(similarity_matrix_layers[r][c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     if r == 0:
                         if c == 0:
                             axeslist[r, c].set_title("Initial input")
@@ -844,70 +692,66 @@ class ClimaX(nn.Module):
             plt.savefig(os.path.join(plot_dir, 'attention_matrices.png'))
             plt.close()
 
-            # Plot absolute positional encoding
+            # Visualize absolute positional encoding
             if "learnable" in self.pos_encoding:
-                # Plot positional encoding
-                fig, ax = plt.subplots(1, 1, figsize=(0.05*self.pos_embed.shape[1]+2, 0.05*self.pos_embed.shape[0]), layout="constrained")
-                im = ax.imshow(self.pos_embed.detach().cpu().numpy())  # pos_embed: [T, D]
-                ax.set_xlabel("Embedding index")
-                ax.set_ylabel("Timestep")
-                fig.colorbar(im, ax=ax, shrink=0.4)
-                fig.suptitle("Absolute positional embeddings")
-                plt.savefig(os.path.join(plot_dir, 'pos_encoding.png'))
-                plt.close()
-
-                # Compute pairwise distance between each pair of positions
-                pairwise_distances = torch.cdist(self.pos_embed.unsqueeze(0), self.pos_embed.unsqueeze(0)).squeeze(0)
-                fig, ax = plt.subplots(1, 1, figsize=(0.05*pairwise_distances.shape[1], 0.05*pairwise_distances.shape[0]), layout="constrained")
-                im = ax.imshow(pairwise_distances.detach().cpu().numpy())
-                fig.colorbar(im)
-                fig.suptitle("Pairwise distances between absolute pos encodings")
-                plt.savefig(os.path.join(plot_dir, 'pos_encoding_distances.png'))
-                plt.close()
+                visualization_utils.visualize_absolute_posenc(self.pos_embed, plot_dir)
 
             # Plot relative positional encoding for each layer
             if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
-                n_rows = 1
-                n_cols = self.num_layers
-
                 # self.relative_bias_table is [L (layers), 2T-1 (time offsets), H (heads)]
                 # self.relpos_temp is [L, 1, H]
                 if "erpe" in self.relative_pos_encoding:
                     bias_table = self.relative_bias_table / self.relpos_temp
                 else:
                     bias_table = self.relative_bias_table
-                min_value, max_value = utils.approx_min_max(bias_table)
 
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*bias_table.shape[2]+3, 0.03*n_rows*bias_table.shape[1]), layout="constrained")
-                for c in range(n_cols):  # Loop through each layer
-                    im = axeslist[c].imshow(bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
-                    axeslist[c].set_xlabel("Head number")
-                    axeslist[c].set_ylabel("Relative offset (middle is 0)")
-                    axeslist[c].set_title(f"Layer {c}")
-                fig.colorbar(im, ax=axeslist, shrink=0.4)
+                # Line plots
+                n_rows = 2  # Pre-softmax and post-softmax
+                n_cols = self.num_layers
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 7*n_rows), layout="constrained")
+                timesteps = np.arange(bias_table.shape[1]) - (self.seq_len - 1)
+                for layer_idx in range(self.num_layers):
+                    # Pre-softmax
+                    for head_idx in range(bias_table.shape[2]):
+                        axeslist[0, layer_idx].plot(timesteps, bias_table[layer_idx, :, head_idx].cpu().detach().numpy(),
+                                                    label=f"Head {head_idx}")  # marker="o", linestyle="-"
+                    axeslist[0, layer_idx].set_xlabel("Offset from current timestep")
+                    axeslist[0, layer_idx].set_ylabel("Bias (pre-softmax)")
+                    axeslist[0, layer_idx].set_title(f"Layer {layer_idx}: Pre-softmax biases")
+                    axeslist[0, layer_idx].legend()
+
+                    # Post-softmax
+                    for head_idx in range(bias_table.shape[2]):
+                        axeslist[1, layer_idx].plot(timesteps, F.softmax(bias_table[layer_idx, :, head_idx], dim=0).cpu().detach().numpy(),
+                                                    label=f"Head {head_idx}")
+                    axeslist[1, layer_idx].set_xlabel("Offset from current timestep")
+                    axeslist[1, layer_idx].set_ylabel("Bias (post-softmax)")
+                    axeslist[1, layer_idx].set_title(f"Layer {layer_idx}: Post-softmax biases")
+                    axeslist[1, layer_idx].legend()
                 fig.suptitle("Relative attention biases")
-                plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets.png'))
+                plt.savefig(os.path.join(plot_dir, 'relative_pos_biases.png'))
                 plt.close()
 
-            # SeqPool attention weights. Each plot is an example: within that, rows are timesteps and columns are heads.
-            if self.pool in ["seqpool_multihead", "seqpool_multihead_smoothed"]:
-                n_rows = 1
-                n_cols = 5
-                min_value, max_value = utils.approx_min_max(pooling_attn)
+                # # Shaded plot
+                # min_value, max_value = utils.approx_min_max(bias_table)
+                # n_rows = 1
+                # n_cols = self.num_layers
+                # fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*bias_table.shape[2]+3, 0.03*n_rows*bias_table.shape[1]), layout="constrained")
+                # for c in range(n_cols):  # Loop through each layer
+                #     im = axeslist[c].imshow(bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
+                #     axeslist[c].set_xlabel("Head number")
+                #     axeslist[c].set_ylabel("Relative offset (middle is 0)")
+                #     axeslist[c].set_title(f"Layer {c}")
+                # fig.colorbar(im, ax=axeslist, shrink=0.4)
+                # fig.suptitle("Relative attention biases")
+                # plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets.png'))
+                # plt.close()
 
-                # pooling_attn is [B, H, T]
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*pooling_attn.shape[1]+3, 0.03*n_rows*pooling_attn.shape[2]), layout="constrained")
-                for c in range(n_cols):
-                    im = axeslist[c].imshow(rearrange(pooling_attn[c, :, :], 'h t -> t h').detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x)
-                    axeslist[c].set_xlabel("Head number")
-                    axeslist[c].set_ylabel("Timestep")
-                    axeslist[c].set_title(f"Example {c}")
-                fig.colorbar(im, ax=axeslist, shrink=0.4)
-                fig.suptitle("Pooling attention")
-                plt.savefig(os.path.join(plot_dir, 'seqpool_attn_weights.png'))
-                plt.close()
+            # Visualize SeqPool attention weights
+            if self.pool in ["seqpool", "seqpool_multihead", "seqpool_multihead_smoothed"]:
+                visualization_utils.visualize_pooling_attn(pooling_attn, plot_dir)
 
-        return preds, attn_weights_enc
+        return preds, attn_weights_enc, pooling_attn
 
 
 def _get_clones(module, N):
@@ -1172,7 +1016,7 @@ class Attention_Rel_Scl(nn.Module):
             self.query.weight.data.copy_(torch.eye(emb_size))
 
         self.dropout = nn.Dropout(dropout)
-        self.gating_param = nn.Parameter(torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
+        self.gating_param = nn.Parameter(torch.ones(num_heads))  # torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
 
 
     def forward(self, query, key, value, attn_mask, plot_dir=None, **kwargs):
@@ -1254,18 +1098,18 @@ class Attention_Rel_Scl(nn.Module):
                     im = axeslist[r, 2].imshow(total_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
                     if r == 0:
                         if self.where_to_add_relpos == "after_gating":
-                            axeslist[r, 0].set_title("Content attn (post-softmax)")
-                            axeslist[r, 1].set_title("Position attn (post-softmax)")
-                            axeslist[r, 2].set_title("Combined: (1-σ(gating))*Content + σ(gating)*Position")
+                            axeslist[r, 0].set_title("Content attn\n(post-softmax)")
+                            axeslist[r, 1].set_title("Position attn\n(post-softmax)")
+                            axeslist[r, 2].set_title("Combined:\n(1-w)*Content + w*Position")
                         elif self.where_to_add_relpos in ["before", "only_relpos"]:
-                            axeslist[r, 0].set_title("Content attn (unnormalized)")
-                            axeslist[r, 1].set_title("Position attn (unnormalized)")
-                            axeslist[r, 2].set_title("Combined: softmax(Content + Position)")
+                            axeslist[r, 0].set_title("Content attn\n(unnormalized)")
+                            axeslist[r, 1].set_title("Position attn\n(unnormalized)")
+                            axeslist[r, 2].set_title("Combined:\nsoftmax(Content + Position)")
                         else:
                             assert self.where_to_add_relpos == "after"
-                            axeslist[r, 0].set_title("Content attn (post-softmax)")
-                            axeslist[r, 1].set_title("Position attn (unnormalized)")
-                            axeslist[r, 2].set_title("Combined: softmax(Content) + Position")
+                            axeslist[r, 0].set_title("Content attn\n(post-softmax)")
+                            axeslist[r, 1].set_title("Position attn\n(unnormalized)")
+                            axeslist[r, 2].set_title("Combined:\nsoftmax(Content) + Position")
                 fig.colorbar(im, ax=axeslist[r])
                 fig.suptitle("Attn breakdown, single example (each row is one head)")
                 plt.savefig(os.path.join(plot_dir, 'attention_breakdown.png'))
@@ -1349,8 +1193,9 @@ class Attention(nn.Module):
         self.scale = dim_out ** -0.5
 
         # Decide how much to use positional vs content attention
-        init_gating = torch.ones(self.num_heads)*2 # Second half of heads prefer position attention
-        init_gating[0:self.num_heads//2] = -2  # First half of heads prefer content attentio
+        # init_gating = torch.ones(self.num_heads)*2 # Second half of heads prefer position attention
+        # init_gating[0:self.num_heads//2] = -2  # First half of heads prefer content attention
+        init_gating = torch.ones(self.num_heads)
         self.gating_param = nn.Parameter(init_gating, requires_grad=True)
 
         self.conv_proj_q = self._build_projection(

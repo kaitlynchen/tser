@@ -400,12 +400,12 @@ class UnsupervisedRunner(BaseRunner):
             # (batch_size, padded_length, feat_dim)
             if require_padding:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks)
                 else:
                     predictions = self.model(X.to(self.device), padding_masks)
             else:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device))
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device))
                 else:
                     predictions = self.model(X.to(self.device))
 
@@ -427,8 +427,11 @@ class UnsupervisedRunner(BaseRunner):
 
             if use_smoothing:
                 attn_smoothness_loss = 0
-                for attn_weights in attn_weights_layers:
-                  attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
+                if attn_weights_layers is not None:
+                    attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [n_matrices, T, T] - list of attention matrices
+                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                if attn_weights_pool is not None:  # attn_weights_pool has shape [B, H, T]
+                    attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             # Zero gradients, perform a backward pass, and update the weights.
@@ -567,17 +570,13 @@ class SupervisedRunner(BaseRunner):
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
             if require_padding:
-                if use_pool_smoothing:
+                if need_attn_weights:
                     predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
-                elif need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
                 else:
                     predictions = self.model(X.to(self.device), padding_masks)
             else:
-                if use_pool_smoothing:
+                if need_attn_weights:
                     predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), plot_dir=plot_dir)
-                elif need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), plot_dir=plot_dir)
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
@@ -604,11 +603,10 @@ class SupervisedRunner(BaseRunner):
 
             if use_smoothing:  # attn_weights_layers: [B, L*H, T, T]
                 attn_smoothness_loss = 0
-                attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
-                attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
-
-                if use_pool_smoothing:
-                    attn_weights_pool = attn_weights_pool.reshape(-1, attn_weights_pool.shape[2], attn_weights_pool.shape[3])
+                if attn_weights_layers is not None:
+                    attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
+                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                if attn_weights_pool is not None and use_pool_smoothing:  # attn_weights_pool has shape [B, H, T]
                     attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
 
                 total_loss += smoothing_lambda * attn_smoothness_loss
@@ -678,7 +676,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:
+            if i == 0 and epoch_num % 50 == 0 and config is not None:
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:

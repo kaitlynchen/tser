@@ -65,7 +65,7 @@ class Options(object):
                                  help="Proportion of the dataset to be used as a validation set")
         self.parser.add_argument('--pattern', type=str,
                                  help='Regex pattern used to select files contained in `data_dir`. If None, all data will be used.')
-        self.parser.add_argument('--val_pattern', type=str, default="",
+        self.parser.add_argument('--val_pattern', type=str, default=None,
                                  help="""Regex pattern used to select files contained in `data_dir` exclusively for the validation set.
                             If None, a positive `val_ratio` will be used to reserve part of the common data set.""")
         self.parser.add_argument('--test_pattern', type=str, default='TEST',
@@ -217,7 +217,7 @@ class Options(object):
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
                                  help='Type of final pooling')
 
         # C-Mixup specific
