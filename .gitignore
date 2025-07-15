@@ -141,7 +141,7 @@ dmypy.json
 .pyre/
 
 # Excel outputs
-.xls
+*.xls
 
 # Slurm outputs
-.out
+*.out
