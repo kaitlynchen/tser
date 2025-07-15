@@ -139,3 +139,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Excel outputs
+.xls
+
+# Slurm outputs
+.out
