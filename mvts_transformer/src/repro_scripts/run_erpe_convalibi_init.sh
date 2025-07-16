@@ -29,9 +29,9 @@ cd ~/tser/mvts_transformer/src
 
 
 # Dataset
-# IEEEPPG LiveFuelMoistureContent BeijingPM10Quality
-DATA="AppliancesEnergy"
-
+# AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
+# DATA="LiveFuelMoistureContent"
+DATA="AppliancesEnergy"  
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
     BS=16

@@ -36,14 +36,14 @@ cd ~/tser/mvts_transformer/src
 
 
 # Dataset
-# IEEEPPG LiveFuelMoistureContent BeijingPM10Quality
-DATA="AppliancesEnergy"
+# AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
+DATA="BeijingPM25Quality"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
     BS=16
 else
-    BS=128
+    BS=32
 fi
 if [ "$DATA" = "IEEEPPG" ]; then
     PATCH=16
@@ -59,15 +59,15 @@ do
     do
         for WHERE_ABSPOS in before_pool_concat
         do
-            for LR in 1e-2 1e-3
+            for LR in 1e-4 1e-3 1e-2
             do
-                for LAM in 0 1e-3 1e-1 10
+                for LAM in 0
                 do
                     for SEED in 0 1 2
                     do
-                        python main.py --comment "${DATA}_CNN_${POOL}_${CONV_TYPE}_VAL_TUNING" \
-                            --seed $SEED --name "${DATA}_CNN_${POOL}_${CONV_TYPE}_VAL_TUNING" \
-                            --records_file output/${DATA}_CNN_${POOL}_${CONV_TYPE}_VAL_TUNING.xls \
+                        python main.py --comment "${DATA}_CNN32_${POOL}_${CONV_TYPE}_VAL_TUNING" \
+                            --seed $SEED --name "${DATA}_CNN32_${POOL}_${CONV_TYPE}_VAL_TUNING" \
+                            --records_file output/${DATA}_CNN32_${POOL}_${CONV_TYPE}_VAL_TUNING.xls \
                             --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
                             --pattern TRAIN --val_ratio 0.2 --epochs 1000 --patience 200 \
                             --lr $LR --batch_size $BS \
