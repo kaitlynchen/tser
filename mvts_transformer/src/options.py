@@ -168,6 +168,7 @@ class Options(object):
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--lambda_posenc_smoothness', type=float, default=0,
                                  help="""Regularizing weight for loss for POS ENC smoothing.""")
+        self.parser.add_argument('--lambda_locality', type=float, default=0, help="Weight for locality loss.")
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
                                  If not provided, then the value defined inside the data class will be used.""")

@@ -43,7 +43,7 @@ DATA="BeijingPM25Quality"
 if [ "$DATA" = "AppliancesEnergy" ]; then
     BS=16
 else
-    BS=32
+    BS=128
 fi
 if [ "$DATA" = "IEEEPPG" ]; then
     PATCH=16
@@ -59,9 +59,9 @@ do
     do
         for WHERE_ABSPOS in before_pool_concat
         do
-            for LR in 1e-4 1e-3 1e-2
+            for LR in 1e-4
             do
-                for LAM in 0
+                for LAM in 0 1e-3 1e-1 10
                 do
                     for SEED in 0 1 2
                     do

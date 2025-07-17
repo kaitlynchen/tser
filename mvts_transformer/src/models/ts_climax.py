@@ -409,6 +409,33 @@ class ClimaX(nn.Module):
             self.alibi = self.slopes.unsqueeze(1).unsqueeze(1) * self.relative_coords  # Broadcasting: [H, 1, 1] * [T, T] -> [H, T, T]
 
 
+    def locality_loss_erpe(self):
+        """
+        Regularizes the relative biases - offsets further from the zero
+        have a higher penalty if their probability is high.
+        This can be seen as an Earth-Mover distance from the one-hot distribution
+        (1 for my own timestep, 0 otherwise)
+        """
+        penalties = torch.arange(-self.seq_len+1, self.seq_len, device=self.device).abs() / self.seq_len
+
+        ## Relative bias table should have shape  [L, 2T-1, H]
+        biases_post_softmax = F.softmax(self.relative_bias_table, dim=1)
+        x = (biases_post_softmax * penalties.unsqueeze(1)).sum(dim=1).mean()
+        return x
+
+
+    def locality_loss_attention(self):
+        """
+        Regularizes attention matrices to be close to diagonal
+        """
+        # Entry (i, j) contains |i-j|/seq_len
+        device = self.attn_matrices.device
+        penalty_matrix = (torch.arange(self.seq_len, device=self.device).unsqueeze(0) - torch.arange(self.seq_len, device=self.device).unsqueeze(1)).abs() / self.seq_len  # [T, T]
+
+        # self.attn_matrices is [B, n_matrices, T, T]
+        return (self.attn_matrices * penalty_matrix).sum(dim=-1).mean()
+
+
     def posenc_smoothness_loss(self, logger):
         """
         Computes smoothness of both absolute and relative positional embedding tables.
@@ -417,13 +444,13 @@ class ClimaX(nn.Module):
         # Smoothness of absolute position encoding
         smoothness_loss = 0.
         if "learnable" in self.pos_encoding:
-            # self.pos_embed has shape [T, C]
+            # self.pos_embed has shape [T, D]
             # smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
             smoothness_loss += (self.pos_embed[1:, :] - self.pos_embed[:-1, :]).abs().mean()
 
         # Smoothness of relative position encodings
         if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
-            # self.relative_bias_table has shape [L, 2*T-1, C]
+            # self.relative_bias_table has shape [L, 2*T-1, H]
             # rel_smoothness = ((self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]) ** 2).mean()
             rel_smoothness = (self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]).abs().mean()
             smoothness_loss += rel_smoothness
@@ -523,6 +550,7 @@ class ClimaX(nn.Module):
             num_heads = self.relative_bias_table.shape[2]
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
+            offset_mask = torch.clamp(offset_mask, min=-10000, max=10000)  # Prevent values from getting too extreme
             offset_mask = offset_mask / self.relpos_temp  # self.relpos_temp has shape [L, 1, H] so broadcasting works
             offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L. H, T, T]
             offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
@@ -595,9 +623,13 @@ class ClimaX(nn.Module):
 
         # ENCODER forward pass
         preds, attn_weights_enc, embeddings_layers = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [B, T, D], attn_weights_enc: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
-        
+
         # Pooling
         preds, pooling_attn = utils.forward_pooling(self, preds)
+
+        # Save attention in case we use it for regularization later
+        self.attn_matrices = attn_matrices = rearrange(attn_weights_enc, "l b h t0 t1 -> b (l h) t0 t1")  # Reshape to [B, L*H (num matrices), T, T]
+        self.pooling_attn = pooling_attn
 
         if plot_dir is not None:
             # ALL VISUALIZATIONS of timestep distances/similarities, positional encodings, and
@@ -669,7 +701,6 @@ class ClimaX(nn.Module):
             plt.close()
 
             # Plot attention matrices: for each example, plot random subset of layers/heads. attn_weights_enc: [L, B, H, T, T]
-            attn_matrices = rearrange(attn_weights_enc, "l b h t0 t1 -> b (l h) t0 t1")  # Reshape to [B, L*H (num matrices), T, T]
             min_value, max_value = utils.approx_min_max(attn_matrices)
 
             # Random subset of heads/layers

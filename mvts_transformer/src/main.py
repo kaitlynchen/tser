@@ -451,6 +451,7 @@ def main(config):
     train_losses_sup = []
     train_losses_smoothness = []
     train_losses_posenc = []
+    train_losses_locality = []
     val_epochs = []
     val_losses = []
     all_val_preds = []
@@ -466,11 +467,12 @@ def main(config):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, use_pool_smoothing=use_pool_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss, locality_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, use_pool_smoothing=use_pool_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
         train_epochs.append(epoch)
         train_losses_sup.append(supervised_loss)
         train_losses_smoothness.append(supervised_smoothness_loss)
         train_losses_posenc.append(posenc_loss)
+        train_losses_locality.append(locality_loss)
 
         if config["baseline"] is not None:
             # early prediction
@@ -496,28 +498,28 @@ def main(config):
                 plt.close()
 
         epoch_runtime = time.time() - epoch_start_time
-        print()
-        print_str = "Epoch {} Training Summary: ".format(epoch)
-        for k, v in aggr_metrics_train.items():
-            tensorboard_writer.add_scalar("{}/train".format(k), v, epoch)
-            print_str += "{}: {:8f} | ".format(k, v)
-        logger.info(print_str)
-        logger.info(
-            "Epoch runtime: {} hours, {} minutes, {} seconds\n".format(
-                *utils.readable_time(epoch_runtime)
-            )
-        )
+        # print()
+        # print_str = "Epoch {} Training Summary: ".format(epoch)
+        # for k, v in aggr_metrics_train.items():
+        #     tensorboard_writer.add_scalar("{}/train".format(k), v, epoch)
+        #     print_str += "{}: {:8f} | ".format(k, v)
+        # logger.info(print_str)
+        # logger.info(
+        #     "Epoch runtime: {} hours, {} minutes, {} seconds\n".format(
+        #         *utils.readable_time(epoch_runtime)
+        #     )
+        # )
         total_epoch_time += epoch_runtime
         avg_epoch_time = total_epoch_time / (epoch - start_epoch)
         avg_batch_time = avg_epoch_time / len(train_loader)
         avg_sample_time = avg_epoch_time / len(train_dataset)
-        logger.info(
-            "Avg epoch train. time: {} hours, {} minutes, {} seconds".format(
-                *utils.readable_time(avg_epoch_time)
-            )
-        )
-        logger.info("Avg batch train. time: {} seconds".format(avg_batch_time))
-        logger.info("Avg sample train. time: {} seconds".format(avg_sample_time))
+        # logger.info(
+        #     "Avg epoch train. time: {} hours, {} minutes, {} seconds".format(
+        #         *utils.readable_time(avg_epoch_time)
+        #     )
+        # )
+        # logger.info("Avg batch train. time: {} seconds".format(avg_batch_time))
+        # logger.info("Avg sample train. time: {} seconds".format(avg_sample_time))
 
         # evaluate if first or last epoch or at specified interval
         if ((epoch == config["epochs"]) or (epoch == start_epoch + 1) or (epoch % config["val_interval"] == 0)):
@@ -626,11 +628,17 @@ def main(config):
                                                              filename_description="test", should_align=True)
 
     # Plot loss curves
+    print("Sup", train_losses_sup)
+    print("Loc", train_losses_locality)
     if plot_losses:
-        plt.plot(train_epochs, train_losses_sup, label="Train loss (MSE, supervised)")
-        plt.plot(train_epochs, train_losses_smoothness, label="Attn smoothness loss")
-        plt.plot(train_epochs, train_losses_posenc, label="Pos enc smoothness loss")
-        plt.plot(val_epochs, val_losses, label="Val loss (MSE)")
+        plt.plot(train_epochs[1:], train_losses_sup[1:], label="Train loss (MSE, supervised)")
+        if config["smooth_attention"] and config["reg_lambda"] > 0:
+            plt.plot(train_epochs[1:], train_losses_smoothness[1:], label="Attn smoothness loss")
+        if config["lambda_posenc_smoothness"] > 0:
+            plt.plot(train_epochs[1:], train_losses_posenc[1:], label="Pos enc smoothness loss")
+        if config["lambda_locality"] > 0:
+            plt.plot(train_epochs[1:], train_losses_locality[1:], label="Locality loss")
+        plt.plot(val_epochs[1:], val_losses[1:], label="Val loss (MSE)")
         plt.ylabel("Loss")
         plt.xlabel("Epoch")
         plt.title("Losses per epoch")

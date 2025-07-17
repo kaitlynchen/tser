@@ -245,7 +245,7 @@ def validate(
 ):
     """Run an evaluation on the validation set while logging metrics, and handle outcome"""
 
-    logger.info("Evaluating on validation set ...")
+    # logger.info("Evaluating on validation set ...")
     eval_start_time = time.time()
     with torch.no_grad():
         if keep_predictions:
@@ -261,11 +261,11 @@ def validate(
             aggr_metrics, per_batch = val_evaluator.evaluate(epoch, config, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
 
     eval_runtime = time.time() - eval_start_time
-    logger.info(
-        "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
-            *utils.readable_time(eval_runtime)
-        )
-    )
+    # logger.info(
+    #     "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
+    #         *utils.readable_time(eval_runtime)
+    #     )
+    # )
 
     global val_times
     val_times["total_time"] += eval_runtime
@@ -273,20 +273,21 @@ def validate(
     avg_val_time = val_times["total_time"] / val_times["count"]
     avg_val_batch_time = avg_val_time / len(val_evaluator.dataloader)
     avg_val_sample_time = avg_val_time / len(val_evaluator.dataloader.dataset)
-    logger.info(
-        "Avg val. time: {} hours, {} minutes, {} seconds".format(
-            *utils.readable_time(avg_val_time)
-        )
-    )
-    logger.info("Avg batch val. time: {} seconds".format(avg_val_batch_time))
-    logger.info("Avg sample val. time: {} seconds".format(avg_val_sample_time))
+    # logger.info(
+    #     "Avg val. time: {} hours, {} minutes, {} seconds".format(
+    #         *utils.readable_time(avg_val_time)
+    #     )
+    # )
+    # logger.info("Avg batch val. time: {} seconds".format(avg_val_batch_time))
+    # logger.info("Avg sample val. time: {} seconds".format(avg_val_sample_time))
 
-    print()
-    print_str = "Epoch {} Validation Summary: ".format(epoch)
-    for k, v in aggr_metrics.items():
-        tensorboard_writer.add_scalar("{}/val".format(k), v, epoch)
-        print_str += "{}: {:8f} | ".format(k, v)
-    logger.info(print_str)
+    if epoch % 20 == 0:
+        print()
+        print_str = "Epoch {} Validation Summary: ".format(epoch)
+        for k, v in aggr_metrics.items():
+            tensorboard_writer.add_scalar("{}/val".format(k), v, epoch)
+            print_str += "{}: {:8f} | ".format(k, v)
+        logger.info(print_str)
 
     if config["key_metric"] in NEG_METRICS:
         condition = aggr_metrics[config["key_metric"]] < best_value
@@ -550,7 +551,7 @@ class SupervisedRunner(BaseRunner):
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss, posenc_loss = 0, 0, 0
+        supervised_loss, supervised_smoothing_loss, posenc_loss, locality_loss = 0, 0, 0, 0
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
@@ -624,6 +625,15 @@ class SupervisedRunner(BaseRunner):
             else:
                 assert config['lambda_posenc_smoothness'] == 0
 
+            # Locality loss
+            if config["lambda_locality"] > 0:
+                if 'erpe' in config['relative_pos_encoding'] and config['where_to_add_relpos'] == 'only_relpos':
+                    locality_loss_batch = self.model.locality_loss_erpe()
+                else:
+                    locality_loss_batch = self.model.locality_loss_attention()
+                locality_loss += config["lambda_locality"] * locality_loss_batch.item() * len(loss)  # put in same scale as batch_loss
+                total_loss += config["lambda_locality"] * locality_loss_batch 
+
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
             total_loss.backward()
@@ -633,9 +643,9 @@ class SupervisedRunner(BaseRunner):
             self.optimizer.step()
 
             metrics = {"loss": mean_loss.item()}
-            if i % self.print_interval == 0:
-                ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
-                self.print_callback(i, metrics, prefix="Training " + ending)
+            # if i % self.print_interval == 0:
+            #     ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
+            #     self.print_callback(i, metrics, prefix="Training " + ending)
 
             with torch.no_grad():
                 total_samples += len(loss)
@@ -645,12 +655,13 @@ class SupervisedRunner(BaseRunner):
         epoch_loss = epoch_loss / total_samples
         supervised_loss = supervised_loss / total_samples
         posenc_loss = posenc_loss / total_samples
+        locality_loss = locality_loss / total_samples
 
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss, locality_loss
 
         return self.epoch_metrics
 
@@ -709,9 +720,9 @@ class SupervisedRunner(BaseRunner):
             per_batch["IDs"].append(np.array(IDs))
 
             metrics = {"loss": mean_loss}
-            if i % self.print_interval == 0:
-                ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
-                self.print_callback(i, metrics, prefix="Evaluating " + ending)
+            # if i % self.print_interval == 0:
+            #     ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
+            #     self.print_callback(i, metrics, prefix="Evaluating " + ending)
 
             total_samples += len(loss)
             epoch_loss += batch_loss  # add total loss of batch
