@@ -142,7 +142,7 @@ class ClassiregressionDataset(Dataset):
         self.IDs = indices  # list of data IDs, but also mapping between integer index and ID
         self.feature_df = self.data.feature_df.loc[self.IDs]
         self.labels_df = self.data.labels_df.loc[self.IDs]
-        #self.time_df = self.data.time_df.loc[self.IDs]
+        self.time_df = self.data.time_df.loc[self.IDs]
         self.timestep_indices = timestep_indices
 
         # Calculate the mean/std label

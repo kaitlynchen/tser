@@ -63,6 +63,7 @@ class Options(object):
                                  help="Set aside this proportion of the dataset as a test set")
         self.parser.add_argument('--val_ratio', type=float, default=0.2,
                                  help="Proportion of the dataset to be used as a validation set")
+        self.parser.add_argument('--val_temporal_split', action='store_true', help="If set, split train/val set temporally.")
         self.parser.add_argument('--pattern', type=str,
                                  help='Regex pattern used to select files contained in `data_dir`. If None, all data will be used.')
         self.parser.add_argument('--val_pattern', type=str, default=None,
@@ -130,7 +131,9 @@ class Options(object):
                                  help='learning rate (default holds for batch size 64)')
         self.parser.add_argument('--lr_step', type=str, default='1000000',
                                  help='Comma separated string of epochs when to reduce learning rate by a factor of 10.'
-                                      ' The default is a large value, meaning that the learning rate will not change.')
+                                      ' The default is a large value, meaning that the learning rate will not change.' \
+                                      ' joshuafan: added option to set this to `plateauX` where X is the number of epochs to wait' \
+                                      ' after a new best validation loss, before decreasing learning rate')
         self.parser.add_argument('--lr_factor', type=str, default='0.1',
                                  help=("Comma separated string of multiplicative factors to be applied to lr "
                                        "at corresponding steps specified in `lr_step`. If a single value is provided, "
@@ -154,7 +157,7 @@ class Options(object):
 
         # Model
         self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "climax_smooth_plot", "climax_max_pool", "climax_seqpool",
-                                                     "ridge", "lasso", "random_forest", "xgboost", "local_cnn"}, default="transformer",
+                                                     "ridge", "lasso", "random_forest", "xgboost", "local_cnn", "local_cnn2"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -164,8 +167,12 @@ class Options(object):
                                  help="""Only applicable for ClimaX. If set, uses depthwise separable convolution as encoder.""")
         self.parser.add_argument('--local_mask', type=int, default=-1,
                                  help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
+        self.parser.add_argument('--causal_mask', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, uses causal mask in self-attention.""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
+        self.parser.add_argument('--reg_lambda_pool', type=float, default=0,
+                                 help="""Regularizing weight for loss from POOLING attention smoothing.""")
         self.parser.add_argument('--lambda_posenc_smoothness', type=float, default=0,
                                  help="""Regularizing weight for loss for POS ENC smoothing.""")
         self.parser.add_argument('--lambda_locality', type=float, default=0, help="Weight for locality loss.")
@@ -215,11 +222,15 @@ class Options(object):
         self.parser.add_argument('--num_decoder_layers', type=int, default=2,
                                  help='Number of decoder layers')
 
+        # Pooling
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
+                                 help='Type of final pooling')
+
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
-                                 help='Type of final pooling')
+        self.parser.add_argument('--local_cnn2_batch_norm', action='store_true', help='Set to use batchnorm in LocalCNN2.')
+        self.parser.add_argument('--local_cnn2_spectral_norm', action='store_true', help='Set to use spectral norm in LocalCNN2.')
 
         # C-Mixup specific
         self.parser.add_argument('--mixtype', type=str, default='random',
@@ -236,7 +247,7 @@ class Options(object):
     def parse(self):
         args = self.parser.parse_args()
 
-        args.lr_step = [int(i) for i in args.lr_step.split(",")]
+        args.lr_step = [int(i) for i in args.lr_step.split(",")] if not args.lr_step.startswith("plateau") else args.lr_step
         args.lr_factor = [float(i) for i in args.lr_factor.split(",")]
         if (len(args.lr_step) > 1) and (len(args.lr_factor) == 1):
             args.lr_factor = len(args.lr_step) * args.lr_factor  # replicate

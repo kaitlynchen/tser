@@ -546,12 +546,12 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
 
-    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, use_pool_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
+    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, need_attn_weights=False):
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss, posenc_loss, locality_loss = 0, 0, 0, 0
+        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss = 0, 0, 0, 0, 0
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
@@ -603,18 +603,24 @@ class SupervisedRunner(BaseRunner):
             supervised_loss += batch_loss.item()  # total_loss.cpu().detach().numpy()
 
             if use_smoothing:  # attn_weights_layers: [B, L*H, T, T]
-                attn_smoothness_loss = 0
+                # Smoothness on the attn weights
+                attn_smoothness_loss = torch.tensor(0)
                 if attn_weights_layers is not None:
                     attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
                     attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
-                if attn_weights_pool is not None and use_pool_smoothing:  # attn_weights_pool has shape [B, H, T]
-                    attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
+                total_loss += config['reg_lambda'] * attn_smoothness_loss
 
-                total_loss += smoothing_lambda * attn_smoothness_loss
+                # Pooling smoothness loss
+                pool_smoothness_loss = torch.tensor(0)
+                if attn_weights_pool is not None:  # attn_weights_pool has shape [B, H, T]
+                    pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
+                total_loss += config['reg_lambda_pool'] * pool_smoothness_loss
+
             else:
                 attn_smoothness_loss = torch.tensor(0)
 
-            supervised_smoothing_loss += (attn_smoothness_loss.item() * smoothing_lambda * len(loss))  # put in same scale as batch_loss
+            supervised_smoothing_loss += (attn_smoothness_loss.item() * config["reg_lambda"] * len(loss))  # put in same scale as batch_loss
+            pool_smoothing_loss += (pool_smoothness_loss.item() * config["reg_lambda_pool"] * len(loss))  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or (config['relative_pos_encoding'] in ["convit", "convit_half"])):
@@ -661,7 +667,7 @@ class SupervisedRunner(BaseRunner):
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss, locality_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss
 
         return self.epoch_metrics
 

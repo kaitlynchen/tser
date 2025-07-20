@@ -37,7 +37,7 @@ cd ~/tser/mvts_transformer/src
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="BeijingPM25Quality"
+DATA="BenzeneConcentration"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -59,23 +59,25 @@ do
     do
         for WHERE_ABSPOS in before_pool_concat
         do
-            for LR in 1e-4
+            for LR in 1e-3 1e-2
             do
-                for LAM in 0 1e-3 1e-1 10
+                for LAM in 0
                 do
                     for SEED in 0 1 2
                     do
-                        python main.py --comment "${DATA}_CNN32_${POOL}_${CONV_TYPE}_VAL_TUNING" \
-                            --seed $SEED --name "${DATA}_CNN32_${POOL}_${CONV_TYPE}_VAL_TUNING" \
-                            --records_file output/${DATA}_CNN32_${POOL}_${CONV_TYPE}_VAL_TUNING.xls \
+                        python main.py --comment "${DATA}_CNN_${POOL}_${CONV_TYPE}_VAL50" \
+                            --seed $SEED --name "${DATA}_CNN_${POOL}_${CONV_TYPE}_VAL50" \
+                            --records_file output/${DATA}_CNN_${POOL}_${CONV_TYPE}_TUNING2_VAL50.xls \
                             --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
-                            --pattern TRAIN --val_ratio 0.2 --epochs 1000 --patience 200 \
+                            --pattern TRAIN --val_ratio 0.5 --val_temporal_split \
+                            --epochs 2000 --patience 500 \
                             --lr $LR --batch_size $BS \
                             --num_heads 16 --d_model 128 \
                             --optimizer RAdam --task regression --normalize_label \
-                            --model local_cnn --conv_type $CONV_TYPE --patch_length $PATCH --stride $STRIDE --smooth_attention \
+                            --model local_cnn --conv_type $CONV_TYPE \
+                            --patch_length $PATCH --stride $STRIDE --smooth_attention \
                             --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
-                            --pool $POOL --reg_lambda $LAM \
+                            --pool $POOL --reg_lambda_pool $LAM \
                             --plot_loss --plot_accuracy
                     done
                 done
@@ -83,7 +85,8 @@ do
         done
     done
 done
-
+#  --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER2/Monash_UEA_UCR_Regression_Archive/$DATA/
+# \  # --val_ratio 0.2 --val_temporal_split \
 
 # for POOL in seqpool_multihead
 # do

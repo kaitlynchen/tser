@@ -90,7 +90,7 @@ def main(config):
         from models.climax_convit_smooth import model_factory
     elif config["model"] is not None and config["model"] == "convit_2":
         from models.climax_with_convit_blocks import model_factory
-    elif config["model"] is not None and config["model"] == "local_cnn":
+    elif config["model"] is not None and config["model"] in ["local_cnn", "local_cnn2"]:
         from models.local_cnn import model_factory
     elif config["model"] is not None and config["model"] == "climax_smooth_plot":
         from models.ts_climax_timestep import model_factory
@@ -197,18 +197,32 @@ def main(config):
     # Note: currently a validation set must exist, either with `val_pattern` or `val_ratio`
     # Using a `val_pattern` means that `val_ratio` == 0 and `test_ratio` == 0
     if config["val_ratio"] > 0:
-        train_indices, val_indices = split_dataset(
-            data_indices=my_data.all_IDs,
-            validation_method=validation_method,
-            n_splits=1,
-            validation_ratio=config["val_ratio"],
-            random_seed=1337,
-            labels=labels,
-        )
-        # `split_dataset` returns a list of indices *per fold/split*
-        train_indices = train_indices[0]
-        # `split_dataset` returns a list of indices *per fold/split*
-        val_indices = val_indices[0]
+        if config["val_temporal_split"]:
+            print("TEMP SPLIT")
+            print("MY DATA", my_data)
+            my_data.time_df["example_idx"] = my_data.time_df.index
+            print("TIMESTAMP DF", my_data.time_df.shape, my_data.time_df)
+            start_times = my_data.time_df.groupby('example_idx').first()
+            print("Start times", start_times)
+            threshold = np.quantile(start_times["time_int"], 1 - config['val_ratio'])
+            print("THRESH", threshold)
+            train_indices = start_times[start_times["time_int"] < threshold].index  # example_idx became index after groupby
+            val_indices = start_times[start_times["time_int"] >= threshold].index
+            print("TRAIN", len(train_indices), train_indices)
+            print("VAL", len(val_indices), val_indices)
+        else:
+            train_indices, val_indices = split_dataset(
+                data_indices=my_data.all_IDs,
+                validation_method=validation_method,
+                n_splits=1,
+                validation_ratio=config["val_ratio"],
+                random_seed=1337,
+                labels=labels,
+            )
+            # `split_dataset` returns a list of indices *per fold/split*
+            train_indices = train_indices[0]
+            # `split_dataset` returns a list of indices *per fold/split*
+            val_indices = val_indices[0]
     else:
         train_indices = my_data.all_IDs
         if test_indices is None:
@@ -332,10 +346,8 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] in ["smooth", "climax_smooth", "convit_smooth", "climax_smooth_plot", "climax_smooth_pool", "climax_max_pool", "climax_seqpool", "local_cnn"]) and config["smooth_attention"]
+    need_attn_weights=(config["model"] in ["smooth", "climax_smooth", "convit_smooth", "climax_smooth_plot", "climax_smooth_pool", "climax_max_pool", "climax_seqpool", "local_cnn", "local_cnn2"]) and config["smooth_attention"]
     use_smoothing = need_attn_weights and config["task"] == "regression"
-    use_pool_smoothing = use_smoothing  # and config["model"] == "climax_smooth_pool"
-    smoothing_lambda = config["reg_lambda"]
 
     if config["test_only"] == "testset":  # Only evaluate and skip training
         dataset_class, collate_fn, runner_class = pipeline_factory(config)
@@ -390,6 +402,9 @@ def main(config):
     )
 
     train_dataset = dataset_class(my_data, train_indices, timestep_indices=timestep_indices)
+
+    print("Check timestamps. TRAIN", train_dataset.time_df.shape, train_dataset.time_df["timestamp"].min(), train_dataset.time_df["timestamp"].max())
+    print("Check timestamps. VAL", val_dataset.time_df.shape, val_dataset.time_df["timestamp"].min(), val_dataset.time_df["timestamp"].max())
 
     # Store mean/std label
     config["label_mean"] = train_dataset.label_mean
@@ -450,6 +465,7 @@ def main(config):
     train_epochs = []
     train_losses_sup = []
     train_losses_smoothness = []
+    train_losses_pool_smoothness = []
     train_losses_posenc = []
     train_losses_locality = []
     val_epochs = []
@@ -458,6 +474,7 @@ def main(config):
 
     # Number of epochs since the previous "best" (for early stopping)
     num_epochs_no_improvement = 0
+    num_epochs_no_improvement_no_lrdecay = 0
 
     # Store prediction/target of best model
     best_val_predictions = None
@@ -467,10 +484,11 @@ def main(config):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss, locality_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, use_pool_smoothing=use_pool_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, pool_smoothness_loss, posenc_loss, locality_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, need_attn_weights=need_attn_weights)
         train_epochs.append(epoch)
         train_losses_sup.append(supervised_loss)
         train_losses_smoothness.append(supervised_smoothness_loss)
+        train_losses_pool_smoothness.append(pool_smoothness_loss)
         train_losses_posenc.append(posenc_loss)
         train_losses_locality.append(locality_loss)
 
@@ -547,8 +565,10 @@ def main(config):
                 best_val_predictions = predictions
                 best_val_targets = targets
                 num_epochs_no_improvement = 0
+                num_epochs_no_improvement_no_lrdecay = 0
             else:
                 num_epochs_no_improvement += config["val_interval"]
+                num_epochs_no_improvement_no_lrdecay += config["val_interval"]
 
         if num_epochs_no_improvement > config["patience"]:
             print(f"Early stopping: no improvement for {config['patience']} epochs")
@@ -561,8 +581,22 @@ def main(config):
         #     optimizer,
         # )
 
-        # Learning rate scheduling
-        if epoch == config["lr_step"][lr_step]:
+        # Decay LR on plateau
+        if isinstance(config["lr_step"], str) and config["lr_step"].startswith("plateau"):
+            if num_epochs_no_improvement_no_lrdecay > int(config["lr_step"].split("plateau")[1]):
+                utils.save_model(
+                    os.path.join(config["save_dir"], "model_{}.pth".format(epoch)),
+                    epoch,
+                    model,
+                    optimizer,
+                )
+                lr = lr * config["lr_factor"][lr_step]
+                logger.info(f"Learning rate updated to: {lr}")
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = lr
+                num_epochs_no_improvement_no_lrdecay = 0
+
+        elif epoch == config["lr_step"][lr_step]:  # Learning rate scheduling
             utils.save_model(
                 os.path.join(config["save_dir"], "model_{}.pth".format(epoch)),
                 epoch,
@@ -570,10 +604,11 @@ def main(config):
                 optimizer,
             )
             lr = lr * config["lr_factor"][lr_step]
+
             # so that this index does not get out of bounds
             if lr_step < len(config["lr_step"]) - 1:
                 lr_step += 1
-            logger.info("Learning rate updated to: ", lr)
+            logger.info(f"Learning rate updated to: {lr}")
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
@@ -628,12 +663,12 @@ def main(config):
                                                              filename_description="test", should_align=True)
 
     # Plot loss curves
-    print("Sup", train_losses_sup)
-    print("Loc", train_losses_locality)
     if plot_losses:
         plt.plot(train_epochs[1:], train_losses_sup[1:], label="Train loss (MSE, supervised)")
         if config["smooth_attention"] and config["reg_lambda"] > 0:
             plt.plot(train_epochs[1:], train_losses_smoothness[1:], label="Attn smoothness loss")
+        if config["smooth_attention"] and config["reg_lambda_pool"] > 0:
+            plt.plot(train_epochs[1:], train_losses_pool_smoothness[1:], label="Pool attn smoothness loss")
         if config["lambda_posenc_smoothness"] > 0:
             plt.plot(train_epochs[1:], train_losses_posenc[1:], label="Pos enc smoothness loss")
         if config["lambda_locality"] > 0:

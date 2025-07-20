@@ -38,7 +38,7 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
 else
     BS=128
 fi
-if [ "$DATA" = "IEEEPPG" ] || ["$DATA" = "LiveFuelMoistureContent"]; then
+if [ "$DATA" = "IEEEPPG" ] || [ "$DATA" = "LiveFuelMoistureContent" ]; then
     PATCH=16
     STRIDE=8
 else
@@ -48,21 +48,21 @@ fi
 
 
 # ERPE Convalibi Init
-
-for LR in 1e-2 1e-3
+for LR in 1e-2
 do
-    for WD in 0 1e-5 1e-3
+    for WD in 0
     do
         for LAM in 0
         do
             for SEED in 0 1 2
             do
                 # BASIC
-                python main.py --comment "${DATA}_CONVALIBI3_TUNING_LR=${LR}_SMOOTH=${LAM}_WD=${WD}" \
-                    --seed $SEED --name "${DATA}_CONVALIBI3_TUNING_LR=${LR}_SMOOTH=${LAM}_WD=${WD}" \
-                    --records_file "output/${DATA}_CONVALIBI3_TUNING_WD.xls" \
+                python main.py --comment "${DATA}_CONVALIBI4_LOCALITY_POOLSMOOTH_TUNING_LR=${LR}_SMOOTH=${LAM} DECAY" \
+                    --seed $SEED --name "${DATA}_CONVALIBI4_LOCALITY_POOLSMOOTH_TUNING_LR=${LR}_SMOOTH=${LAM} DECAY" \
+                    --records_file "output/${DATA}_CONVALIBI4_LOCALITY_POOLSMOOTH_TUNING_DECAY.xls" \
                     --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
-                    --pattern TRAIN --val_ratio 0.2 --epochs 2000 --patience 500 \
+                    --pattern TRAIN --val_ratio 0.2 --val_temporal_split \
+                    --epochs 2000 --patience 500 \
                     --lr $LR --batch_size $BS \
                     --global_reg --l2_reg $WD \
                     --num_layers 3 --num_heads 16 --d_model 128 --dim_feedforward 256 \
@@ -71,7 +71,8 @@ do
                     --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                     --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
                     --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos \
-                    --pool seqpool_multihead --reg_lambda $LAM
+                    --pool seqpool_multihead --lambda_locality $LAM --reg_lambda_pool $LAM \
+                    --lr_step plateau20 --lr_factor 0.5
             done
         done
     done
