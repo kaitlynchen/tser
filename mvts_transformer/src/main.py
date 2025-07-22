@@ -584,9 +584,13 @@ def main(config):
     if best_val_predictions is None:
         print("best_val_predictions is None")
     else:
-        visualization_utils.plot_single_scatter_file(best_val_predictions, best_val_targets, "predicted", "true", config['plot_dir'],
+        # Check shapes before plotting
+        if len(best_val_predictions) == len(best_val_targets):
+            visualization_utils.plot_single_scatter_file(best_val_predictions, best_val_targets, "predicted", "true", config['plot_dir'],
                                                  title_description=f"{config['experiment_name']}",
                                                  filename_description="val", should_align=True)
+        else:
+            print(f"Warning: Shape mismatch in predictions vs targets: {len(best_val_predictions)} vs {len(best_val_targets)}. Skipping scatter plot.")
 
     # Finally compute test prediction using best model (best on validation set)
     aggr_metrics_test = None
@@ -620,10 +624,10 @@ def main(config):
         # Evaluate on test dataset, plot scatterplot
         with torch.no_grad():
             aggr_metrics_test, per_batch_test, predictions_test, targets_test = test_evaluator.evaluate(best_metrics["epoch"], config=config, keep_predictions=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
-            if config["plot_accuracy"]:
+            if config["task"] == "regression" and config["plot_accuracy"]:
                 visualization_utils.plot_single_scatter_file(predictions_test, targets_test, "predicted", "true", config['plot_dir'],
-                                                             title_description=f"{config['experiment_name']}",
-                                                             filename_description="test", should_align=True)
+                                                            title_description=f"{config['experiment_name']}",
+                                                            filename_description="test", should_align=True)
 
     # Plot loss curves
     if plot_losses:

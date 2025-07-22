@@ -181,6 +181,7 @@ def load_from_tsfile_to_dataframe(full_file_path_and_name, return_separate_X_and
 
                     has_class_labels_tag = True
                     class_label_list = [token.strip() for token in tokens[2:]]
+                    target_labels = True
                     metadata_started = True
                 elif line.startswith("@targetlabel"):
                     # Check that the data has not started
@@ -523,7 +524,13 @@ def load_from_tsfile_to_dataframe(full_file_path_and_name, return_separate_X_and
                                 instance_list[dim].append(pd.Series())
 
                         if target_labels:
-                            class_val_list.append(float(dimensions[num_dimensions].strip()))
+                            label_value = dimensions[num_dimensions].strip()
+                            # Only convert to float for regression tasks, not classification tasks
+                            if has_target_labels_tag and not has_class_labels_tag:
+                                class_val_list.append(float(label_value))
+                            else:
+                                # For classification tasks, keep labels as strings
+                                class_val_list.append(label_value)
 
             line_num += 1
 

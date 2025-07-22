@@ -165,6 +165,7 @@ class ClimaX(nn.Module):
         self.local_mask = local_mask
         self.conv_projection = conv_projection
         self.pool = pool
+        self.num_classes = num_classes
 
         if self.agg_vars:
             # Variable tokenization: create tokens for each variable, of size "patch_size"
@@ -583,13 +584,13 @@ class ClimaX(nn.Module):
 
         elif self.relative_pos_encoding == "convit":
             # Set up bias table
-            bias_table = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(0).unsqueeze(2) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts # Distance to "focus pixel", [2T-1, H_convit]
+            bias_table = -1.0 * self.convit_slopes.unsqueeze(1) * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(0).unsqueeze(2) - (self.seq_len-1+self.convit_offsets.unsqueeze(1))) + self.convit_intercepts.unsqueeze(1)
             self.relative_bias_table = bias_table
             if plot_dir is not None:
                 print("CONVIT: Offset", self.convit_offsets, "Intercepts", self.convit_intercepts, "Slope", self.convit_slopes)
 
             # Compute the actual offset matrix
-            num_heads = self.relative_bias_table.shape[1]
+            num_heads = self.convit_heads
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices).reshape(self.num_layers, self.seq_len, self.seq_len, num_heads)  # [layers, T, T, H]
             offset_mask = rearrange(offset_mask, 'l t0 t1 h -> l h t0 t1')
@@ -604,7 +605,7 @@ class ClimaX(nn.Module):
                 print("CONVIT: Offset", self.convit_offsets, "Intercepts", self.convit_intercepts, "Slope", self.convit_slopes)
 
             # Compute the actual offset matrix
-            num_heads = self.relative_bias_table.shape[2]
+            num_heads = self.convit_heads 
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices).reshape(self.num_layers, self.seq_len, self.seq_len, num_heads)  # [L, T, T, H]
             offset_mask = rearrange(offset_mask, 'l t0 t1 h -> l h t0 t1')  # [L, H, T, T]
@@ -723,11 +724,11 @@ class ClimaX(nn.Module):
             visualization_utils.plot_time_series(orig_input[0, :, :].numpy(), os.path.join(plot_dir, 'example_x0.png'))
 
             # Compute similarities/distances between timestep feature vectors at each layer.
-            # Start from the input variables
-            feature_distances_layers = [torch.linalg.norm(orig_input.unsqueeze(1) - orig_input.unsqueeze(2), dim=3)]  # [B, T_orig, T_orig]
-            similarity_matrix_layers = [F.cosine_similarity(orig_input.unsqueeze(1), orig_input.unsqueeze(2), dim=3)]  # [B, T_orig, T_orig]
-
-            # Continue to latent embeddings (before encoder, and after each layer)
+            # Start from the processed embeddings (before encoder and after each layer)
+            # Skip the original input since it has different sequence length
+            feature_distances_layers = []
+            similarity_matrix_layers = []
+            
             for layer_idx in range(self.num_layers + 1):
                 embed = embeddings_layers[layer_idx, :, :, :].detach().cpu()  # [B, T, D]
 
@@ -749,9 +750,9 @@ class ClimaX(nn.Module):
                     im = axeslist[r, c].imshow(feature_distances_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     if r == 0:
                         if c == 0:
-                            axeslist[r, c].set_title("Initial input")
-                        if c < n_cols-1:
-                            axeslist[r, c].set_title(f"Before layer {c+1}")
+                            axeslist[r, c].set_title("Before layer 1")
+                        elif c < n_cols-1:
+                            axeslist[r, c].set_title(f"After layer {c}")
                         else:
                             axeslist[r, c].set_title(f"Final")
                     if c == 0:
@@ -771,9 +772,9 @@ class ClimaX(nn.Module):
                     im = axeslist[r, c].imshow(similarity_matrix_layers[r, c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     if r == 0:
                         if c == 0:
-                            axeslist[r, c].set_title("Initial input")
-                        if c < n_cols-1:
-                            axeslist[r, c].set_title(f"Before layer {c+1}")
+                            axeslist[r, c].set_title("Before layer 1")
+                        elif c < n_cols-1:
+                            axeslist[r, c].set_title(f"After layer {c}")
                         else:
                             axeslist[r, c].set_title(f"Final")
                     if c == 0:
@@ -835,12 +836,12 @@ class ClimaX(nn.Module):
                 min_value, max_value = utils.approx_min_max(self.relative_bias_table)
 
                 # self.relative_bias_table is [L (layers), 2T-1 (time offsets), H (heads)]
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*self.relative_bias_table.shape[2]+3, 0.03*n_rows*self.relative_bias_table.shape[1]), layout="constrained")
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*self.relative_bias_table.shape[2]+3, 0.03*n_rows*self.relative_bias_table.shape[1]), layout="constrained", squeeze=False)
                 for c in range(n_cols):  # Loop through each layer
-                    im = axeslist[c].imshow(self.relative_bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
-                    axeslist[c].set_xlabel("Head number")
-                    axeslist[c].set_ylabel("Relative offset (middle is 0)")
-                    axeslist[c].set_title(f"Layer {c}")
+                    im = axeslist[0, c].imshow(self.relative_bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
+                    axeslist[0, c].set_xlabel("Head number")
+                    axeslist[0, c].set_ylabel("Relative offset (middle is 0)")
+                    axeslist[0, c].set_title(f"Layer {c}")
                 fig.colorbar(im, ax=axeslist, shrink=0.4)
                 fig.suptitle("Relative attention biases")
                 plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets.png'))
@@ -853,12 +854,12 @@ class ClimaX(nn.Module):
                 min_value, max_value = utils.approx_min_max(pooling_attn)
 
                 # pooling_attn is [B, H, T]
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*pooling_attn.shape[1]+3, 0.03*n_rows*pooling_attn.shape[2]), layout="constrained")
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*pooling_attn.shape[1]+3, 0.03*n_rows*pooling_attn.shape[2]), layout="constrained", squeeze=False)
                 for c in range(n_cols):
-                    im = axeslist[c].imshow(rearrange(pooling_attn[c, :, :], 'h t -> t h').detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x)
-                    axeslist[c].set_xlabel("Head number")
-                    axeslist[c].set_ylabel("Timestep")
-                    axeslist[c].set_title(f"Example {c}")
+                    im = axeslist[0, c].imshow(rearrange(pooling_attn[c, :, :], 'h t -> t h').detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x)
+                    axeslist[0, c].set_xlabel("Head number")
+                    axeslist[0, c].set_ylabel("Timestep")
+                    axeslist[0, c].set_title(f"Example {c}")
                 fig.colorbar(im, ax=axeslist, shrink=0.4)
                 fig.suptitle("Pooling attention")
                 plt.savefig(os.path.join(plot_dir, 'seqpool_attn_weights.png'))
