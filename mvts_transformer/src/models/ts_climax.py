@@ -278,6 +278,7 @@ class ClimaX(nn.Module):
         # RELATIVE POSITION ENCODING: adjustment to the attention matrix that depends
         # only on the relative offset between two timesteps. This can be added to the
         # attention matrix before softmax or after softmax (see `where_to_add_relpos`)
+        self.relpos_temp = 1
         if "erpe" in relative_pos_encoding:
             # Bias table for each relative offset.
             # Relative offsets range from (T-1) to -(T-1), inclusive.
@@ -653,7 +654,6 @@ class ClimaX(nn.Module):
             
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = biases.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
-            offset_mask = offset_mask / self.relpos_temp  # self.relpos_temp has shape [L, 1, H] so broadcasting works
             offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L. H, T, T]
             offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
 
