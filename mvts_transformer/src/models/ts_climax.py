@@ -327,7 +327,7 @@ class ClimaX(nn.Module):
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(-1, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)
+                log_slopes = torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = 2 ** log_slopes
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
@@ -340,9 +340,83 @@ class ClimaX(nn.Module):
                 # Duplicate for each layer
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
 
+            elif relative_pos_encoding == "erpe_convalibi_init_quadratic":
+                # Convit heads
+                self.convit_heads = num_heads // 2
+                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
+                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
+                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
+                convit_biases = -1.0 * self.convit_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
+
+                # Alibi heads
+                self.alibi_heads = num_heads // 2
+                log_slopes = torch.linspace(0, -np.log2(seq_len/8), steps=self.alibi_heads, device=self.device)
+                self.alibi_slopes = (2 ** log_slopes) ** 2
+                print("Alibi slopes quadratic", self.alibi_slopes)
+                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
+                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
+                alibi_biases = -1.0 * self.alibi_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
+
+                # Combine
+                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
+                # bias_table_init = torch.clamp(bias_table_init, min=-5)
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
+
+            elif relative_pos_encoding == "erpe_convalibi_init_quadratic_clamped":
+                # Convit heads
+                self.convit_heads = num_heads // 2
+                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
+                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
+                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
+                convit_biases = -1.0 * self.convit_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
+
+                # Alibi heads
+                self.alibi_heads = num_heads // 2
+                log_slopes = torch.linspace(0, -np.log2(seq_len/8), steps=self.alibi_heads, device=self.device)
+                self.alibi_slopes = (2 ** log_slopes) ** 2
+                print("Alibi slopes quadratic", self.alibi_slopes)
+                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
+                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
+                alibi_biases = -1.0 * self.alibi_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
+
+                # Combine
+                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
+                bias_table_init = torch.clamp(bias_table_init, min=-10)
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
+            elif relative_pos_encoding == "erpe_convalibi_init_clamped":
+                # Same as above, except we set extremely low values to -5
+                # Convit heads
+                self.convit_heads = num_heads // 2
+                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
+                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
+                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
+                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
+
+                # Alibi heads
+                self.alibi_heads = num_heads // 2
+                log_slopes = torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)
+                self.alibi_slopes = 2 ** log_slopes
+                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
+                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
+                alibi_biases = -1.0 * self.alibi_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
+
+                # Combine
+                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
+                bias_table_init = torch.clamp(bias_table_init, min=-5)
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
+
             # Define a parameter table of relative position bias
             self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (T-1) to -(T-1), inclusive. Shape: [L, 2T-1, H]
-            self.relpos_temp = 1  # nn.Parameter(torch.ones((num_layers, 1, num_heads)))  # Temperature for relative positional softmax (divide pre-softmax by this value). [L, 1, H] so relative_bias_table can be divided by this.
+            self.relpos_temp = nn.Parameter(torch.ones((num_layers, 1, num_heads)))  # Temperature for relative positional softmax (divide pre-softmax by this value). [L, 1, H] so relative_bias_table can be divided by this.
 
             # The attention matrix will have shape [T, T].
             # For entry (i, j), we want to look up the appropriate index in relative_bias_table,
@@ -429,6 +503,7 @@ class ClimaX(nn.Module):
         pool_input_dim = 2 * embed_dim if self.where_to_add_abspos == "before_pool_concat" else embed_dim
         if self.pool == "seqpool":
             self.attention_pool = nn.Linear(pool_input_dim, 1)
+            self.pool_temp = nn.Parameter(torch.ones(1))
             self.fc = nn.Sequential(
                 nn.Linear(pool_input_dim, embed_dim),
                 # Rearrange('b t d -> b d t'),  # Batch norm requires [B, D, T]
@@ -446,6 +521,7 @@ class ClimaX(nn.Module):
                 nn.ReLU(),
                 nn.Linear(embed_dim, num_heads)
             )
+            self.pool_temp = nn.Parameter(torch.ones(num_heads))
             self.fc = nn.Sequential(
                 nn.Linear(pool_input_dim*num_heads, embed_dim),
                 nn.ReLU(),
@@ -476,207 +552,6 @@ class ClimaX(nn.Module):
         # Pooling gating if applicable
         if self.where_to_add_abspos == "pooling_gating":
             self.pooling_gating_param = nn.Parameter(torch.ones(num_heads))  # torch.cat([-torch.ones(num_heads//2), torch.ones(num_heads//2)]))
-
-
-    def forward_pooling(self, preds):
-        """
-        Input: preds should have shape [B, T, D]
-
-        Returns:
-        1) preds: [B, num_classes]
-        2) pooling_attn: [B, H (heads), T]
-        """
-        # If specified - inject absolute positional embedding before pooling
-        if self.where_to_add_abspos == "before_pool_concat":
-            # self.pos_embed: [L, D]
-            pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(preds.shape[0], 1, 1)  # [B, T, D]
-            preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [B, T, 2D]
-        elif self.where_to_add_abspos == "before_pool_add":
-            preds = preds + self.pos_embed  # [B, T, D]
-
-        # POOLING. Note that "preds" shape is [B, T, D]
-        pooling_attn = None
-        if "seqpool" in self.pool:
-            # Compute pooling attention scores
-            if self.where_to_add_abspos == "pooling_before_softmax":
-                pooling_attn = F.softmax(self.attention_pool(preds) + self.pos_embed, dim=1)  # [B, T, H]
-            elif self.where_to_add_abspos == "pooling_gating":
-                # Content and positional attention
-                pooling_content_attn = F.softmax(self.attention_pool(preds), dim=1)  # [B, T, H]
-                pooling_pos_attn = F.softmax(self.pos_embed, dim=0).unsqueeze(0)  # [1, T, H]
-
-                # Combine them with gating
-                pooling_gating = self.pooling_gating_param.view(1,1,-1)  # [1, 1, H]
-                print("Pooling gating", pooling_gating.shape, pooling_gating, pooling_content_attn.shape, pooling_pos_attn.shape)
-                pooling_attn = (1.-torch.sigmoid(pooling_gating)) * pooling_content_attn + torch.sigmoid(pooling_gating) * pooling_pos_attn
-                pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [B, T, H]
-            else:
-                pooling_attn = F.softmax(self.attention_pool(preds), dim=1)  # [B, T, H]
-
-            # Do the pooling
-            if self.pool == "seqpool":
-                # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
-                # pooling_attn outputs [B, T, 1].
-                # Softmax normalizes it so that sum across the time dimension (for each example) is 1.
-                # Transpose it to [B, 1, T], and then multiply with [B, T, D] -> [batch, 1, D.
-                # Squeeze out the 1 to get [B, D].
-                # NOTE: not yet compatible with absolute positional embeddings inside the pooling.
-                pooling_attn = rearrange(pooling_attn, 'b t 1 -> b 1 t')
-
-                # [B, 1, T] x [B, T, D] -> [B, 1, D] -> [B, D]
-                preds = torch.matmul(pooling_attn, preds).squeeze(-2)
-                preds = self.fc(preds)
-
-            elif self.pool == "seqpool_multihead":  #  or self.pool == "seqpool_multihead_posenc":
-                # Seqpool with multiple heads. Intuitively, different heads can
-                # focus on different parts of the sequence.
-                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
-                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
-                preds = self.fc(aggregated_x)  # [B, num_classes]
-            elif self.pool == "seqpool_multihead_smoothed":
-                # Same as seqpool_multihead above, but do a temporal smoothing
-                # on the attention weights for each head.
-                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
-                pooling_attn = F.avg_pool1d(pooling_attn, kernel_size=5, stride=1, padding=2)
-                pooling_attn = F.softmax(pooling_attn, dim=2)  # [B, H, T]
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
-                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
-                preds = self.fc(aggregated_x)  # [B, num_classes]
-
-        elif self.pool == "linear":
-            preds = self.act(preds)
-            preds = self.dropout1(preds)
-            preds = self.fc(preds)  # fc already contains a Flatten
-        elif self.pool == "average":
-            preds = preds.permute((0, 2, 1))  # Reshape to [B, D, T] to be compatible with AvgPool1d
-            preds = self.fc(preds)
-        elif self.pool == "average_max":
-            preds = rearrange(preds, "b t d -> b d t")
-            max_pooled = self.max_pool(preds)  # [B, D, 1]
-            avg_pooled = self.avg_pool(preds)
-            preds = torch.cat([max_pooled.squeeze(2), avg_pooled.squeeze(2)], dim=1)  # [B, 2D]
-            preds = self.fc(preds)
-        else:
-            raise ValueError("Invalid pool")
-        return preds, pooling_attn
-
-
-    def setup_absolute_posenc(self, pos_encoding, seq_len, absolute_emb_dim):
-        """
-        Setup absolute positional encoding. Typically this is a vector for each timestep,
-        or matrix [T, D].
-        """
-
-        if "learnable" in pos_encoding:
-            # Learnable vector for each position (timestep)
-            self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)  # [T, D]
-
-            if pos_encoding == "learnable_uniform_init" or pos_encoding == "learnable":
-                # Uniform random initialization
-                nn.init.uniform_(self.pos_embed, -0.02, 0.02)
-            elif pos_encoding == "learnable_sin_init":
-                # Initialize with sinusoidal features
-                pos_embed = get_1d_sincos_pos_embed_from_grid(
-                    self.pos_embed.shape[-1],
-                    np.arange(seq_len)
-                )
-                self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
-            elif pos_encoding == "learnable_tape_init":
-                # Initialize with sinusoidal features (using TAPE trick to determine frequencies)
-                pos_embed = get_1d_sincos_pos_embed_from_grid(
-                    self.pos_embed.shape[-1],
-                    np.arange(seq_len),
-                    max_len=seq_len
-                )
-                self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
-            else:
-                assert pos_encoding == "learnable_zero_init"
-
-        elif pos_encoding == "fixed":
-            # FIXED sinusoidal vector for each position
-            # Code from Zerveas TST repo, https://github.com/gzerveas/mvts_transformer/blob/master/src/models/ts_transformer.py#L65
-            scale_factor = 1.0  # Hardcode default value
-            pe = torch.zeros(seq_len, absolute_emb_dim)  # positional encoding
-            position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
-            div_term = torch.exp(torch.arange(0, absolute_emb_dim, 2).float() * (-math.log(10000.0) / absolute_emb_dim))
-            pe[:, 0::2] = torch.sin(position * div_term)
-            pe[:, 1::2] = torch.cos(position * div_term)
-            pos_embed = scale_factor * pe  #.unsqueeze(0).transpose(0, 1) do not need to create extra dimension
-            self.register_buffer('pos_embed', pos_embed)  # this stores the variable in the state_dict (used for non-trainable variables)
-        elif pos_encoding == "none":
-            self.pos_embed = None
-        else:
-            raise ValueError("Invalid value of absolute_pos_embed (must be: learnable, learnable_sin_init, fixed, none)")
-
-
-    def locality_loss_erpe(self):
-        """
-        Regularizes the relative biases - offsets further from the zero
-        have a higher penalty if their probability is high.
-        This can be seen as an Earth-Mover distance from the one-hot distribution
-        (1 for my own timestep, 0 otherwise)
-        """
-        penalties = torch.arange(-self.seq_len+1, self.seq_len, device=self.device).abs() / self.seq_len
-
-        ## Relative bias table should have shape  [L, 2T-1, H]
-        biases_post_softmax = F.softmax(self.relative_bias_table, dim=1)
-        x = (biases_post_softmax * penalties.unsqueeze(1)).sum(dim=1).mean()
-        return x
-
-
-    def locality_loss_attention(self):
-        """
-        Regularizes attention matrices to be close to diagonal
-        """
-        device = self.attn_matrices.device
-
-        # Entry (i, j) contains |i-j|/seq_len
-        penalty_matrix = (torch.arange(self.seq_len, device=self.device).unsqueeze(0) - torch.arange(self.seq_len, device=self.device).unsqueeze(1)).abs() / self.seq_len  # [T, T]
-
-        # self.attn_matrices is [B, n_matrices, T, T]
-        return (self.attn_matrices * penalty_matrix).sum(dim=-1).mean()
-
-
-    def attn_smoothness_loss(self):
-        """
-        Smoothness on attention matrices (excluding pooling attention)
-        """
-        # self.attn_matrices is [B, L*H, T, T]
-        attn_weights_layers = rearrange(self.attn_matrices, "b n t0 t1 -> (b n) t0 t1")  # Convert to [..., T, T] - list of attention matrices
-        attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
-        return attn_smoothness_loss
-
-
-    def pool_smoothness_loss(self):
-        """
-        Smoothness loss on pooling attn weights
-        """
-        attn_weights_pool = self.pooling_attn  # [B, H, T]
-        pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
-        return pool_smoothness_loss
-
-
-    def posenc_smoothness_loss(self, logger):
-        """
-        Computes smoothness of both absolute and relative positional embedding tables.
-        TODO: Currently these are computed slightly differently, maybe make this consistent?
-        """
-        # Smoothness of absolute position encoding
-        smoothness_loss = 0.
-        if "learnable" in self.pos_encoding:
-            # self.pos_embed has shape [T, D]
-            # smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
-            smoothness_loss += (self.pos_embed[1:, :] - self.pos_embed[:-1, :]).abs().mean()
-
-        # Smoothness of relative position encodings
-        if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
-            # self.relative_bias_table has shape [L, 2*T-1, H]
-            # rel_smoothness = ((self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]) ** 2).mean()
-            rel_smoothness = (self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]).abs().mean()
-            smoothness_loss += rel_smoothness
-
-        return smoothness_loss
 
 
     def initialize_weights(self):
@@ -769,9 +644,15 @@ class ClimaX(nn.Module):
             # and use these as indices into the relative bias table.
             # Then reshape to construct the real bias matrix (same shape as attention matrix)
             num_heads = self.relative_bias_table.shape[2]
+
+            # Divide biases by "temp", and clamp out extreme values
+            biases = self.relative_bias_table / self.relpos_temp  # # self.relpos_temp has shape [L, 1, H] so broadcasting works
+            if biases.min() < -1000 or biases.max() > 1000:
+                print("Extreme values of biases", biases)
+            biases = torch.clamp(biases, min=-1000, max=1000)  # Prevent values from getting too extreme
+            
             flattened_indices = self.relative_coords.flatten()  # [T*T]
-            offset_mask = self.relative_bias_table.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
-            offset_mask = torch.clamp(offset_mask, min=-10000, max=10000)  # Prevent values from getting too extreme
+            offset_mask = biases.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
             offset_mask = offset_mask / self.relpos_temp  # self.relpos_temp has shape [L, 1, H] so broadcasting works
             offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L. H, T, T]
             offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
@@ -1004,6 +885,206 @@ class ClimaX(nn.Module):
                 visualization_utils.visualize_pooling_attn(pooling_attn, plot_dir)
 
         return preds, attn_weights_enc, pooling_attn
+
+    def forward_pooling(self, preds):
+        """
+        Input: preds should have shape [B, T, D]
+
+        Returns:
+        1) preds: [B, num_classes]
+        2) pooling_attn: [B, H (heads), T]
+        """
+        # If specified - inject absolute positional embedding before pooling
+        if self.where_to_add_abspos == "before_pool_concat":
+            # self.pos_embed: [L, D]
+            pos_embed_repeated = self.pos_embed.unsqueeze(0).repeat(preds.shape[0], 1, 1)  # [B, T, D]
+            preds = torch.cat((preds, pos_embed_repeated), dim=2)  # [B, T, 2D]
+        elif self.where_to_add_abspos == "before_pool_add":
+            preds = preds + self.pos_embed  # [B, T, D]
+
+        # POOLING. Note that "preds" shape is [B, T, D]
+        pooling_attn = None
+        if "seqpool" in self.pool:
+            # Compute pooling attention scores
+            if self.where_to_add_abspos == "pooling_before_softmax":
+                pooling_attn = F.softmax(self.attention_pool(preds) / self.pool_temp + self.pos_embed, dim=1)  # [B, T, H]
+            elif self.where_to_add_abspos == "pooling_gating":
+                # Content and positional attention
+                pooling_content_attn = F.softmax(self.attention_pool(preds) / self.pool_temp, dim=1)  # [B, T, H]
+                pooling_pos_attn = F.softmax(self.pos_embed, dim=0).unsqueeze(0)  # [1, T, H]
+
+                # Combine them with gating
+                pooling_gating = self.pooling_gating_param.view(1,1,-1)  # [1, 1, H]
+                # print("Pooling gating", pooling_gating.shape, pooling_gating, pooling_content_attn.shape, pooling_pos_attn.shape)
+                pooling_attn = (1.-torch.sigmoid(pooling_gating)) * pooling_content_attn + torch.sigmoid(pooling_gating) * pooling_pos_attn
+                pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [B, T, H]
+            else:
+                pooling_attn = F.softmax(self.attention_pool(preds) / self.pool_temp, dim=1)  # [B, T, H]
+
+            # Do the pooling
+            if self.pool == "seqpool":
+                # Code from https://github.com/SHI-Labs/Compact-Transformers/blob/main/src/utils/transformers.py#L208
+                # pooling_attn outputs [B, T, 1].
+                # Softmax normalizes it so that sum across the time dimension (for each example) is 1.
+                # Transpose it to [B, 1, T], and then multiply with [B, T, D] -> [batch, 1, D.
+                # Squeeze out the 1 to get [B, D].
+                # NOTE: not yet compatible with absolute positional embeddings inside the pooling.
+                pooling_attn = rearrange(pooling_attn, 'b t 1 -> b 1 t')
+
+                # [B, 1, T] x [B, T, D] -> [B, 1, D] -> [B, D]
+                preds = torch.matmul(pooling_attn, preds).squeeze(-2)
+                preds = self.fc(preds)
+
+            elif self.pool == "seqpool_multihead":  #  or self.pool == "seqpool_multihead_posenc":
+                # Seqpool with multiple heads. Intuitively, different heads can
+                # focus on different parts of the sequence.
+                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
+                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
+                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
+                preds = self.fc(aggregated_x)  # [B, num_classes]
+            elif self.pool == "seqpool_multihead_smoothed":
+                # Same as seqpool_multihead above, but do a temporal smoothing
+                # on the attention weights for each head.
+                pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
+                pooling_attn = F.avg_pool1d(pooling_attn, kernel_size=5, stride=1, padding=2)
+                pooling_attn = F.softmax(pooling_attn, dim=2)  # [B, H, T]
+                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
+                aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
+                preds = self.fc(aggregated_x)  # [B, num_classes]
+
+        elif self.pool == "linear":
+            preds = self.act(preds)
+            preds = self.dropout1(preds)
+            preds = self.fc(preds)  # fc already contains a Flatten
+        elif self.pool == "average":
+            preds = preds.permute((0, 2, 1))  # Reshape to [B, D, T] to be compatible with AvgPool1d
+            preds = self.fc(preds)
+        elif self.pool == "average_max":
+            preds = rearrange(preds, "b t d -> b d t")
+            max_pooled = self.max_pool(preds)  # [B, D, 1]
+            avg_pooled = self.avg_pool(preds)
+            preds = torch.cat([max_pooled.squeeze(2), avg_pooled.squeeze(2)], dim=1)  # [B, 2D]
+            preds = self.fc(preds)
+        else:
+            raise ValueError("Invalid pool")
+        return preds, pooling_attn
+
+
+    def setup_absolute_posenc(self, pos_encoding, seq_len, absolute_emb_dim):
+        """
+        Setup absolute positional encoding. Typically this is a vector for each timestep,
+        or matrix [T, D].
+        """
+
+        if "learnable" in pos_encoding:
+            # Learnable vector for each position (timestep)
+            self.pos_embed = nn.Parameter(torch.zeros(seq_len, absolute_emb_dim), requires_grad=True)  # [T, D]
+
+            if pos_encoding == "learnable_uniform_init" or pos_encoding == "learnable":
+                # Uniform random initialization
+                nn.init.uniform_(self.pos_embed, -0.02, 0.02)
+            elif pos_encoding == "learnable_sin_init":
+                # Initialize with sinusoidal features
+                pos_embed = get_1d_sincos_pos_embed_from_grid(
+                    self.pos_embed.shape[-1],
+                    np.arange(seq_len)
+                )
+                self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
+            elif pos_encoding == "learnable_tape_init":
+                # Initialize with sinusoidal features (using TAPE trick to determine frequencies)
+                pos_embed = get_1d_sincos_pos_embed_from_grid(
+                    self.pos_embed.shape[-1],
+                    np.arange(seq_len),
+                    max_len=seq_len
+                )
+                self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float())
+            else:
+                assert pos_encoding == "learnable_zero_init"
+
+        elif pos_encoding == "fixed":
+            # FIXED sinusoidal vector for each position
+            # Code from Zerveas TST repo, https://github.com/gzerveas/mvts_transformer/blob/master/src/models/ts_transformer.py#L65
+            scale_factor = 1.0  # Hardcode default value
+            pe = torch.zeros(seq_len, absolute_emb_dim)  # positional encoding
+            position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, absolute_emb_dim, 2).float() * (-math.log(10000.0) / absolute_emb_dim))
+            pe[:, 0::2] = torch.sin(position * div_term)
+            pe[:, 1::2] = torch.cos(position * div_term)
+            pos_embed = scale_factor * pe  #.unsqueeze(0).transpose(0, 1) do not need to create extra dimension
+            self.register_buffer('pos_embed', pos_embed)  # this stores the variable in the state_dict (used for non-trainable variables)
+        elif pos_encoding == "none":
+            self.pos_embed = None
+        else:
+            raise ValueError("Invalid value of absolute_pos_embed (must be: learnable, learnable_sin_init, fixed, none)")
+
+
+    def locality_loss_erpe(self):
+        """
+        Regularizes the relative biases - offsets further from the zero
+        have a higher penalty if their probability is high.
+        This can be seen as an Earth-Mover distance from the one-hot distribution
+        (1 for my own timestep, 0 otherwise)
+        """
+        penalties = (torch.arange(-self.seq_len+1, self.seq_len, device=self.device).abs() / self.seq_len) ** 2
+
+        ## Relative bias table should have shape  [L, 2T-1, H]
+        biases_post_softmax = F.softmax(self.relative_bias_table, dim=1)
+        x = (biases_post_softmax * penalties.unsqueeze(1)).sum(dim=1).mean()
+        return x
+
+
+    def locality_loss_attention(self):
+        """
+        Regularizes attention matrices to be close to diagonal
+        """
+        device = self.attn_matrices.device
+
+        # Entry (i, j) contains (|i-j|/seq_len)^2
+        penalty_matrix = ((torch.arange(self.seq_len, device=self.device).unsqueeze(0) - torch.arange(self.seq_len, device=self.device).unsqueeze(1)).abs() / self.seq_len) ** 2  # [T, T]
+
+        # self.attn_matrices is [B, n_matrices, T, T]
+        return (self.attn_matrices * penalty_matrix).sum(dim=-1).mean()
+
+
+    def attn_smoothness_loss(self):
+        """
+        Smoothness on attention matrices (excluding pooling attention)
+        """
+        # self.attn_matrices is [B, L*H, T, T]
+        attn_weights_layers = rearrange(self.attn_matrices, "b n t0 t1 -> (b n) t0 t1")  # Convert to [..., T, T] - list of attention matrices
+        attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).abs()).sum(dim=2).mean()
+        return attn_smoothness_loss
+
+
+    def pool_smoothness_loss(self):
+        """
+        Smoothness loss on pooling attn weights
+        """
+        attn_weights_pool = self.pooling_attn  # [B, H, T]
+        pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]).abs()).sum(dim=2).mean()
+        return pool_smoothness_loss
+
+
+    def posenc_smoothness_loss(self, logger):
+        """
+        Computes smoothness of both absolute and relative positional embedding tables.
+        TODO: Currently these are computed slightly differently, maybe make this consistent?
+        """
+        # Smoothness of absolute position encoding
+        smoothness_loss = 0.
+        if "learnable" in self.pos_encoding:
+            # self.pos_embed has shape [T, D]
+            # smoothness_loss += (torch.norm(self.pos_embed[1:, :] - self.pos_embed[:-1, :], dim=1)).mean()
+            smoothness_loss += (self.pos_embed[1:, :] - self.pos_embed[:-1, :]).abs().mean()
+
+        # Smoothness of relative position encodings
+        if "erpe" in self.relative_pos_encoding or "convit" in self.relative_pos_encoding:
+            # self.relative_bias_table has shape [L, 2*T-1, H]
+            # rel_smoothness = ((self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]) ** 2).mean()
+            rel_smoothness = (self.relative_bias_table[:, 1:, :] - self.relative_bias_table[:, :-1, :]).abs().mean()
+            smoothness_loss += rel_smoothness
+
+        return smoothness_loss
 
 
 def _get_clones(module, N):

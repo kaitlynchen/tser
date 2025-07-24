@@ -30,7 +30,7 @@ cd ~/tser/mvts_transformer/src
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="IEEEPPG"
+DATA="LiveFuelMoistureContent"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -47,18 +47,19 @@ else
 fi
 
 # ERPE Convalibi Init
-for LR in 1e-2 1e-3
+for LR in 1e-2 1e-3 1e-4
 do
-    for LAM in 0 1e-3 1e-1 10
+    for LAM in 0
     do
-        for SEED in 0 1 2
+        for SEED in 0
         do
             # BASIC
-            python main.py --comment "${DATA}_CONVIT_GATING_TUNING_LR=${LR}_SMOOTH=${LAM}" \
-                --seed $SEED --name "${DATA}_CONVIT_GATING_TUNING_LR=${LR}_SMOOTH=${LAM}" \
+            python main.py --comment "${DATA}_CONVIT_GATING_TUNING_LR=${LR}" \
+                --seed $SEED --name "${DATA}_CONVIT_GATING_TUNING_LR=${LR}" \
                 --records_file "${DATA}_CONVIT_GATING_TUNING.xls" \
                 --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
-                --pattern TRAIN --val_ratio 0.2 --epochs 1000 --patience 200 \
+                --pattern TRAIN --val_ratio 0.2 \
+                --epochs 2000 --patience 500 \
                 --lr $LR --batch_size $BS \
                 --num_layers 3 --num_heads 16 --d_model 128 --dim_feedforward 256 \
                 --optimizer RAdam --task regression \

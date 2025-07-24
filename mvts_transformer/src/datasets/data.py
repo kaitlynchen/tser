@@ -410,26 +410,29 @@ class TSRegressionArchive(BaseData):
         # Then concatenate into a (num_samples * seq_len) dataframe, with multiple rows corresponding
         # to the sample index.
         # NOTE - does not work for all datasets, commenting out for now
-        timestamp_df = pd.concat(
-            (
-                pd.DataFrame({'timestamp': df.loc[row, df.columns[0]].index})
-                .reset_index(drop=True)
-                .set_index(pd.Series(lengths[row, 0] * [row]))
-                for row in range(df.shape[0])
-            ),
-            axis=0
-        )
+        if pd.core.dtypes.common.is_datetime_or_timedelta_dtype(df.loc[0, df.columns[0]].index):
+            timestamp_df = pd.concat(
+                (
+                    pd.DataFrame({'timestamp': df.loc[row, df.columns[0]].index})
+                    .reset_index(drop=True)
+                    .set_index(pd.Series(lengths[row, 0] * [row]))
+                    for row in range(df.shape[0])
+                ),
+                axis=0
+            )
 
-        # Extract features from timestamp data. Normalize all so that they are between (0, 1).
-        # TODO: Consider adding a feature to allow model to distinguish days of the week. # "day_of_week": timestamp_df['timestamp'].dt.weekday,  # 0 is Monday, 6 is Sunday
-        time_df = pd.DataFrame({
-            "timestamp": timestamp_df["timestamp"],
-            "time_int": timestamp_df["timestamp"].astype('int64'),
-            "year": timestamp_df['timestamp'].dt.year,
-            "day_of_year": timestamp_df['timestamp'].dt.day_of_year / 366,
-            "hour_of_day": timestamp_df['timestamp'].dt.hour / 24 + timestamp_df['timestamp'].dt.minute / (24*60) + timestamp_df['timestamp'].dt.second / (24*60*60)
-        })
-        time_df["year_normalized"] = (time_df["year"] - time_df["year"].min()) / (time_df["year"].max() + 1 - time_df["year"].min())
+            # Extract features from timestamp data. Normalize all so that they are between (0, 1).
+            # TODO: Consider adding a feature to allow model to distinguish days of the week. # "day_of_week": timestamp_df['timestamp'].dt.weekday,  # 0 is Monday, 6 is Sunday
+            time_df = pd.DataFrame({
+                "timestamp": timestamp_df["timestamp"],
+                "time_int": timestamp_df["timestamp"].astype('int64'),
+                "year": timestamp_df['timestamp'].dt.year,
+                "day_of_year": timestamp_df['timestamp'].dt.day_of_year / 366,
+                "hour_of_day": timestamp_df['timestamp'].dt.hour / 24 + timestamp_df['timestamp'].dt.minute / (24*60) + timestamp_df['timestamp'].dt.second / (24*60*60)
+            })
+            time_df["year_normalized"] = (time_df["year"] - time_df["year"].min()) / (time_df["year"].max() + 1 - time_df["year"].min())
+        else:
+            time_df = None
 
         # First create a (seq_len, feat_dim) dataframe for each sample, indexed by a single integer ("ID" of the sample)
         # Then concatenate into a (num_samples * seq_len, feat_dim) dataframe, with multiple rows corresponding to the

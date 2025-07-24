@@ -202,7 +202,8 @@ class Options(object):
                                                                              "pooling_before_softmax", "pooling_gating"], default="start_add",
                                  help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
-                                                                     'erpe_alibi_init', 'erpe_convit_init', 'erpe_convalibi_init',
+                                                                     'erpe_alibi_init', 'erpe_convit_init', 'erpe_convalibi_init', 'erpe_convalibi_init_quadratic', 
+                                                                     'erpe_convalibi_init_quadratic_clamped', 'erpe_convalibi_init_clamped',
                                                                      'convit', 'convit_half', 'rope', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating", "only_relpos"], default="before",
@@ -227,7 +228,7 @@ class Options(object):
                                  help='Type of final pooling')
 
         # Local-CNN specific
-        self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
+        self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep', 'lstm'], default='hierarchical',
                                  help='Type of CNN')
         self.parser.add_argument('--local_cnn2_batch_norm', action='store_true', help='Set to use batchnorm in LocalCNN2.')
         self.parser.add_argument('--local_cnn2_spectral_norm', action='store_true', help='Set to use spectral norm in LocalCNN2.')

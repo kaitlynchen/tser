@@ -198,10 +198,7 @@ def main(config):
     # Using a `val_pattern` means that `val_ratio` == 0 and `test_ratio` == 0
     if config["val_ratio"] > 0:
         if config["val_temporal_split"]:
-            print("TEMP SPLIT")
-            print("MY DATA", my_data)
             my_data.time_df["example_idx"] = my_data.time_df.index
-            print("TIMESTAMP DF", my_data.time_df.shape, my_data.time_df)
             start_times = my_data.time_df.groupby('example_idx').first()
             print("Start times", start_times)
             threshold = np.quantile(start_times["time_int"], 1 - config['val_ratio'])
@@ -403,8 +400,9 @@ def main(config):
 
     train_dataset = dataset_class(my_data, train_indices, timestep_indices=timestep_indices)
 
-    print("Check timestamps. TRAIN", train_dataset.time_df.shape, train_dataset.time_df["timestamp"].min(), train_dataset.time_df["timestamp"].max())
-    print("Check timestamps. VAL", val_dataset.time_df.shape, val_dataset.time_df["timestamp"].min(), val_dataset.time_df["timestamp"].max())
+    if train_dataset.time_df is not None:
+        print("Check timestamps. TRAIN", train_dataset.time_df.shape, train_dataset.time_df["timestamp"].min(), train_dataset.time_df["timestamp"].max())
+        print("Check timestamps. VAL", val_dataset.time_df.shape, val_dataset.time_df["timestamp"].min(), val_dataset.time_df["timestamp"].max())
 
     # Store mean/std label
     config["label_mean"] = train_dataset.label_mean
@@ -581,7 +579,7 @@ def main(config):
         #     optimizer,
         # )
 
-        # Decay LR on plateau
+        # Decay LR on plateau: Does not really work well currently!
         if isinstance(config["lr_step"], str) and config["lr_step"].startswith("plateau"):
             if num_epochs_no_improvement_no_lrdecay > int(config["lr_step"].split("plateau")[1]):
                 utils.save_model(

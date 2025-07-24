@@ -18,7 +18,7 @@
 # Specify the resources should be assigned to a single task on one node.
 #SBATCH -N 1 -n 1
 # Request a total of 80GB RAM
-#SBATCH --mem=20GB
+#SBATCH --mem=100GB
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
@@ -30,8 +30,7 @@ cd ~/tser/mvts_transformer/src
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-# DATA="LiveFuelMoistureContent"
-DATA="BenzeneConcentration"  
+DATA="LiveFuelMoistureContent"  
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
     BS=16
@@ -45,34 +44,37 @@ else
     PATCH=1
     STRIDE=1
 fi
-
+echo $PATCH
 
 # ERPE Convalibi Init
-for LR in 1e-2
+for LR in 1e-2 1e-3 1e-4
 do
     for WD in 0
     do
-        for LAM in 0
+        for LAM in 0 1e-2
         do
-            for SEED in 0 1 2
+            for LAM2 in 0 1e-2
             do
-                # BASIC
-                python main.py --comment "${DATA}_CONVALIBI4_LOCALITY_POOLSMOOTH_TUNING_LR=${LR}_SMOOTH=${LAM} DECAY" \
-                    --seed $SEED --name "${DATA}_CONVALIBI4_LOCALITY_POOLSMOOTH_TUNING_LR=${LR}_SMOOTH=${LAM} DECAY" \
-                    --records_file "output/${DATA}_CONVALIBI4_LOCALITY_POOLSMOOTH_TUNING_DECAY.xls" \
-                    --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
-                    --pattern TRAIN --val_ratio 0.2 --val_temporal_split \
-                    --epochs 2000 --patience 500 \
-                    --lr $LR --batch_size $BS \
-                    --global_reg --l2_reg $WD \
-                    --num_layers 3 --num_heads 16 --d_model 128 --dim_feedforward 256 \
-                    --optimizer RAdam --task regression \
-                    --plot_loss --plot_accuracy \
-                    --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                    --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                    --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos \
-                    --pool seqpool_multihead --lambda_locality $LAM --reg_lambda_pool $LAM \
-                    --lr_step plateau20 --lr_factor 0.5
+                for SEED in 0
+                do
+                    # BASIC
+                    python main.py --comment "${DATA}_CONVALIBI5_TUNING_LR=${LR}_SMOOTH=${LAM}_LOC=${LAM2}" \
+                        --seed $SEED --name "${DATA}_CONVALIBI5_TUNING_LR=${LR}_SMOOTH=${LAM}_LOC=${LAM2}" \
+                        --records_file "output/${DATA}_CONVALIBI5_VAL.xls" \
+                        --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
+                        --pattern TRAIN --val_ratio 0.2 \
+                        --epochs 2000 --patience 500 \
+                        --lr $LR --batch_size $BS \
+                        --global_reg --l2_reg $WD \
+                        --num_layers 3 --num_heads 16 --d_model 128 --dim_feedforward 256 \
+                        --optimizer RAdam --task regression \
+                        --plot_loss --plot_accuracy \
+                        --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                        --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos \
+                        --pool seqpool_multihead \
+                        --reg_lambda $LAM --reg_lambda_pool $LAM --lambda_locality $LAM2
+                done
             done
         done
     done

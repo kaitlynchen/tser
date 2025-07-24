@@ -430,9 +430,9 @@ class UnsupervisedRunner(BaseRunner):
                 attn_smoothness_loss = 0
                 if attn_weights_layers is not None:
                     attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [n_matrices, T, T] - list of attention matrices
-                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).abs()).sum(dim=2).mean()
                 if attn_weights_pool is not None:  # attn_weights_pool has shape [B, H, T]
-                    attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
+                    attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]).abs()).sum(dim=2).mean()
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             # Zero gradients, perform a backward pass, and update the weights.
@@ -607,17 +607,18 @@ class SupervisedRunner(BaseRunner):
                 attn_smoothness_loss = torch.tensor(0)
                 if attn_weights_layers is not None:
                     attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
-                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
+                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).square()).sum(dim=2).mean()  # TODO square or abs?
                 total_loss += config['reg_lambda'] * attn_smoothness_loss
 
                 # Pooling smoothness loss
                 pool_smoothness_loss = torch.tensor(0)
                 if attn_weights_pool is not None:  # attn_weights_pool has shape [B, H, T]
-                    pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]) ** 2).sum(dim=2).mean()
+                    pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]).square()).sum(dim=2).mean()
                 total_loss += config['reg_lambda_pool'] * pool_smoothness_loss
 
             else:
                 attn_smoothness_loss = torch.tensor(0)
+                pool_smoothness_loss = torch.tensor(0)
 
             supervised_smoothing_loss += (attn_smoothness_loss.item() * config["reg_lambda"] * len(loss))  # put in same scale as batch_loss
             pool_smoothing_loss += (pool_smoothness_loss.item() * config["reg_lambda_pool"] * len(loss))  # put in same scale as batch_loss

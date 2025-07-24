@@ -118,14 +118,19 @@ class LocalCNN(nn.Module):
                 nn.ReLU(),
                 nn.Conv1d(embed_dim, embed_dim, 1, 1),
             )
+        elif self.conv_type == "lstm":
+            self.conv = nn.LSTM(embed_dim, embed_dim, num_layers=2, batch_first=True)
         else:
             raise ValueError("invalid conv_type")
 
         # Calculate number of timesteps after conv. 
         # TODO I recall there is a better way to do this, but could not find yet
-        input = torch.randn((1, self.embed_dim, self.seq_len))  # [B, D, T]. Conv expects this order
-        output = self.conv(input)  # [B, D, T]
-        self.output_seq_len = output.shape[2]
+        if self.conv_type == "lstm":
+            self.output_seq_len = self.seq_len 
+        else:
+            input = torch.randn((1, self.embed_dim, self.seq_len))  # [B, D, T]. Conv expects this order
+            output = self.conv(input)  # [B, D, T]
+            self.output_seq_len = output.shape[2]
 
         # Positional embedding
         # Note: if absolute positional embedding is added inside the pooling attention,
@@ -168,12 +173,16 @@ class LocalCNN(nn.Module):
             x = self.pos_drop(x)
 
         # Main convolutional (local) backbone
-        x = rearrange(x, 'b t d -> b d t')  # Move the "channel" (D) dimension forward, to [B, D, T]
-        x = self.conv(x)  # Convert to [batch, channel, time']  (may be fewer timesteps)
-        x = rearrange(x, 'b d t -> b t d')  # Change back to [B, T, D] for compatibility with pooling
+        if self.conv_type == "lstm":
+            x = self.conv(x)[0]  # LSTM input and output is [B, T, D], no need to convert
+        else:
+            x = rearrange(x, 'b t d -> b d t')  # Move the "channel" (D) dimension forward, to [B, D, T]
+            x = self.conv(x)  # Convert to [batch, channel, time']  (may be fewer timesteps)
+            x = rearrange(x, 'b d t -> b t d')  # Change back to [B, T, D] for compatibility with pooling
 
         # Pooling
         preds, pooling_attn = ClimaX.forward_pooling(self, x)
+        self.pooling_attn = pooling_attn
 
         # Visualize positional embedding
         if plot_dir is not None and "learnable" in self.pos_encoding:
@@ -198,6 +207,8 @@ class LocalCNN2(nn.Module):
                  pos_encoding="learnable_sin_init", where_to_add_abspos="before_pooling_concat",
                  num_heads=16, conv_dropout=0.1, use_batch_norm=False, use_spectral_norm=False):
         """
+        EXPERIMENTAL - does not work well
+
         UPDATED VERSION of LocalCNN that supports residual connections + spectral normalization
         conv_type can be hierarchical or local
 
