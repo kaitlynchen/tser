@@ -81,4 +81,4 @@ done
 #--lambda_locality $LAM --reg_lambda_pool $LAM \
 
 # TEST
-# python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
