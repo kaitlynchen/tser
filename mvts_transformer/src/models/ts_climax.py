@@ -81,6 +81,9 @@ def model_factory(config, data):
                           conv_projection=config['conv_projection'],
                           local_mask=config['local_mask'],
                           causal_mask=config['causal_mask'],
+                          convit_slope=config['convit_slope'],
+                          alibi_min_slope=config['alibi_min_slope'],
+                          alibi_max_slope=config['alibi_max_slope'],
                           pool=config['pool'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
@@ -148,6 +151,9 @@ class ClimaX(nn.Module):
         local_mask=-1,
         causal_mask=False,
         pool="linear",
+        convit_slope=1.0,
+        alibi_max_slope=4.0,
+        alibi_min_slope=0.25,
     ):
         super().__init__()
 
@@ -162,6 +168,9 @@ class ClimaX(nn.Module):
         self.where_to_add_abspos = where_to_add_abspos
         self.relative_pos_encoding = relative_pos_encoding
         self.where_to_add_relpos = where_to_add_relpos
+        self.convit_slope = convit_slope
+        self.alibi_max_slope = alibi_max_slope
+        self.alibi_min_slope = alibi_min_slope
         self.agg_vars = agg_vars
         self.conv_transformer = conv_transformer
         self.device = device
@@ -247,9 +256,9 @@ class ClimaX(nn.Module):
         if self.causal_mask:
             causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq_len).to(device)  # 0 for valid, -inf for invalid (future)
             if self.invalid_mask is None:
-                self.invalid_mask = (causal_mask == 0)
+                self.invalid_mask = (causal_mask != 0)
             else:
-                self.invalid_mask = self.invalid_mask & (causal_mask == 0)
+                self.invalid_mask = self.invalid_mask & (causal_mask != 0)
 
 
     def setup_relative_posenc(self, relative_pos_encoding, seq_len, num_layers, num_heads):
@@ -289,10 +298,21 @@ class ClimaX(nn.Module):
             elif relative_pos_encoding == "erpe_uniform_init":
                 bias_table_init = torch.zeros(num_layers, 2*seq_len-1, num_heads)
                 nn.init.uniform_(bias_table_init, -0.02, 0.02)
-            elif relative_pos_encoding == "erpe_alibi_init":
+            elif relative_pos_encoding == "erpe_alibi_init_fixedslopes":
+                # ALIBI with hardcoded sloeps from the original paper
                 # Calculate initial bias table using ALIBI linear functions for each head.
                 # Note that the linear function is multiplying "slope" with absolute |distance|.
                 slopes = torch.tensor(get_slopes(num_heads), device=self.device)*-1  # [H]
+                bias_table_init = torch.zeros(2*seq_len-1, num_heads)
+                bias_table_init[0:seq_len-1] = torch.arange(start=seq_len-1, end=0, step=-1, device=self.device).unsqueeze(1) * slopes
+                bias_table_init[seq_len-1:] = torch.arange(start=0, end=seq_len, device=self.device).unsqueeze(1) * slopes
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
+            elif relative_pos_encoding == "erpe_alibi_init":
+                # ALIBI with custom slopes
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
+                slopes = 2 ** log_slopes
                 bias_table_init = torch.zeros(2*seq_len-1, num_heads)
                 bias_table_init[0:seq_len-1] = torch.arange(start=seq_len-1, end=0, step=-1, device=self.device).unsqueeze(1) * slopes
                 bias_table_init[seq_len-1:] = torch.arange(start=0, end=seq_len, device=self.device).unsqueeze(1) * slopes
@@ -303,13 +323,12 @@ class ClimaX(nn.Module):
                 # Calculate initial bias with CONVIT linear decays for half of heads (remaining are zero init).
                 bias_table_init = torch.zeros(2*seq_len-1, num_heads)
                 self.convit_heads = num_heads  # (num_heads // 2) + 1
-                self.convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
+                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
                 self.convit_offsets = torch.tensor([0] + [-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                           [2.0 ** i for i in range(self.convit_heads//2 - 1)], device=self.device)
                 # self.convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
                 #                                 [3.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-                print("Convit offsets", self.convit_offsets, self.convit_slopes, self.convit_intercepts)
                 convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
                 bias_table_init[:, :self.convit_heads] = convit_biases
                 # bias_table_init = torch.clamp(bias_table_init, min=-5)
@@ -320,15 +339,18 @@ class ClimaX(nn.Module):
             elif relative_pos_encoding == "erpe_convalibi_init":
                 # Convit heads
                 self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([0.5 for i in range(self.convit_heads)], device=self.device)
+                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                if self.causal_mask:
+                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
+                else:
+                    self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
                 convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = 2 ** log_slopes
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
@@ -336,23 +358,82 @@ class ClimaX(nn.Module):
 
                 # Combine
                 bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
-                # bias_table_init = torch.clamp(bias_table_init, min=-5)
 
                 # Duplicate for each layer
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
 
+            elif relative_pos_encoding == "erpe_convalibi_init_clamped":
+                # Same as above, except we set extremely low values to -5
+                # Convit heads
+                self.convit_heads = num_heads // 2
+                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
+                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
+                if self.causal_mask:
+                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
+                else:
+                    self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
+                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
+
+                # Alibi heads
+                self.alibi_heads = num_heads // 2
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
+                self.alibi_slopes = 2 ** log_slopes
+                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
+                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
+                alibi_biases = -1.0 * self.alibi_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
+
+                # Combine
+                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
+                bias_table_init = torch.clamp(bias_table_init, min=-10)
+
+                # Duplicate for each layer
+                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
+
+            elif relative_pos_encoding == "erpe_convalibi_init_dilated":
+                # Convit heads
+                self.convit_heads = num_heads // 2
+                DILATIONS = torch.tensor([2**i for i in range(num_layers)], device=self.device)[:, None, None]  # [L, 1 (T), 1 (H)]
+                self.convit_slopes = torch.ones((1, 1, self.convit_heads), device=self.device) * self.convit_slope  # [1 (L), 1 (T), H]
+                self.convit_intercepts = torch.zeros((1, 1, self.convit_heads), device=self.device)  # [1 (L), 1 (T), H]
+                if self.causal_mask:
+                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)[None, None, ...]  # [1 (L), 1 (T), H]
+                else:
+                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads//2)] +
+                                                       [i+1 for i in range(self.convit_heads//2)], device=self.device)[None, None, ...]
+                self.convit_offsets = self.convit_offsets * DILATIONS
+                self.convit_slopes = self.convit_slopes / DILATIONS
+                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(-self.seq_len+1, self.seq_len, device=self.device)[None, :, None] - self.convit_offsets) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
+
+                # Alibi heads
+                self.alibi_heads = num_heads // 2
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)[None, None, :]  # [1 (L), 1(T), H]
+                self.alibi_slopes = 2 ** log_slopes
+                self.alibi_slopes = self.alibi_slopes / DILATIONS
+                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)[None, None, :]  # [1 (L), 1 (T), H]
+                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)[None, None, :]  # [1 (L), 1 (T), H]
+                alibi_biases = -1.0 * self.alibi_slopes * torch.abs(torch.arange(-self.seq_len+1, self.seq_len, device=self.device)[None, :, None] - self.alibi_offsets) + self.alibi_intercepts  # Distance to "zero", [1, 2T-1, H]
+
+                # Combine
+                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=2)  # [L, 2T-1, H]
+                bias_table_init = torch.clamp(bias_table_init, min=-100)
+
+
             elif relative_pos_encoding == "erpe_convalibi_init_quadratic":
                 # Convit heads
                 self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
+                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                if self.causal_mask:
+                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
+                else:
+                    self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
                 convit_biases = -1.0 * self.convit_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(0, -np.log2(seq_len/8), steps=self.alibi_heads, device=self.device)
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = (2 ** log_slopes) ** 2
                 print("Alibi slopes quadratic", self.alibi_slopes)
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
@@ -361,7 +442,6 @@ class ClimaX(nn.Module):
 
                 # Combine
                 bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
-                # bias_table_init = torch.clamp(bias_table_init, min=-5)
 
                 # Duplicate for each layer
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
@@ -369,16 +449,19 @@ class ClimaX(nn.Module):
             elif relative_pos_encoding == "erpe_convalibi_init_quadratic_clamped":
                 # Convit heads
                 self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
+                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
+                if self.causal_mask:
+                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
+                else:
+                    self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
                 convit_biases = -1.0 * self.convit_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(0, -np.log2(seq_len/8), steps=self.alibi_heads, device=self.device)
-                self.alibi_slopes = (2 ** log_slopes) ** 2
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
+                self.alibi_slopes = (2 ** log_slopes)
                 print("Alibi slopes quadratic", self.alibi_slopes)
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
@@ -390,30 +473,7 @@ class ClimaX(nn.Module):
 
                 # Duplicate for each layer
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
-            elif relative_pos_encoding == "erpe_convalibi_init_clamped":
-                # Same as above, except we set extremely low values to -5
-                # Convit heads
-                self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([0.25 for i in range(self.convit_heads)], device=self.device)
-                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-                self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
-                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
 
-                # Alibi heads
-                self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)
-                self.alibi_slopes = 2 ** log_slopes
-                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
-                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
-                alibi_biases = -1.0 * self.alibi_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
-
-                # Combine
-                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
-                bias_table_init = torch.clamp(bias_table_init, min=-5)
-
-                # Duplicate for each layer
-                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
 
             # Define a parameter table of relative position bias
             self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (T-1) to -(T-1), inclusive. Shape: [L, 2T-1, H]
@@ -648,8 +708,6 @@ class ClimaX(nn.Module):
 
             # Divide biases by "temp", and clamp out extreme values
             biases = self.relative_bias_table / self.relpos_temp  # # self.relpos_temp has shape [L, 1, H] so broadcasting works
-            if biases.min() < -1000 or biases.max() > 1000:
-                print("Extreme values of biases", biases)
             biases = torch.clamp(biases, min=-1000, max=1000)  # Prevent values from getting too extreme
             
             flattened_indices = self.relative_coords.flatten()  # [T*T]
@@ -1025,6 +1083,7 @@ class ClimaX(nn.Module):
         This can be seen as an Earth-Mover distance from the one-hot distribution
         (1 for my own timestep, 0 otherwise)
         """
+        assert "erpe" in self.relative_pos_encoding, "locality_loss_erpe only applies for ERPE relative positional encoding"
         penalties = (torch.arange(-self.seq_len+1, self.seq_len, device=self.device).abs() / self.seq_len) ** 2
 
         ## Relative bias table should have shape  [L, 2T-1, H]
@@ -1046,6 +1105,19 @@ class ClimaX(nn.Module):
         return (self.attn_matrices * penalty_matrix).sum(dim=-1).mean()
 
 
+    def focus_loss(self):
+        """
+        For ERPE-based methods, try to make each head focus on a narrow timerange, as defined by the 'standard deviation' of the distribution
+        """
+        assert "erpe" in self.relative_pos_encoding, "focus_loss only applies for ERPE relative positional encoding"
+        timesteps = torch.arange(-self.seq_len+1, self.seq_len, device=self.device)[None, :, None] / self.seq_len  # [1, 2T-1, 1]
+        probs = F.softmax(self.relative_bias_table, dim=1)  # [L, 2T-1, H]
+        # self.relative_bias_table is [L, 2T-1, H]
+        head_means = (probs * timesteps).sum(dim=1, keepdims=True)  # [L, 1, H]. Sum is fine since probs already sums to 1, so probs*timesteps is a weighted average (over time dimension).
+        head_stds = (probs * ((timesteps - head_means) ** 2)).sum(dim=1).sqrt()  # [L, H]
+        return head_stds.mean()
+
+
     def attn_smoothness_loss(self):
         """
         Smoothness on attention matrices (excluding pooling attention)
@@ -1063,6 +1135,25 @@ class ClimaX(nn.Module):
         attn_weights_pool = self.pooling_attn  # [B, H, T]
         pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]).abs()).sum(dim=2).mean()
         return pool_smoothness_loss
+
+
+    def erpe_linear_loss(self):
+        """
+        Loss that encourages (pre-softmax) ERPE relative positional encodings to be near-linear.
+        """
+        if "erpe" in self.relative_pos_encoding:
+            # self.relative_bias_table has shape [L, 2*T-1, H]
+            # |(x2 - x1) - (x1 - x0)| = |x2 - 2*x1 + x0|
+            second_diffs = (self.relative_bias_table[:, 2:, :] - 2 * self.relative_bias_table[:, 1:-1, :] + self.relative_bias_table[:, :-2, :]).abs()
+
+            # Attempt to mask out the top k timesteps (dim=1) per layer/head
+            top_k = torch.topk(second_diffs, k=3, dim=1)
+            mask = torch.zeros_like(second_diffs)
+            mask.scatter_(dim=1, index=top_k.indices, value=1)  # Place 1 at top-k indices
+            second_diffs[mask.bool()] = 0.0  # Set top-k indices to 0
+            return second_diffs.mean()  # sum(dim=1).mean()
+        else:
+            raise ValueError("posenc linear loss only works for erpe relative pos encodings")
 
 
     def posenc_smoothness_loss(self, logger):

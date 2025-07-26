@@ -176,6 +176,9 @@ class Options(object):
         self.parser.add_argument('--lambda_posenc_smoothness', type=float, default=0,
                                  help="""Regularizing weight for loss for POS ENC smoothing.""")
         self.parser.add_argument('--lambda_locality', type=float, default=0, help="Weight for locality loss.")
+        self.parser.add_argument('--lambda_erpe_linear', type=float, default=0, help="Weight for ERPE linear loss.")
+        self.parser.add_argument('--lambda_focus', type=float, default=0, help="Weight for focus loss.")
+
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
                                  If not provided, then the value defined inside the data class will be used.""")
@@ -202,12 +205,18 @@ class Options(object):
                                                                              "pooling_before_softmax", "pooling_gating"], default="start_add",
                                  help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
-                                                                     'erpe_alibi_init', 'erpe_convit_init', 'erpe_convalibi_init', 'erpe_convalibi_init_quadratic', 
+                                                                     'erpe_alibi_init', 'erpe_alibi_init_fixedslopes',
+                                                                     'erpe_convit_init', 'erpe_convalibi_init', 'erpe_convalibi_init_dilated',
+                                                                     'erpe_convalibi_init_quadratic', 
                                                                      'erpe_convalibi_init_quadratic_clamped', 'erpe_convalibi_init_clamped',
                                                                      'convit', 'convit_half', 'rope', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
         self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating", "only_relpos"], default="before",
                                  help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
+        self.parser.add_argument('--convit_slope', type=float, default=1.0, help="Slope for Convit relative positional encoding. Higher means more focused (narrower receptive field).")
+        self.parser.add_argument('--alibi_max_slope', type=float, default=4.0, help="Steepest slope for Alibi (FIRST LAYER). Higher means more focused (narrower receptive field).")
+        self.parser.add_argument('--alibi_min_slope', type=float, default=0.25, help="Shallowest slope for Alibi (FIRST LAYER). Higher means more focused (narrower receptive field). TODO: Not sure if this should depend on the data.")
+
         self.parser.add_argument('--conv_projection', action='store_true',
                                  help="""If true, use conv instead of linear for Q/K/V""")
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',

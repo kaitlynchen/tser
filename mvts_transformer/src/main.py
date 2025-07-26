@@ -18,7 +18,8 @@ from options import Options
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 import torch
-from tqdm import tqdm
+# from tqdm import tqdm
+from tqdm.auto import tqdm  # https://stackoverflow.com/questions/63908917/progress-bar-using-tqdm-prints-in-a-new-line-everytime-the-update-is-called-on
 import json
 import pickle
 import time
@@ -466,6 +467,8 @@ def main(config):
     train_losses_pool_smoothness = []
     train_losses_posenc = []
     train_losses_locality = []
+    train_losses_erpe_linear = []
+    train_losses_focus = []
     val_epochs = []
     val_losses = []
     all_val_preds = []
@@ -478,17 +481,19 @@ def main(config):
     best_val_predictions = None
     best_val_targets = None
 
-    for epoch in tqdm(range(start_epoch + 1, config["epochs"] + 1), desc="Training Epoch", leave=False):
+    for epoch in tqdm(range(start_epoch + 1, config["epochs"] + 1), desc="Training Epoch", position=0, leave=True):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, pool_smoothness_loss, posenc_loss, locality_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, need_attn_weights=need_attn_weights)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, pool_smoothness_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, need_attn_weights=need_attn_weights)
         train_epochs.append(epoch)
         train_losses_sup.append(supervised_loss)
         train_losses_smoothness.append(supervised_smoothness_loss)
         train_losses_pool_smoothness.append(pool_smoothness_loss)
         train_losses_posenc.append(posenc_loss)
         train_losses_locality.append(locality_loss)
+        train_losses_erpe_linear.append(erpe_linear_loss)
+        train_losses_focus.append(focus_loss)
 
         if config["baseline"] is not None:
             # early prediction
@@ -614,6 +619,7 @@ def main(config):
         if config["harden"] and check_progress(epoch):
             train_loader.dataset.update()
             val_loader.dataset.update()
+        tqdm._instances.clear()  # https://stackoverflow.com/questions/41707229/why-is-tqdm-printing-to-a-newline-instead-of-updating-the-same-line/57072638#57072638
 
     # Scatterplot on validation set
     if best_val_predictions is None:
@@ -671,6 +677,10 @@ def main(config):
             plt.plot(train_epochs[1:], train_losses_posenc[1:], label="Pos enc smoothness loss")
         if config["lambda_locality"] > 0:
             plt.plot(train_epochs[1:], train_losses_locality[1:], label="Locality loss")
+        if config["lambda_erpe_linear"] > 0:
+            plt.plot(train_epochs[1:], train_losses_erpe_linear[1:], label="ERPE linear loss")
+        if config["lambda_focus"] > 0:
+            plt.plot(train_epochs[1:], train_losses_focus[1:], label="Focus loss")
         plt.plot(val_epochs[1:], val_losses[1:], label="Val loss (MSE)")
         plt.ylabel("Loss")
         plt.xlabel("Epoch")
@@ -710,7 +720,7 @@ def main(config):
         best_metrics,
         aggr_metrics_val,
         aggr_metrics_test,
-        comment=config["comment"] + ".  COMMMAND: " + " ".join(sys.argv),
+        comment=" ".join(sys.argv),
     )
 
     logger.info(

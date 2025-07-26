@@ -551,7 +551,7 @@ class SupervisedRunner(BaseRunner):
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss = 0, 0, 0, 0, 0
+        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss = 0, 0, 0, 0, 0, 0, 0
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
@@ -561,11 +561,12 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed. Currently None so we don't plot for training batches (only validation)
-            plot_dir = None
-            # if i == 0 and epoch_num % 100 == 0:
+            # if i == 0 and epoch_num % 200 == 0:
             #     plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
             #     os.makedirs(plot_dir, exist_ok=True)
             # else:
+            #     plot_dir = None
+            plot_dir = None
 
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
@@ -641,6 +642,16 @@ class SupervisedRunner(BaseRunner):
                 locality_loss += config["lambda_locality"] * locality_loss_batch.item() * len(loss)  # put in same scale as batch_loss
                 total_loss += config["lambda_locality"] * locality_loss_batch 
 
+            if config["lambda_erpe_linear"] > 0:
+                erpe_linear_loss_batch = self.model.erpe_linear_loss()
+                erpe_linear_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch.item() * len(loss)
+                total_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch
+
+            if config["lambda_focus"] > 0:
+                focus_loss_batch = self.model.focus_loss()
+                focus_loss += config["lambda_focus"] * focus_loss_batch.item() * len(loss)
+                total_loss += config["lambda_focus"] * focus_loss_batch
+
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
             total_loss.backward()
@@ -663,12 +674,14 @@ class SupervisedRunner(BaseRunner):
         supervised_loss = supervised_loss / total_samples
         posenc_loss = posenc_loss / total_samples
         locality_loss = locality_loss / total_samples
+        erpe_linear_loss = erpe_linear_loss / total_samples
+        focus_loss = focus_loss / total_samples
 
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss
 
         return self.epoch_metrics
 
@@ -694,7 +707,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:
+            if i == 0 and epoch_num % 200 == 0 and config is not None:
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:
