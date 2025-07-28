@@ -28,7 +28,7 @@ conda activate tser
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="BenzeneConcentration"
+DATA="AppliancesEnergy"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -36,9 +36,12 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
 else
     BS=128
 fi
-if [ "$DATA" = "IEEEPPG" ] || [ "$DATA" = "LiveFuelMoistureContent" ]; then
-    PATCH=16
-    STRIDE=8
+if [ "$DATA" = "IEEEPPG" ]; then
+    PATCH=8
+    STRIDE=4
+elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
+    PATCH=4
+    STRIDE=4
 else
     PATCH=1
     STRIDE=1
@@ -46,9 +49,9 @@ fi
 
 
 # DILATED CONVALIBI INIT. TUNING
-OUTPUT_FILE="${DATA}_CONVALIBI9_CAUSAL"
+OUTPUT_FILE="${DATA}_CONVALIBI9_CAUSAL_DEBUGGING"
 
-for LR in 1e-2 1e-3
+for LR in 1e-2 1e-3 1e-4
 do
     for CONVIT_SLOPE in 1
     do
@@ -56,7 +59,7 @@ do
         do
             for LAM in 0
             do
-                for LAM2 in 1e-3 1e-1
+                for LAM2 in 0
                 do
                     for SEED in 0
                     do

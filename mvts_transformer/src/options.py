@@ -178,6 +178,7 @@ class Options(object):
         self.parser.add_argument('--lambda_locality', type=float, default=0, help="Weight for locality loss.")
         self.parser.add_argument('--lambda_erpe_linear', type=float, default=0, help="Weight for ERPE linear loss.")
         self.parser.add_argument('--lambda_focus', type=float, default=0, help="Weight for focus loss.")
+        self.parser.add_argument('--lambda_jacobian', type=float, default=0, help="Weight for Jacobian reg loss.")
 
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.

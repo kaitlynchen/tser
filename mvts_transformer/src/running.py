@@ -551,7 +551,7 @@ class SupervisedRunner(BaseRunner):
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss = 0, 0, 0, 0, 0, 0, 0
+        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss = 0, 0, 0, 0, 0, 0, 0, 0
         all_predictions, all_targets = [], []
 
         for i, batch in enumerate(self.dataloader):
@@ -652,6 +652,13 @@ class SupervisedRunner(BaseRunner):
                 focus_loss += config["lambda_focus"] * focus_loss_batch.item() * len(loss)
                 total_loss += config["lambda_focus"] * focus_loss_batch
 
+            # Jacobian loss
+            if config["lambda_jacobian"] > 0:
+                jacobian_loss_batch = self.model.jacobian_loss(X.to(self.device))
+                jacobian_loss += config["lambda_jacobian"] * jacobian_loss_batch.item() * len(loss)
+                total_loss += config["lambda_jacobian"] * jacobian_loss_batch
+                
+
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
             total_loss.backward()
@@ -676,12 +683,13 @@ class SupervisedRunner(BaseRunner):
         locality_loss = locality_loss / total_samples
         erpe_linear_loss = erpe_linear_loss / total_samples
         focus_loss = focus_loss / total_samples
+        jacobian_loss = jacobian_loss / total_samples
 
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss
 
         return self.epoch_metrics
 

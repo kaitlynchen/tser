@@ -200,14 +200,10 @@ def main(config):
     if config["val_ratio"] > 0:
         if config["val_temporal_split"]:
             my_data.time_df["example_idx"] = my_data.time_df.index
-            start_times = my_data.time_df.groupby('example_idx').first()
-            print("Start times", start_times)
+            start_times = my_data.time_df.groupby('example_idx').first()  # Start time of each example
             threshold = np.quantile(start_times["time_int"], 1 - config['val_ratio'])
-            print("THRESH", threshold)
             train_indices = start_times[start_times["time_int"] < threshold].index  # example_idx became index after groupby
             val_indices = start_times[start_times["time_int"] >= threshold].index
-            print("TRAIN", len(train_indices), train_indices)
-            print("VAL", len(val_indices), val_indices)
         else:
             train_indices, val_indices = split_dataset(
                 data_indices=my_data.all_IDs,
@@ -469,6 +465,7 @@ def main(config):
     train_losses_locality = []
     train_losses_erpe_linear = []
     train_losses_focus = []
+    train_losses_jacobian = []
     val_epochs = []
     val_losses = []
     all_val_preds = []
@@ -485,7 +482,7 @@ def main(config):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, pool_smoothness_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, need_attn_weights=need_attn_weights)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, pool_smoothness_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, need_attn_weights=need_attn_weights)
         train_epochs.append(epoch)
         train_losses_sup.append(supervised_loss)
         train_losses_smoothness.append(supervised_smoothness_loss)
@@ -494,6 +491,7 @@ def main(config):
         train_losses_locality.append(locality_loss)
         train_losses_erpe_linear.append(erpe_linear_loss)
         train_losses_focus.append(focus_loss)
+        train_losses_jacobian.append(jacobian_loss)
 
         if config["baseline"] is not None:
             # early prediction
@@ -681,6 +679,8 @@ def main(config):
             plt.plot(train_epochs[1:], train_losses_erpe_linear[1:], label="ERPE linear loss")
         if config["lambda_focus"] > 0:
             plt.plot(train_epochs[1:], train_losses_focus[1:], label="Focus loss")
+        if config["lambda_jacobian"] > 0:
+            plt.plot(train_epochs[1:], train_losses_jacobian[1:], label="Jacobian loss")
         plt.plot(val_epochs[1:], val_losses[1:], label="Val loss (MSE)")
         plt.ylabel("Loss")
         plt.xlabel("Epoch")

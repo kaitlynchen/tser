@@ -28,7 +28,7 @@ conda activate tser
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="BenzeneConcentration"
+DATA="LiveFuelMoistureContent"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -36,9 +36,12 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
 else
     BS=128
 fi
-if [ "$DATA" = "IEEEPPG" ] || [ "$DATA" = "LiveFuelMoistureContent" ]; then
-    PATCH=16
-    STRIDE=8
+if [ "$DATA" = "IEEEPPG" ]; then
+    PATCH=8
+    STRIDE=4
+elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
+    PATCH=4
+    STRIDE=4
 else
     PATCH=1
     STRIDE=1
@@ -48,13 +51,13 @@ fi
 # ERPE UNIFORM INIT but with focus loss, encouraging the heads to focus somewhere
 OUTPUT_FILE="${DATA}_ERPEFOCUS"
 
-for LR in 1e-3
+for LR in 1e-3 1e-2
 do
     for HEADS in 8
     do
         for LAM in 0
         do
-            for LAM2 in 0 1e-3 1e-2 1e-1 1
+            for LAM2 in 0 1e-2 1
             do
                 for SEED in 0
                 do
@@ -71,7 +74,7 @@ do
                         --plot_loss --plot_accuracy \
                         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                         --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                        --relative_pos_encoding erpe_uniform_init --where_to_add_relpos only_relpos  \
+                        --relative_pos_encoding erpe_zero_init --where_to_add_relpos only_relpos  \
                         --pool seqpool_multihead --reg_lambda_pool $LAM --lambda_focus $LAM2
                 done
             done

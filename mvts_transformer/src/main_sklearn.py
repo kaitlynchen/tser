@@ -138,7 +138,7 @@ def main(config):
 
     if config["val_pattern"]:  # used if val data come from different files / file patterns
         raise ValueError("""Validation set not supported for sklearn models; we use cross-validation within the train set for hyperparameter selection.
-                        Please do not set --val_pattern or --val_ratio. Instead, set --test_pattern TEST""")
+                        Please do not set --val_pattern or --val_ratio. Instead, set --test_pattern TEST --val_ratio 0""")
         val_data = data_class(config["data_dir"], pattern=config["val_pattern"], n_proc=-1, config=config)
         if config["baseline"] == 2 and config["proportion"]:
             trimmed_val_data = None
@@ -174,7 +174,7 @@ def main(config):
     # Using a `val_pattern` means that `val_ratio` == 0 and `test_ratio` == 0
     if config["val_ratio"] > 0:
         raise ValueError("""Validation set not supported for sklearn models; we use cross-validation within the train set for hyperparameter selection.
-                        Please do not set --val_pattern or --val_ratio. Instead, set --test_pattern TEST""")
+                        Please do not set --val_pattern or --val_ratio. Instead, set --test_pattern TEST --val_ratio 0""")
         train_indices, val_indices = split_dataset(
             data_indices=my_data.all_IDs,
             validation_method=validation_method,
@@ -316,7 +316,8 @@ def main(config):
                                          os.path.join(config['plot_dir'], f"{config['model']}_example_x0.png"))
 
     # For linear models, plot coefficients
-    if model in ["ridge", "lasso", "linear"]:
+    if args.model in ["ridge", "lasso", "linear"]:
+        print("plot coefs")
         coefs = regressor.best_estimator_.coef_.reshape((my_data.max_seq_len, my_data.feature_df.shape[1]))
         visualization_utils.plot_time_series(coefs, os.path.join(config['plot_dir'], f"{config['model']}_coefs.png"))
 

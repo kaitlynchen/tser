@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Usage on Slurm:
-# sbatch repro_scripts/run_erpe_convalibi_init.sh
+# sbatch repro_scripts/convalibi_dilated.sh AppliancesEnergy
 # Output will appear in a file 'slurm-N.out' where N is the job ID.
 # Change dataset in DATA below.
 
@@ -28,7 +28,7 @@ conda activate tser
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="BenzeneConcentration"
+DATA="AppliancesEnergy"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -36,9 +36,12 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
 else
     BS=128
 fi
-if [ "$DATA" = "IEEEPPG" ] || [ "$DATA" = "LiveFuelMoistureContent" ]; then
-    PATCH=16
-    STRIDE=8
+if [ "$DATA" = "IEEEPPG" ]; then
+    PATCH=8
+    STRIDE=4
+elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
+    PATCH=4
+    STRIDE=4
 else
     PATCH=1
     STRIDE=1
@@ -46,22 +49,22 @@ fi
 
 
 # DILATED CONVALIBI INIT. TUNING
-OUTPUT_FILE="${DATA}_CONVALIBI9_DILATED"
+OUTPUT_FILE="${DATA}_CONVALIBI10_SLOPE05"
 
 for LR in 1e-2 1e-3
 do
-    for CONVIT_SLOPE in 1
+    for CONVIT_SLOPE in 0.5
     do
-        for HEADS in 8
+        for HEADS in 16
         do
-            for LAM in 0
+            for LAM in 1e-2
             do
-                for LAM2 in 0 1e-2
+                for LAM2 in 0 1e-4 1e-3
                 do
                     for SEED in 0
                     do
                         # BASIC
-                        PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_ERPELINEAR=${LAM2}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+                        PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_L1=${LAM2}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
                         python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
                             --records_file "output/${OUTPUT_FILE}.xls" \
                             --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
@@ -73,8 +76,8 @@ do
                             --plot_loss --plot_accuracy \
                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                             --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                            --relative_pos_encoding erpe_convalibi_init_dilated --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-                            --pool seqpool_multihead --reg_lambda_pool $LAM --lambda_erpe_linear $LAM2
+                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+                            --pool seqpool_multihead --reg_lambda_pool $LAM --reg_lambda $LAM --l1_reg $LAM2
                     done
                 done
             done

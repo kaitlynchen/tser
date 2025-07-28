@@ -34,6 +34,7 @@ from functools import lru_cache
 from timm.models.vision_transformer import Block, PatchEmbed, trunc_normal_
 import matplotlib.pyplot as plt
 import os
+import warnings
 
 torch.cuda.empty_cache()
 
@@ -243,22 +244,22 @@ class ClimaX(nn.Module):
         # Initialize pooling
         self.setup_pooling(embed_dim, num_heads, seq_len, num_classes)
 
-        # Local mask. Restrict which pairs of timesteps can pay attention to each other
+        # MASKS: Create a mask that is 0 at valid entries, -inf at invalid entries. Shape is [T, T].
+        # This will be ADDED to the relative position bias mask.
+        self.invalid_mask = torch.zeros((seq_len, seq_len), device=self.device)
         if self.local_mask >= 0:
-            # Note that if relative positional encoding is being used, this is redundant with "relative_coords"
+            # Local mask. Restrict which pairs of timesteps can pay attention to each other
             indices = torch.arange(0, seq_len, device=device)  # [T]
             distance_matrix = torch.abs(indices.reshape((1, -1)) - indices.reshape((-1, 1)))  # [T, T]
-            self.invalid_mask = torch.zeros((len(indices), len(indices)), device=self.device).bool()  # [T, T]
-            self.invalid_mask[distance_matrix > self.local_mask] = True
-        else:
-            self.invalid_mask = None
-        
+            self.invalid_mask[distance_matrix > self.local_mask] = float("-inf")
+
         if self.causal_mask:
             causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq_len).to(device)  # 0 for valid, -inf for invalid (future)
-            if self.invalid_mask is None:
-                self.invalid_mask = (causal_mask != 0)
-            else:
-                self.invalid_mask = self.invalid_mask & (causal_mask != 0)
+            self.invalid_mask += causal_mask
+            # if self.invalid_mask is None:
+            #     self.invalid_mask = (causal_mask != 0)
+            # else:
+            #     self.invalid_mask = self.invalid_mask & (causal_mask != 0)
 
 
     def setup_relative_posenc(self, relative_pos_encoding, seq_len, num_layers, num_heads):
@@ -342,7 +343,7 @@ class ClimaX(nn.Module):
                 self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
                 if self.causal_mask:
-                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
+                    self.convit_offsets = torch.tensor([i+1 for i in range(self.convit_heads)], device=self.device)
                 else:
                     self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
@@ -369,7 +370,7 @@ class ClimaX(nn.Module):
                 self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
                 if self.causal_mask:
-                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
+                    self.convit_offsets = torch.tensor([i+1 for i in range(self.convit_heads)], device=self.device)
                 else:
                     self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
@@ -397,13 +398,13 @@ class ClimaX(nn.Module):
                 self.convit_slopes = torch.ones((1, 1, self.convit_heads), device=self.device) * self.convit_slope  # [1 (L), 1 (T), H]
                 self.convit_intercepts = torch.zeros((1, 1, self.convit_heads), device=self.device)  # [1 (L), 1 (T), H]
                 if self.causal_mask:
-                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)[None, None, ...]  # [1 (L), 1 (T), H]
+                    self.convit_offsets = torch.tensor([i+1 for i in range(self.convit_heads)], device=self.device)[None, None, ...]  # [1 (L), 1 (T), H]
                 else:
                     self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads//2)] +
                                                        [i+1 for i in range(self.convit_heads//2)], device=self.device)[None, None, ...]
                 self.convit_offsets = self.convit_offsets * DILATIONS
                 self.convit_slopes = self.convit_slopes / DILATIONS
-                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(-self.seq_len+1, self.seq_len, device=self.device)[None, :, None] - self.convit_offsets) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
+                convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(-self.seq_len+1, self.seq_len, device=self.device)[None, :, None] - self.convit_offsets) + self.convit_intercepts  # Distance to "focus pixel", [L, 2T-1, H]
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
@@ -485,6 +486,7 @@ class ClimaX(nn.Module):
             coords_t = torch.arange(seq_len, device=self.device)
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [T, T]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0. Each entry (i, j) contains (i - j) + T - 1
+            print("RELATIVE COORDS", relative_coords[0:10, 0:10])
             self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "convit":
@@ -684,9 +686,11 @@ class ClimaX(nn.Module):
             x = self.embed_layer(x)  # [B, D (embed_dim), T (num_patches)]
             x = rearrange(x, "b d t -> b t d")  # [B, T, D]
         else:
-            x = rearrange(x, "b t_orig v -> b v t_orig")
-            x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
-            x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
+            if self.patch_size != 1 or self.stride != 1:
+                # Patching
+                x = rearrange(x, "b t_orig v -> b v t_orig")
+                x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
+                x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
             x = self.embed_layer(x)  # [B, T, D]
 
         # Add ABSOLUTE pos embedding if using.
@@ -718,7 +722,7 @@ class ClimaX(nn.Module):
         elif self.relative_pos_encoding == "convit":
             # Set up bias table
             # Construct a tensor of all offsets, ranging from [-T+1, T-1]. Unsqueeze to shape [2T-1, 1, 1]
-            rel_offsets = torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1).unsqueeze(2) - (self.seq_len - 1)
+            rel_offsets = torch.arange(-self.seq_len+1, self.seq_len, device=self.device).unsqueeze(1).unsqueeze(2)
 
             # convit_slopes, convit_offsets, convit_intercepts have shape [L, H].
             # When we subtract from rel_offsets, the result will have shape [2T-1, L, H]
@@ -753,18 +757,21 @@ class ClimaX(nn.Module):
             # self.alibi: [H, T, T]
             offset_mask = self.alibi.repeat((self.num_layers, x.shape[0], 1, 1))  # Repeat along the layer and batch dimension: TransformerEncoder expects mask to be [L, B*H, T, T]
 
-        # If some positions are not allowed to attend, either use the Boolean mask, or if combining with
-        # relative position encoding, set those mask entries to -inf
+        # If some positions are not allowed to attend, set those mask entries to -inf
         if self.invalid_mask is not None:
             if offset_mask is None:
-                # If there is no relative position offset mask, create one from the
-                # invalid mask with shape [L,  B*H, T, T]. At each layer, the mask is True
-                # at positions that are NOT ALLOWED to attend (too far).
-                offset_mask = self.invalid_mask.repeat(self.num_layers, x.shape[0]*self.num_heads, 1, 1)
-            else:
-                # Note: invalid_mask has shape [T, T], but offset_mask computed from
-                # relative dimension is of shape [L, B*H, T, T]
-                offset_mask[:, :, self.invalid_mask] = float("-inf")
+                offset_mask = torch.zeros((self.num_layers, x.shape[0]*self.num_heads, self.seq_len, self.seq_len), device=self.device)
+            offset_mask += self.invalid_mask  # offset_mask is [L, B*H, T, T]. invalid_mask is shape [T, T], which adds -inf if the position is invalid, zero otherwise.
+
+            #     # If there is no relative position offset mask, create one from the
+            #     # invalid mask with shape [L, B*H, T, T]. At each layer, the mask is True
+            #     # at positions that are NOT ALLOWED to attend (too far).
+            #     offset_mask = torch.zeros((self.num_layers, x.shape[0]*self.num_heads, self.seq_len, self.seq_len))
+            #     offset_mask[:, :, self.invalid_mask] = float("-inf")
+            # else:
+            #     # Note: invalid_mask has shape [T, T], but offset_mask computed from
+            #     # relative dimension is of shape [L, B*H, T, T]
+            #     offset_mask[:, :, self.invalid_mask] = float("-inf")
 
         # Pass through encoder
         x, attn_weights, embeddings_layers = self.transformer_encoder(x, masks=offset_mask, plot_dir=plot_dir)  # x: [B, T, D]. attn_weights: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
@@ -1178,6 +1185,29 @@ class ClimaX(nn.Module):
         return smoothness_loss
 
 
+    def predict_summed(self, func, input):
+        return func(input)[0].sum()
+
+    def jacobian_loss(self, input):
+        """
+        input should be [B, T, V]
+
+        Computes gradient of the model output w.r.t. inputs. Penalizes the L2 norm per example.
+        """
+        was_training = self.training
+        self.eval()
+        X_min = input.min(dim=0, keepdim=True).values
+        X_max = input.max(dim=0, keepdim=True).values
+        random_vals = torch.rand_like(input, device=input.device) * (X_max - X_min) + X_min
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning) 
+            jacobian = torch.func.jacrev(self.predict_summed, argnums=1)(self.forward, random_vals)  # [B, T, V]
+        jacobian = rearrange(jacobian, "b t v -> b (t v)")
+        jacobian_loss = torch.linalg.norm(jacobian, dim=1).mean()
+        self.train(was_training)
+        return jacobian_loss
+
+
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -1371,8 +1401,9 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             src_mask: the mask for the src sequence (optional). Shape: [B*H, T, T]
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
-        Shape:
-            see the docs in Transformer class.
+        Output:
+            src: [B, T, D]
+            attn_output_weights: [B, H, T, T]
         """
         if type(self.self_attn) == Attention_Rel_Scl:
             # Attention_Rel_Scl allows plot_dir
@@ -1399,7 +1430,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 # ========================================================================================
 # Code from ConvTran: https://github.com/Navidfoumani/ConvTran/blob/main/Models/Attention.py
 # except that the relative bias table isn't stored here, we pass it as a mask instead.
-# Note that the attention bias is added after softmax, and we further use a gating param to weight them.
+# We try various approaches to combine positional and content attention.
 # ========================================================================================
 class Attention_Rel_Scl(nn.Module):
     def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos, **kwargs):
