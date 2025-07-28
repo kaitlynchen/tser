@@ -157,7 +157,7 @@ class Options(object):
 
         # Model
         self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "climax_smooth_plot", "climax_max_pool", "climax_seqpool",
-                                                     "ridge", "lasso", "random_forest", "xgboost", "local_cnn", "local_cnn2"}, default="transformer",
+                                                     "ridge", "lasso", "random_forest", "xgboost", "local_cnn"}, default="transformer",  # "local_cnn2"
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -240,8 +240,8 @@ class Options(object):
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep', 'lstm'], default='hierarchical',
                                  help='Type of CNN')
-        self.parser.add_argument('--local_cnn2_batch_norm', action='store_true', help='Set to use batchnorm in LocalCNN2.')
-        self.parser.add_argument('--local_cnn2_spectral_norm', action='store_true', help='Set to use spectral norm in LocalCNN2.')
+        # self.parser.add_argument('--local_cnn2_batch_norm', action='store_true', help='Set to use batchnorm in LocalCNN2.')
+        # self.parser.add_argument('--local_cnn2_spectral_norm', action='store_true', help='Set to use spectral norm in LocalCNN2.')
 
         # C-Mixup specific
         self.parser.add_argument('--mixtype', type=str, default='random',
