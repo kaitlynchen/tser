@@ -28,7 +28,7 @@ conda activate tser
 
 # Dataset
 # AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="AppliancesEnergy"
+DATA="BenzeneConcentration"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -49,15 +49,15 @@ fi
 
 
 # DILATED CONVALIBI INIT. TUNING
-OUTPUT_FILE="${DATA}_CONVALIBI9_CAUSAL_DEBUGGING"
+OUTPUT_FILE="${DATA}_CONVALIBI11_CAUSAL"
 
-for LR in 1e-2 1e-3 1e-4
+for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 1
+    for CONVIT_SLOPE in 0.25 1
     do
         for HEADS in 8
         do
-            for LAM in 0
+            for LAM in 0 1e-2
             do
                 for LAM2 in 0
                 do
@@ -76,8 +76,8 @@ do
                             --plot_loss --plot_accuracy \
                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                             --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                            --relative_pos_encoding erpe_convalibi_init_dilated --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-                            --pool seqpool_multihead --reg_lambda_pool $LAM --lambda_erpe_linear $LAM2 \
+                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+                            --pool seqpool_multihead --reg_lambda_pool $LAM --reg_lambda $LAM \
                             --causal_mask
                     done
                 done

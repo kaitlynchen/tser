@@ -49,7 +49,7 @@ fi
 
 
 # DILATED CONVALIBI INIT. TUNING
-OUTPUT_FILE="${DATA}_CONVALIBI10_SLOPE05"
+OUTPUT_FILE="${DATA}_CONVALIBI11_DILATED"
 
 for LR in 1e-2 1e-3
 do
@@ -57,9 +57,9 @@ do
     do
         for HEADS in 16
         do
-            for LAM in 1e-2
+            for LAM in 0 1e-2
             do
-                for LAM2 in 0 1e-4 1e-3
+                for LAM2 in 0
                 do
                     for SEED in 0
                     do
@@ -76,8 +76,8 @@ do
                             --plot_loss --plot_accuracy \
                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                             --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-                            --pool seqpool_multihead --reg_lambda_pool $LAM --reg_lambda $LAM --l1_reg $LAM2
+                            --relative_pos_encoding erpe_convalibi_init_dilated --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+                            --pool seqpool_multihead --reg_lambda_pool $LAM --reg_lambda $LAM
                     done
                 done
             done

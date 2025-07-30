@@ -351,7 +351,7 @@ class ClimaX(nn.Module):
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
+                log_slopes = torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)  # torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = 2 ** log_slopes
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
@@ -498,7 +498,7 @@ class ClimaX(nn.Module):
 
             # Convit heads are initialized to focus attention around `convit_offsets`, with peak
             # intensity `convit_intercepts` and decay `convit_slopes`
-            convit_slopes = torch.tensor([0.5 for i in range(self.convit_heads)], device=self.device)
+            convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
             convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
             convit_offsets = torch.tensor([-1 * ((2.0 ** i) - 0.5) for i in range(self.convit_heads//2)] +
                                           [(2.0 ** i) - 0.5 for i in range(self.convit_heads//2)], device=self.device)
@@ -1020,7 +1020,10 @@ class ClimaX(nn.Module):
         elif self.pool == "linear":
             preds = self.act(preds)
             preds = self.dropout1(preds)
+            print("Preds", preds.shape)
+            print("Flattened", nn.Flatten(preds).shape)
             preds = self.fc(preds)  # fc already contains a Flatten
+            print("After fc", preds)
         elif self.pool == "average":
             preds = preds.permute((0, 2, 1))  # Reshape to [B, D, T] to be compatible with AvgPool1d
             preds = self.fc(preds)
