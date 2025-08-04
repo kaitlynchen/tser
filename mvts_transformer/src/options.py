@@ -63,9 +63,10 @@ class Options(object):
                                  help="Set aside this proportion of the dataset as a test set")
         self.parser.add_argument('--val_ratio', type=float, default=0.2,
                                  help="Proportion of the dataset to be used as a validation set")
+        self.parser.add_argument('--val_temporal_split', action='store_true', help="If set, split train/val set temporally.")
         self.parser.add_argument('--pattern', type=str,
                                  help='Regex pattern used to select files contained in `data_dir`. If None, all data will be used.')
-        self.parser.add_argument('--val_pattern', type=str,
+        self.parser.add_argument('--val_pattern', type=str, default=None,
                                  help="""Regex pattern used to select files contained in `data_dir` exclusively for the validation set.
                             If None, a positive `val_ratio` will be used to reserve part of the common data set.""")
         self.parser.add_argument('--test_pattern', type=str, default='TEST',
@@ -130,7 +131,9 @@ class Options(object):
                                  help='learning rate (default holds for batch size 64)')
         self.parser.add_argument('--lr_step', type=str, default='1000000',
                                  help='Comma separated string of epochs when to reduce learning rate by a factor of 10.'
-                                      ' The default is a large value, meaning that the learning rate will not change.')
+                                      ' The default is a large value, meaning that the learning rate will not change.' \
+                                      ' joshuafan: added option to set this to `plateauX` where X is the number of epochs to wait' \
+                                      ' after a new best validation loss, before decreasing learning rate')
         self.parser.add_argument('--lr_factor', type=str, default='0.1',
                                  help=("Comma separated string of multiplicative factors to be applied to lr "
                                        "at corresponding steps specified in `lr_step`. If a single value is provided, "
@@ -153,7 +156,8 @@ class Options(object):
                                  help='If set, plots a scatterplot of loss and loss with attention smoothness during supervised training')
 
         # Model
-        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "convit", "convit_smooth", "convit_2", "ridge", "lasso", "local_cnn"}, default="transformer",
+        self.parser.add_argument('--model', choices={"swin", "transformer", "LINEAR", "swin_pool", "smooth", "patch", "climax_smooth", "climax", "climax_smooth_pool", "convit", "convit_smooth", "convit_2", "climax_smooth_plot", "climax_max_pool", "climax_seqpool",
+                                                     "ridge", "lasso", "random_forest", "xgboost", "local_cnn"}, default="transformer",  # "local_cnn2"
                                  help="Model class")
         self.parser.add_argument('--smooth_attention', action='store_true',
                                  help="""If set, will smooth adjacent attention weights.""")
@@ -163,10 +167,19 @@ class Options(object):
                                  help="""Only applicable for ClimaX. If set, uses depthwise separable convolution as encoder.""")
         self.parser.add_argument('--local_mask', type=int, default=-1,
                                  help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
+        self.parser.add_argument('--causal_mask', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, uses causal mask in self-attention.""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
+        self.parser.add_argument('--reg_lambda_pool', type=float, default=0,
+                                 help="""Regularizing weight for loss from POOLING attention smoothing.""")
         self.parser.add_argument('--lambda_posenc_smoothness', type=float, default=0,
                                  help="""Regularizing weight for loss for POS ENC smoothing.""")
+        self.parser.add_argument('--lambda_locality', type=float, default=0, help="Weight for locality loss.")
+        self.parser.add_argument('--lambda_erpe_linear', type=float, default=0, help="Weight for ERPE linear loss.")
+        self.parser.add_argument('--lambda_focus', type=float, default=0, help="Weight for focus loss.")
+        self.parser.add_argument('--lambda_jacobian', type=float, default=0, help="Weight for Jacobian reg loss.")
+
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
                                  If not provided, then the value defined inside the data class will be used.""")
@@ -186,12 +199,25 @@ class Options(object):
                                  help='Number of GPSA layers')
         self.parser.add_argument('--dropout', type=float, default=0.1,
                                  help='Dropout applied to most transformer encoder layers')
-        self.parser.add_argument('--pos_encoding', choices={'fixed', 'learnable', 'learnable_sin_init', 'learnable_tape_init', 'none'}, default='fixed',
-                                 help='Method for ABSOLUTE positional encoding')
-        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe', 'erpe_alibi_init', 'custom_rpe', 'none'}, default='none',
+        self.parser.add_argument('--pos_encoding', choices={'fixed_sin', 'learnable', 'learnable_zero_init', 'learnable_uniform_init',
+                                                            'learnable_sin_init', 'learnable_tape_init', 'none'}, default='learnable_uniform_init',
+                                 help='Method for ABSOLUTE positional encoding. learnable defaults to learnable_uniform_init')
+        self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "before_pool_add", "before_pool_concat",
+                                                                             "pooling_before_softmax", "pooling_gating"], default="start_add",
+                                 help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
+        self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
+                                                                     'erpe_alibi_init', 'erpe_alibi_init_fixedslopes',
+                                                                     'erpe_convit_init', 'erpe_convalibi_init', 'erpe_convalibi_init_dilated',
+                                                                     'erpe_convalibi_init_quadratic', 
+                                                                     'erpe_convalibi_init_quadratic_clamped', 'erpe_convalibi_init_clamped',
+                                                                     'convit', 'convit_half', 'rope', 'none'}, default='none',
                                  help='Method for RELATIVE positional encoding')
-        self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating"], default="before",
+        self.parser.add_argument('--where_to_add_relpos', type=str, choices=["before", "after", "after_gating", "only_relpos"], default="before",
                                  help="""Where to add relative position offset (before or after softmax). If `after_gating` is set, do a learnable gating (convit style) where the model can decide how much to weight position & content attention""")
+        self.parser.add_argument('--convit_slope', type=float, default=1.0, help="Slope for Convit relative positional encoding. Higher means more focused (narrower receptive field).")
+        self.parser.add_argument('--alibi_max_slope', type=float, default=4.0, help="Steepest slope for Alibi (FIRST LAYER). Higher means more focused (narrower receptive field).")
+        self.parser.add_argument('--alibi_min_slope', type=float, default=0.25, help="Shallowest slope for Alibi (FIRST LAYER). Higher means more focused (narrower receptive field). TODO: Not sure if this should depend on the data.")
+
         self.parser.add_argument('--conv_projection', action='store_true',
                                  help="""If true, use conv instead of linear for Q/K/V""")
         self.parser.add_argument('--activation', choices={'relu', 'gelu'}, default='gelu',
@@ -200,18 +226,22 @@ class Options(object):
                                  help='Normalization layer to be used internally in transformer encoder')
         self.parser.add_argument('--class_token', action='store_true',
                                  help='If set, will append class token to help predict global class')
-        self.parser.add_argument('--stride', type=int, default=0,
+        self.parser.add_argument('--stride', type=int, default=1,
                                  help='Stride between patches or convolutions')
-        self.parser.add_argument('--patch_length', type=int, default=64,
+        self.parser.add_argument('--patch_length', type=int, default=1,
                                  help='Number of time steps in each patch')
         self.parser.add_argument('--num_decoder_layers', type=int, default=2,
                                  help='Number of decoder layers')
 
-        # Local-CNN specific
-        self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep'], default='hierarchical',
-                                 help='Type of CNN')
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed'], default='linear',
+        # Pooling
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
                                  help='Type of final pooling')
+
+        # Local-CNN specific
+        self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep', 'lstm'], default='hierarchical',
+                                 help='Type of CNN')
+        # self.parser.add_argument('--local_cnn2_batch_norm', action='store_true', help='Set to use batchnorm in LocalCNN2.')
+        # self.parser.add_argument('--local_cnn2_spectral_norm', action='store_true', help='Set to use spectral norm in LocalCNN2.')
 
         # C-Mixup specific
         self.parser.add_argument('--mixtype', type=str, default='random',
@@ -228,7 +258,7 @@ class Options(object):
     def parse(self):
         args = self.parser.parse_args()
 
-        args.lr_step = [int(i) for i in args.lr_step.split(",")]
+        args.lr_step = [int(i) for i in args.lr_step.split(",")] if not args.lr_step.startswith("plateau") else args.lr_step
         args.lr_factor = [float(i) for i in args.lr_factor.split(",")]
         if (len(args.lr_step) > 1) and (len(args.lr_factor) == 1):
             args.lr_factor = len(args.lr_step) * args.lr_factor  # replicate

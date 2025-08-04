@@ -14,13 +14,33 @@ import xlwt
 from xlutils.copy import copy
 from sklearn.neighbors import KernelDensity
 from dtaidistance import dtw
-
+import torch.nn.functional as F
+from einops import rearrange
 import logging
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import pandas as pd
+from models.ClimaX.pos_embed import get_1d_sincos_pos_embed_from_grid
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+def approx_min_max(values):
+    """
+    Returns 1st and 99th quantiles of the entries in 'values' (flattened).
+    If 'values' contains more than 100000 entries, take quantiles of a random subset
+    (since PyTorch quantile cannot handle large datasets).
+    """
+    if isinstance(values, list):  # If input is list of tensors, combined values for all flattened tensors
+        values = torch.cat([v.flatten() for v in values])
+    sample_size = min(1000000, values.numel())
+    sampled_values = values.flatten()[torch.randint(values.numel(), (sample_size,))]  # NOTE: changed view(-1) to flatten()
+    min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.01, 0.99]).to(sampled_values.device))
+    return min_value, max_value
+
 
 ############################################################################################
 # C-Mixup code taken from https://github.com/huaxiuyao/C-Mixup/blob/main/src/algorithm.py
@@ -337,6 +357,79 @@ def register_record(
             filepath = alt_path
 
     logger.info("Exported performance record to '{}'".format(filepath))
+
+
+def get_command_of_best_loss(filename):
+    """
+    Reads an excel workbook, finds the row with the lowest validation loss, and returns the command that produced it.
+
+    Source: ChatGPT
+    """
+    # Open the workbook
+    workbook = xlrd.open_workbook(filename)
+    sheet = workbook.sheet_by_index(0)  # Assuming data is in the first sheet
+
+    # Read the header row (first row)
+    header = sheet.row_values(0)
+
+    # Find indexes of "Best loss" and "Comment"
+    try:
+        best_loss_idx = header.index("Best loss")
+        comment_idx = header.index("Comment")
+    except ValueError as e:
+        raise ValueError("Required columns not found: " + str(e))
+
+    # Initialize min value and comment
+    min_loss = float('inf')
+    best_comment = None
+
+    # Iterate over rows starting from row 1 (skip header)
+    for row_idx in range(1, sheet.nrows):
+        row = sheet.row_values(row_idx)
+        try:
+            loss = float(row[best_loss_idx])
+            if loss < min_loss:
+                min_loss = loss
+                best_comment = row[comment_idx]
+        except (ValueError, TypeError):
+            continue  # Skip rows where the loss value isn't valid
+
+    return best_comment
+
+
+def append_mean_std(filename):
+    """
+    Given excel file, compute mean/std of columns 'Best loss' and 'Test loss'.
+    Appends them as rows to the same file.
+
+    Source: Mostly ChatGPT
+    """
+    # Read the .xls file
+    df = pd.read_excel(filename)
+    COLS = ["Best loss", "Test loss"]
+
+    # Take square root to get RMSE, then take mean/std
+    means = df[COLS].pow(0.5).mean(axis=0)
+    stds = df[COLS].pow(0.5).std(axis=0)
+
+    # Open the original .xls file with xlrd (needed for xlutils.copy)
+    book_rd = xlrd.open_workbook(filename, formatting_info=True)
+    book_wt = copy(book_rd)
+    sheet_wt = book_wt.get_sheet(0)  # Write to first sheet
+
+    # Determine where to write (append after last data row)
+    start_row = book_rd.sheet_by_index(0).nrows
+
+    # Write means/stds
+    sheet_wt.write(start_row + 1, 0, 'MEAN')  # Add 1 to leave a gap
+    for COL in COLS:
+        idx = df.columns.get_loc(COL)
+        sheet_wt.write(start_row + 1, idx, means[COL])
+    sheet_wt.write(start_row + 2, 0, 'STD')
+    for COL in COLS:
+        idx = df.columns.get_loc(COL)
+        sheet_wt.write(start_row + 2, idx, stds[COL])
+    book_wt.save(filename)
 
 
 class Printer(object):

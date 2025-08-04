@@ -9,7 +9,8 @@ from itertools import repeat, chain
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from sktime.utils import load_data
+# import sktime
+# from sktime.utils import load_data
 from sklearn.preprocessing import MinMaxScaler
 from datasets import utils
 
@@ -45,7 +46,7 @@ class Normalizer(object):
         """
         if self.norm_type == "standardization":
             if self.mean is None:
-                self.mean = df.mean()
+                self.mean = df.mean()  # NOTE: mean() is per variable (column)
                 self.std = df.std()
             return (df - self.mean) / (self.std + np.finfo(float).eps)
 
@@ -274,7 +275,7 @@ class TSRegressionArchive(BaseData):
 
         self.config = config
 
-        self.all_df, self.labels_df = self.load_all(
+        self.all_df, self.labels_df, self.time_df = self.load_all(
             root_dir, file_list=file_list, pattern=pattern
         )  # , self.time_df
         self.all_IDs = (
@@ -292,6 +293,7 @@ class TSRegressionArchive(BaseData):
         # use all features
         self.feature_names = self.all_df.columns
         self.feature_df = self.all_df
+        self.time_df = self.time_df
 
     def load_all(self, root_dir, file_list=None, pattern=None):
         """
@@ -329,9 +331,9 @@ class TSRegressionArchive(BaseData):
             raise Exception("No .ts files found using pattern: '{}'".format(pattern))
 
         # a single file contains dataset
-        all_df, labels_df = self.load_single(input_paths[0]) # , time_df
+        all_df, labels_df, time_df = self.load_single(input_paths[0])
 
-        return all_df, labels_df  #, time_df
+        return all_df, labels_df, time_df
 
     def load_single(self, filepath):
         # Every row of the returned df corresponds to a sample;
@@ -342,7 +344,7 @@ class TSRegressionArchive(BaseData):
             )
             labels_df = pd.DataFrame(labels, dtype=np.float32)
         elif self.config["task"] == "classification":
-            df, labels = load_data.load_from_tsfile_to_dataframe(
+            df, labels = utils.load_from_tsfile_to_dataframe(
                 filepath, return_separate_X_and_y=True, replace_missing_vals_with="NaN"
             )
             labels = pd.Series(labels, dtype="category")
@@ -352,7 +354,7 @@ class TSRegressionArchive(BaseData):
             )  # int8-32 gives an error when using nn.CrossEntropyLoss
         else:  # e.g. imputation
             try:
-                data = load_data.load_from_tsfile_to_dataframe(
+                data = utils.load_from_tsfile_to_dataframe(
                     filepath,
                     return_separate_X_and_y=True,
                     replace_missing_vals_with="NaN",
@@ -404,28 +406,33 @@ class TSRegressionArchive(BaseData):
         else:
             self.max_seq_len = lengths[0, 0]
 
-        # # @joshuafan: Create a (seq_len, 1) dataframe for each sample, storing the timestamp of each time step
-        # # Then concatenate into a (num_samples * seq_len) dataframe, with multiple rows corresponding
-        # # to the sample index.
-        # # NOTE - does not work for all datasets, commenting out for now
-        # timestamp_df = pd.concat(
-        #     (
-        #         pd.DataFrame({'timestamp': df.loc[row, df.columns[0]].index})
-        #         .reset_index(drop=True)
-        #         .set_index(pd.Series(lengths[row, 0] * [row]))
-        #         for row in range(df.shape[0])
-        #     ),
-        #     axis=0
-        # )
+        # @joshuafan: Create a (seq_len, 1) dataframe for each sample, storing the timestamp of each time step
+        # Then concatenate into a (num_samples * seq_len) dataframe, with multiple rows corresponding
+        # to the sample index.
+        # NOTE - does not work for all datasets, commenting out for now
+        if pd.core.dtypes.common.is_datetime_or_timedelta_dtype(df.loc[0, df.columns[0]].index):
+            timestamp_df = pd.concat(
+                (
+                    pd.DataFrame({'timestamp': df.loc[row, df.columns[0]].index})
+                    .reset_index(drop=True)
+                    .set_index(pd.Series(lengths[row, 0] * [row]))
+                    for row in range(df.shape[0])
+                ),
+                axis=0
+            )
 
-        # # Extract features from timestamp data. Normalize all so that they are between (0, 1).
-        # # TODO: Consider adding a feature to allow model to distinguish days of the week. # "day_of_week": timestamp_df['timestamp'].dt.weekday,  # 0 is Monday, 6 is Sunday
-        # time_df = pd.DataFrame({
-        #     "year": timestamp_df['timestamp'].dt.year,
-        #     "day_of_year": timestamp_df['timestamp'].dt.day_of_year / 366,
-        #     "hour_of_day": timestamp_df['timestamp'].dt.hour / 24 + timestamp_df['timestamp'].dt.minute / (24*60) + timestamp_df['timestamp'].dt.second / (24*60*60)
-        # })
-        # time_df["year"] = (time_df["year"] - time_df["year"].min()) / (time_df["year"].max() + 1 - time_df["year"].min())
+            # Extract features from timestamp data. Normalize all so that they are between (0, 1).
+            # TODO: Consider adding a feature to allow model to distinguish days of the week. # "day_of_week": timestamp_df['timestamp'].dt.weekday,  # 0 is Monday, 6 is Sunday
+            time_df = pd.DataFrame({
+                "timestamp": timestamp_df["timestamp"],
+                "time_int": timestamp_df["timestamp"].astype('int64'),
+                "year": timestamp_df['timestamp'].dt.year,
+                "day_of_year": timestamp_df['timestamp'].dt.day_of_year / 366,
+                "hour_of_day": timestamp_df['timestamp'].dt.hour / 24 + timestamp_df['timestamp'].dt.minute / (24*60) + timestamp_df['timestamp'].dt.second / (24*60*60)
+            })
+            time_df["year_normalized"] = (time_df["year"] - time_df["year"].min()) / (time_df["year"].max() + 1 - time_df["year"].min())
+        else:
+            time_df = None
 
         # First create a (seq_len, feat_dim) dataframe for each sample, indexed by a single integer ("ID" of the sample)
         # Then concatenate into a (num_samples * seq_len, feat_dim) dataframe, with multiple rows corresponding to the
@@ -444,7 +451,7 @@ class TSRegressionArchive(BaseData):
         grp = df.groupby(by=df.index)
         df = grp.transform(interpolate_missing)
 
-        return df, labels_df  #, time_df
+        return df, labels_df, time_df
 
 
 class PMUData(BaseData):

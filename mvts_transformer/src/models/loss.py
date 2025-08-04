@@ -40,6 +40,8 @@ def l1_reg_loss(model):
         # In TransformerBatchNormEncoderLayer, linear layers are called linaer1/linear2
         # In Attention_Rel_Scl, they are under query/key/value
         if "linear1" in name or "linear2" in name or "self_attn" in name or "query" in name or "key" in name or "value" in name or "conv" in name:
+            if "bias" in name:
+                continue
             l1_norm += param.abs().sum()
             n_params += param.numel()
     return l1_norm / n_params
