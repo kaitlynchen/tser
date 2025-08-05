@@ -83,7 +83,7 @@ do
                 python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
                     --records_file "output/${OUTPUT_FILE}.xls" \
                     --data_dir $DATA_DIR --data_class tsra \
-                    --pattern TRAIN --test_pattern TEST \
+                    --pattern TRAIN --val_pattern TEST \
                     --epochs 2000 --patience 200 \
                     --lr $LR --batch_size $BS \
                     --num_heads 16 --d_model 128 \
