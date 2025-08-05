@@ -64,6 +64,7 @@ class Options(object):
         self.parser.add_argument('--val_ratio', type=float, default=0.2,
                                  help="Proportion of the dataset to be used as a validation set")
         self.parser.add_argument('--val_temporal_split', action='store_true', help="If set, split train/val set temporally.")
+        self.parser.add_argument('--val_sequential_split', action='store_true', help="If set, split train/val set sequentially.")
         self.parser.add_argument('--pattern', type=str,
                                  help='Regex pattern used to select files contained in `data_dir`. If None, all data will be used.')
         self.parser.add_argument('--val_pattern', type=str, default=None,

@@ -716,7 +716,7 @@ class ClimaX(nn.Module):
             
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = biases.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
-            offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L. H, T, T]
+            offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L, H, T, T]
             offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
 
         elif self.relative_pos_encoding == "convit":
@@ -867,7 +867,7 @@ class ClimaX(nn.Module):
             plt.savefig(os.path.join(plot_dir, 'timestep_similarities.png'))
             plt.close()
 
-            # Plot attention matrices: for each example, plot random subset of layers/heads. attn_weights_enc: [L, B, H, T, T]
+            # Plot attention matrices: for each example, plot random subset of layers/heads. attn_matrices: [B, n_matrices, T, T]
             min_value, max_value = utils.approx_min_max(attn_matrices)
 
             # Random subset of heads/layers
@@ -1020,10 +1020,7 @@ class ClimaX(nn.Module):
         elif self.pool == "linear":
             preds = self.act(preds)
             preds = self.dropout1(preds)
-            print("Preds", preds.shape)
-            print("Flattened", nn.Flatten(preds).shape)
             preds = self.fc(preds)  # fc already contains a Flatten
-            print("After fc", preds)
         elif self.pool == "average":
             preds = preds.permute((0, 2, 1))  # Reshape to [B, D, T] to be compatible with AvgPool1d
             preds = self.fc(preds)
@@ -1133,7 +1130,10 @@ class ClimaX(nn.Module):
         Smoothness on attention matrices (excluding pooling attention)
         """
         # self.attn_matrices is [B, L*H, T, T]
-        attn_weights_layers = rearrange(self.attn_matrices, "b n t0 t1 -> (b n) t0 t1")  # Convert to [..., T, T] - list of attention matrices
+        if self.where_to_add_relpos == "only_relpos":
+            attn_weights_layers = self.attn_matrices[0]  # If only_relpos, all examples have same attn
+        else:
+            attn_weights_layers = rearrange(self.attn_matrices, "b n t0 t1 -> (b n) t0 t1")  # Convert to [..., T, T] - list of attention matrices
         attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).abs()).sum(dim=2).mean()
         return attn_smoothness_loss
 

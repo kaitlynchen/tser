@@ -91,7 +91,7 @@ def main(config):
         from models.climax_convit_smooth import model_factory
     elif config["model"] is not None and config["model"] == "convit_2":
         from models.climax_with_convit_blocks import model_factory
-    elif config["model"] is not None and config["model"] in ["local_cnn", "local_cnn2"]:
+    elif config["model"] is not None and config["model"] == "local_cnn":
         from models.local_cnn import model_factory
     elif config["model"] is not None and config["model"] == "climax_smooth_plot":
         from models.ts_climax_timestep import model_factory
@@ -204,7 +204,13 @@ def main(config):
             threshold = np.quantile(start_times["time_int"], 1 - config['val_ratio'])
             train_indices = start_times[start_times["time_int"] < threshold].index  # example_idx became index after groupby
             val_indices = start_times[start_times["time_int"] >= threshold].index
+        elif config["val_sequential_split"]:
+            cutoff = int(len(my_data.all_IDs) * (1 - config["val_ratio"]))
+            print("Sequential split, Train indices", my_data.all_IDs)
+            train_indices = my_data.all_IDs[0:cutoff]
+            val_indices = my_data.all_IDs[cutoff:]
         else:
+            print("Random split")
             train_indices, val_indices = split_dataset(
                 data_indices=my_data.all_IDs,
                 validation_method=validation_method,
