@@ -29,9 +29,9 @@
 #SBATCH -t 72:00:00
 
 # ============================ DATASET ============================
-DATA_DIR="/mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/"  # TODO: Change this!!!
 DATA=$1
 echo $DATA
+DATA_DIR="/mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/"  # TODO: Change this!!!
 
 # ========== ACTIVATE ENVIRONMENT (TODO: Change this!!!) ==========
 source ~/.bashrc

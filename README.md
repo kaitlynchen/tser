@@ -1,14 +1,6 @@
 # Code for paper "Locality And Distance-Aware Attention for Time Series Extrinsic Regression"
 
-The code for Table 1, 3, 4 (TSER archive datasets) are mainly in `mvts_transformer/src`, and the code for Table 2 (crop yield) is in `Crop_Yield_Prediction/baseline`. Unfortunately they require slightly different packages; we give instructions separately.
-
-# 1) Time Series Extrinsic Regression archive datasets
-
-## Download datasets
-
-Download datasets from here: https://zenodo.org/record/3902651#.YB5P0OpOm3s
-
-Place them in a directory, and modify the scripts' DATA_DIR to point to that directory.
+The code for Table 1, 3, 4 (TSER archive datasets) are mainly in `mvts_transformer/src`, and the code for Table 2 (crop yield) is in `Crop_Yield_Prediction/baseline`.
 
 ## Installation
 
@@ -25,6 +17,14 @@ Alternatively, you can use pip on the TST requirements file (not tested):
 cd mvts_transformer
 pip install -r requirements.txt
 ```
+
+# 1) Time Series Extrinsic Regression archive datasets
+
+## Download datasets
+
+Download datasets from here: https://zenodo.org/record/3902651#.YB5P0OpOm3s
+
+Place them in a directory, and modify the scripts' DATA_DIR to point to that directory.
 
 ## Reproducing Table 1
 
@@ -105,6 +105,15 @@ For pooling ablation (Table 18):
 
 Statistical tests can be run with `python3 statistical_tests.py`, but you would need to change the filenames.
 
+## Code pointers
+From the `mvts_transformer/src` directory:
+- `main.py` is the entry point.
+- `running.py` is the main train loop.
+- `models/ts_transformer.py` is the original Zerveas TST model.
+- `models/ts_climax.py` contains code for our LADAA and other Transformer variants, including various forms of relative positional encoding, absolute positional encoding, attention smoothness, masks, and pooling.
+- `models/local_cnn.py` contains the per-timestep MLP and LSTM models.
+- `test_best.py` parses the result of hyperparameter tuning and tests the best config with 3 seeds
+Other files are mostly irrelevant.
 
 # 2) Crop Yield experiments
 
@@ -114,29 +123,32 @@ The data can be downloaded here: https://osf.io/3qhru/?view_only=f1edbd5af91642c
 
 Modify the scripts' `DATA_FILE` to point to the `combined_dataset_daily_32bit.npz` file. 
 
-## Installation
-
-To install the packages used, run
-```
-cd Crop_Yield_Prediction/baseline
-conda env create -f environment.yml
-```
-
 ## Reproducing Table 2
 
-These scripts will go through the hyperparameter tuning and testing process. Run from `Crop_Yield_Prediction/baseline`. Please ensure `DATA_FILE` is correct, and
+These scripts will go through the hyperparameter tuning and testing process. Run from `Crop_Yield_Prediction/baseline`. Please ensure `DATA_FILE` and `OUTPUT_DIR` are correct, and
 the `ACTIVATE ENVIRONMENT` section is updated.
 
 ```
 ./repro_scripts/ladaa.sh
 ./repro_scripts/cnn.sh
+./repro_scripts/fcn.sh
 ./repro_scripts/inception.sh
 ./repro_scripts/tst.sh
 ./repro_scripts/pertimestepmlp.sh
 ./repro_scripts/lstm.sh
 ```
 
+Don't forget to change DATA_FILE, OUTPUT_DIR, and "ACTIVATE ENVIRONMENT" commands. Results will be written to a folder inside OUTPUT_DIR that contains NOTE. `results_summary_fold0_tuning.csv` contains tuning results, and `results_summary_FINAL.csv_withmeanstd.csv` contains final test results across 5 folds. Check the *_raw columns for raw yield metrics (others are deviation from trend).
+
 For an example of testing on a single set of final hyperparameters, try
 ```
 ./repro_scripts/ladaa_final.sh
 ```
+
+## Code pointers
+From the `Crop_Yield_Prediction` directory:
+- `baseline/single_year_main.py` is the entry point.
+- `baseline/single_year_train.py` is the main train script.
+- `baseline/test_best.py` parses the result of hyperparameter tuning and tests the best config on all 5 folds.
+- `shared_utils/new_models.py` contains most of the wrapper model code.
+Other files are mostly irrelevant.
