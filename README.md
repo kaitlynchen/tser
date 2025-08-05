@@ -10,6 +10,7 @@ you can run
 ```
 cd mvts_transformer/src
 conda env create -f environment.yml
+conda activate tser
 ```
 
 Alternatively, you can use pip on the TST requirements file (not tested):
@@ -119,14 +120,19 @@ Other files are mostly irrelevant.
 
 ## Download datasets
 
-The data can be downloaded here: https://osf.io/3qhru/?view_only=f1edbd5af91642cebef79a08c94bf6fd
+The data can be downloaded [here](https://osf.io/3qhru/?view_only=f1edbd5af91642cebef79a08c94bf6fd) - you only need to download `combined_dataset_daily_32bit.npz`. Or you can run the following commands:
+```
+wget https://osf.io/download/6891731c1262b0433ae7cff2/?view_only=f1edbd5af91642cebef79a08c94bf6fd
+mv 'index.html?view_only=f1edbd5af91642cebef79a08c94bf6fd' combined_dataset_daily_32bit.npz
+unzip 'index.html?view_only=f1edbd5af91642cebef79a08c94bf6fd'
+```
 
 Modify the scripts' `DATA_FILE` to point to the `combined_dataset_daily_32bit.npz` file. 
 
 ## Reproducing Table 2
 
-These scripts will go through the hyperparameter tuning and testing process. Run from `Crop_Yield_Prediction/baseline`. Please ensure `DATA_FILE` and `OUTPUT_DIR` are correct, and
-the `ACTIVATE ENVIRONMENT` section is updated.
+These scripts will go through the hyperparameter tuning and testing process. Please ensure `DATA_FILE` and `OUTPUT_DIR` are correct, and
+the `ACTIVATE ENVIRONMENT` section is updated. Run from `Crop_Yield_Prediction/baseline` directory.
 
 ```
 ./repro_scripts/ladaa.sh
