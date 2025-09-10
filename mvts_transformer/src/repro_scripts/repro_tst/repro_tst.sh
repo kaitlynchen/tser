@@ -73,7 +73,7 @@ else
 fi
 
 
-OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2"
+OUTPUT_FILE="${DATA}_REPRO_ZERVEAS"
 
 for SEED in 0 1 2
 do
@@ -88,5 +88,18 @@ do
         --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
         --optimizer RAdam --task regression \
         --model transformer --pos_encoding learnable \
+        --plot_loss --plot_accuracy
+
+    # Replication of Zerveas model using our "Climax" codebase
+    python main.py --output_dir "./output/output_zerveas" \
+        --seed $SEED --name "ZERVEAS_CLIMAX_${OUTPUT_FILE}_${PARAM_STR}"  \
+        --records_file "output/output_zerveas/ZERVEAS_CLIMAX_${DATA}_TEST.xls" \
+        --data_dir $DATA_DIR --data_class tsra \
+        --pattern TRAIN --val_pattern TEST \
+        --epochs 2000 --patience $PATIENCE \
+        --lr 0.001 --batch_size $BS \
+        --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
+        --optimizer RAdam --task regression \
+        --model climax_smooth --pos_encoding learnable --patch_length 1 --stride 1 --smooth_attention \
         --plot_loss --plot_accuracy
 done
