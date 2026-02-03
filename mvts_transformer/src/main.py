@@ -340,7 +340,7 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] in ["smooth", "climax_smooth", "convit_smooth", "climax_smooth_plot", "climax_smooth_pool", "climax_max_pool", "climax_seqpool", "local_cnn", "local_cnn2"]) and config["smooth_attention"]
+    need_attn_weights=((config["model"] in ["smooth", "climax_smooth", "convit_smooth", "climax_smooth_plot", "climax_smooth_pool", "climax_max_pool", "climax_seqpool", "local_cnn", "local_cnn2", "transformer"]) and config["smooth_attention"]) or config["model"] == "transformer"
     use_smoothing = need_attn_weights and config["task"] == "regression"
 
     if config["test_only"] == "testset":  # Only evaluate and skip training

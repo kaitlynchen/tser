@@ -179,6 +179,10 @@ class Options(object):
         self.parser.add_argument('--lambda_erpe_linear', type=float, default=0, help="Weight for ERPE linear loss.")
         self.parser.add_argument('--lambda_focus', type=float, default=0, help="Weight for focus loss.")
         self.parser.add_argument('--lambda_jacobian', type=float, default=0, help="Weight for Jacobian reg loss.")
+        self.parser.add_argument('--attention_type', choices=['dot', 'L2'], default='dot',
+                                 help="""Type of self-attention mechanism.""")
+        self.parser.add_argument('--learnable_scale', action='store_true',
+                                 help="""If set, the attention scale factor becomes a learnable parameter.""")
 
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.

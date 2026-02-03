@@ -6,6 +6,18 @@ from torch import nn, Tensor
 from torch.nn import functional as F
 from torch.nn.modules import MultiheadAttention, Linear, Dropout, BatchNorm1d, TransformerEncoderLayer
 
+from einops import rearrange
+from collections import OrderedDict
+import warnings
+import copy
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from models.ts_climax import TransformerEncoder
+from utils import utils
+
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 def model_factory(config, data):
     task = config['task']
@@ -24,12 +36,14 @@ def model_factory(config, data):
             return DummyTSTransformerEncoder(feat_dim, max_seq_len, config['d_model'], config['num_heads'],
                                              config['num_layers'], config['dim_feedforward'], dropout=config['dropout'],
                                              pos_encoding=config['pos_encoding'], activation=config['activation'],
-                                             norm=config['normalization_layer'], freeze=config['freeze'])
+                                             norm=config['normalization_layer'], freeze=config['freeze'],
+                                             attention_type=config['attention_type'])
         elif config['model'] == 'transformer':
             return TSTransformerEncoder(feat_dim, max_seq_len, config['d_model'], config['num_heads'],
                                         config['num_layers'], config['dim_feedforward'], dropout=config['dropout'],
                                         pos_encoding=config['pos_encoding'], activation=config['activation'],
-                                        norm=config['normalization_layer'], freeze=config['freeze'])
+                                        norm=config['normalization_layer'], freeze=config['freeze'],
+                                        attention_type=config['attention_type'])
 
     if (task == "classification") or (task == "regression"):
         # dimensionality of labels
@@ -42,7 +56,8 @@ def model_factory(config, data):
                                                             num_classes=num_labels,
                                                             dropout=config['dropout'], pos_encoding=config['pos_encoding'],
                                                             activation=config['activation'],
-                                                            norm=config['normalization_layer'], freeze=config['freeze'])
+                                                            norm=config['normalization_layer'], freeze=config['freeze'],
+                                                            attention_type=config['attention_type'])
         elif config['model'] == 'transformer':
             return TSTransformerEncoderClassiregressor(feat_dim, max_seq_len, config['d_model'],
                                                        config['num_heads'],
@@ -51,7 +66,8 @@ def model_factory(config, data):
                                                        dropout=config['dropout'], pos_encoding=config['pos_encoding'],
                                                        activation=config['activation'],
                                                        norm=config['normalization_layer'], freeze=config['freeze'],
-                                                       include_cls_token=config["class_token"])
+                                                       include_cls_token=config["class_token"],
+                                                       attention_type=config['attention_type'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -155,9 +171,16 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu", attention_type='dot'):
         super(TransformerBatchNormEncoderLayer, self).__init__()
-        self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
+        
+        if attention_type == 'L2':
+            self.self_attn = SimpleL2Attention(d_model, nhead, dropout, attention_type)
+            self.custom_attn = True
+        else: 
+            self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout)
+            self.custom_attn = False
+            
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
         self.dropout = Dropout(dropout)
@@ -178,7 +201,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
                 src_key_padding_mask: Optional[Tensor] = None,
-                **kwargs) -> Tensor:  # modified https://stackoverflow.com/questions/77078717/typeerror-transformerbatchnormencoderlayer-forward-got-an-unexpected-keyword
+                **kwargs): # modified https://stackoverflow.com/questions/77078717/typeerror-transformerbatchnormencoderlayer-forward-got-an-unexpected-keyword
         r"""Pass the input through the encoder layer.
 
         Args:
@@ -189,8 +212,14 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         Shape:
             see the docs in Transformer class.
         """
-        src2 = self.self_attn(src, src, src, attn_mask=src_mask,
-                              key_padding_mask=src_key_padding_mask)[0]
+        if self.custom_attn:
+            src_batch_first = src.permute(1, 0, 2)  # [T, B, D] -> [B, T, D]
+            src2, attn_weights = self.self_attn(src_batch_first, src_batch_first, src_batch_first)
+            src2 = src2.permute(1, 0, 2)  # [B, T, D] -> [T, B, D]
+        else:
+            src2, attn_weights = self.self_attn(src, src, src, attn_mask=src_mask,
+                                  key_padding_mask=src_key_padding_mask, 
+                                  need_weights=True, average_attn_weights=False)
         src = src + self.dropout1(src2)  # (seq_len, batch_size, d_model)
         src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
         # src = src.reshape([src.shape[0], -1])  # (batch_size, seq_length * d_model)
@@ -201,13 +230,13 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         src = src.permute(1, 2, 0)  # (batch_size, d_model, seq_len)
         src = self.norm2(src)
         src = src.permute(2, 0, 1)  # restore (seq_len, batch_size, d_model)
-        return src
+        return src, attn_weights
 
 
 class TSTransformerEncoder(nn.Module):
 
     def __init__(self, feat_dim, max_len, d_model, n_heads, num_layers, dim_feedforward, dropout=0.1,
-                 pos_encoding='fixed', activation='gelu', norm='BatchNorm', freeze=False):
+                 pos_encoding='fixed', activation='gelu', norm='BatchNorm', freeze=False, attention_type='dot'):
         super(TSTransformerEncoder, self).__init__()
 
         self.max_len = max_len
@@ -223,9 +252,9 @@ class TSTransformerEncoder(nn.Module):
                 d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
-                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
+                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation, attention_type=attention_type)
 
-        self.transformer_encoder = nn.TransformerEncoder(
+        self.transformer_encoder = TransformerEncoder(
             encoder_layer, num_layers)
 
         self.output_layer = nn.Linear(d_model, feat_dim)
@@ -236,7 +265,7 @@ class TSTransformerEncoder(nn.Module):
 
         self.feat_dim = feat_dim
 
-    def forward(self, X, padding_masks):
+    def forward(self, X, padding_masks, **kwargs):
         """
         Args:
             X: (batch_size, seq_length, feat_dim) torch tensor of masked features (input)
@@ -252,7 +281,7 @@ class TSTransformerEncoder(nn.Module):
         inp = self.pos_enc(inp)  # add positional encoding
         # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
         # (seq_length, batch_size, d_model)
-        output = self.transformer_encoder(
+        output, attn_weights_layers, embeddings_layers = self.transformer_encoder(
             inp, src_key_padding_mask=~padding_masks)
         # the output transformer encoder/decoder embeddings don't include non-linearity
         output = self.act(output)
@@ -261,8 +290,67 @@ class TSTransformerEncoder(nn.Module):
         # Most probably defining a Linear(d_model,feat_dim) vectorizes the operation over (seq_length, batch_size).
         # (batch_size, seq_length, feat_dim)
         output = self.output_layer(output)
+        
+        # Plot attention matrices if plot_dir is provided
+        plot_dir = kwargs.get('plot_dir', None)
+        if plot_dir is not None:
+            self._plot_attention_matrices(attn_weights_layers, plot_dir)
 
         return output
+    
+    def _plot_attention_matrices(self, attn_weights_layers, plot_dir):
+        """
+        Plot attention matrices.
+        
+        Args:
+            attn_weights_layers: [L, B, H, T, T] or [L, B, T, T] attention weights
+            plot_dir: directory to save plots
+        """
+        if len(attn_weights_layers.shape) == 5:
+            # Reshape to [B, L*H, T, T]
+            attn_matrices = rearrange(attn_weights_layers, "l b h t0 t1 -> b (l h) t0 t1")
+            num_layers = attn_weights_layers.shape[0]
+            num_heads = attn_weights_layers.shape[2]
+        else:
+            # Reshape to [B, L, T, T] and treat each layer as one "head"
+            attn_matrices = rearrange(attn_weights_layers, "l b t0 t1 -> b l t0 t1")
+            num_layers = attn_weights_layers.shape[0]
+            num_heads = 1
+        
+        # Plot attention matrices: for each example, plot random subset of layers/heads
+        min_value, max_value = utils.approx_min_max(attn_matrices)
+        
+        # Number of examples to plot
+        n_rows = min(5, attn_matrices.shape[0])  # Plot up to 5 examples
+        
+        # Random subset of heads/layers
+        n_matrices = attn_matrices.shape[1]  
+        n_cols = min(num_layers * 2 if num_heads > 1 else num_layers, n_matrices) 
+        
+        matrix_indices = np.sort(np.random.choice(np.arange(n_matrices), n_cols, replace=False))
+        fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
+        
+        for r in range(n_rows):
+            for c in range(n_cols):
+                m = matrix_indices[c]
+                im = axeslist[r, c].imshow(
+                    attn_matrices[r, m, :, :].detach().cpu().numpy(), 
+                    vmin=min_value, vmax=max_value
+                )
+                if r == 0:
+                    if num_heads > 1:
+                        layer_idx = m // num_heads
+                        head_idx = m % num_heads
+                        axeslist[r, c].set_title(f"Layer {layer_idx}, Head {head_idx}")
+                    else:
+                        axeslist[r, c].set_title(f"Layer {m} (averaged)")
+                if c == 0:
+                    axeslist[r, c].set_ylabel(f"Example {r+1}", rotation=0, size='large', labelpad=30)
+        
+        fig.colorbar(im, ax=axeslist, shrink=0.4)
+        fig.suptitle("Example attention matrices (TSTransformerEncoder)")
+        plt.savefig(os.path.join(plot_dir, 'attention_matrices_encoder.png'))
+        plt.close()
 
 
 class TSTransformerEncoderClassiregressor(nn.Module):
@@ -272,7 +360,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
     """
 
     def __init__(self, feat_dim, max_len, d_model, n_heads, num_layers, dim_feedforward, num_classes,
-                 dropout=0.1, pos_encoding='fixed', activation='gelu', norm='BatchNorm', freeze=False, include_cls_token=False):
+                 dropout=0.1, pos_encoding='fixed', activation='gelu', norm='BatchNorm', freeze=False, include_cls_token=False, attention_type='dot'):
         super(TSTransformerEncoderClassiregressor, self).__init__()
 
         self.max_len = max_len
@@ -297,9 +385,9 @@ class TSTransformerEncoderClassiregressor(nn.Module):
                 d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
-                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation)
+                d_model, self.n_heads, dim_feedforward, dropout * (1.0 - freeze), activation=activation, attention_type=attention_type)
 
-        self.transformer_encoder = nn.TransformerEncoder(
+        self.transformer_encoder = TransformerEncoder(
             encoder_layer, num_layers)
 
         self.act = _get_activation_fn(activation)
@@ -339,7 +427,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         inp = self.project_inp(inp) * math.sqrt(self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
 
-        output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
+        output, attn_weights_layers, embeddings_layers = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)
         if self.include_cls_token:
             # Classifier "token" as used by standard language architectures
             output = output[:, 0]
@@ -352,4 +440,152 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         output = output.reshape(output.shape[0], -1) # (batch_size, seq_length * d_model)
 
         output = self.output_layer(output)  # (batch_size, num_classes)
-        return output
+        
+        plot_dir = kwargs.get('plot_dir', None)
+        if plot_dir is not None:
+            self._plot_attention_matrices(attn_weights_layers, plot_dir)
+        
+        return output, attn_weights_layers, None
+
+    def predict_summed(self, func, input, padding_masks):
+        """Helper function for jacobian computation"""
+        return func(input, padding_masks).sum()
+
+    def jacobian_loss(self, input, padding_masks=None):
+        """
+        Computes geometric complexity: gradient of model output w.r.t. inputs.
+        Penalizes the L2 norm per example (input gradient regularization).
+        
+        Args:
+            input: [B, T, V] input tensor
+            padding_masks: [B, T] boolean mask (1=keep, 0=padding). Optional.
+        
+        Returns:
+            scalar loss - mean Frobenius norm of input Jacobians
+        """        
+        was_training = self.training
+        self.eval()
+        
+        if padding_masks is None:
+            padding_masks = torch.ones((input.shape[0], input.shape[1]), 
+                                      dtype=torch.bool, device=input.device)
+        
+        X_min = input.min(dim=0, keepdim=True).values
+        X_max = input.max(dim=0, keepdim=True).values
+        random_vals = torch.rand_like(input, device=input.device) * (X_max - X_min) + X_min
+        
+        # Compute Jacobian: gradient of output w.r.t. input
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            jacobian = torch.func.jacrev(self.predict_summed, argnums=1)(
+                self.forward, random_vals, padding_masks
+            )  # [B, T, V]
+        
+        jacobian = jacobian.reshape(jacobian.shape[0], -1)  # [B, T*V]
+        jacobian_loss = torch.linalg.norm(jacobian, dim=1).mean()
+        
+        self.train(was_training)
+        return jacobian_loss
+
+    def _plot_attention_matrices(self, attn_weights_layers, plot_dir):
+        """
+        Plot attention matrices.
+        
+        Args:
+            attn_weights_layers: [L, B, H, T, T] or [L, B, T, T] attention weights
+            plot_dir: directory to save plots
+        """
+        # Check if head dimension exists
+        if len(attn_weights_layers.shape) == 5:
+            # Reshape to [B, L*H, T, T]
+            attn_matrices = rearrange(attn_weights_layers, "l b h t0 t1 -> b (l h) t0 t1")
+            num_layers = attn_weights_layers.shape[0]
+            num_heads = attn_weights_layers.shape[2]
+        else:
+            # Reshape to [B, L, T, T] and treat each layer as one "head"
+            attn_matrices = rearrange(attn_weights_layers, "l b t0 t1 -> b l t0 t1")
+            num_layers = attn_weights_layers.shape[0]
+            num_heads = 1
+        
+        # Plot attention matrices: for each example, plot random subset of layers/heads
+        min_value, max_value = utils.approx_min_max(attn_matrices)
+        
+        # Number of examples to plot
+        n_rows = min(5, attn_matrices.shape[0])  # Plot up to 5 examples
+        
+        # Random subset of heads/layers
+        n_matrices = attn_matrices.shape[1]
+        n_cols = min(num_layers * 2 if num_heads > 1 else num_layers, n_matrices) 
+        
+        matrix_indices = np.sort(np.random.choice(np.arange(n_matrices), n_cols, replace=False))
+        fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
+        
+        for r in range(n_rows):
+            for c in range(n_cols):
+                m = matrix_indices[c]
+                im = axeslist[r, c].imshow(
+                    attn_matrices[r, m, :, :].detach().cpu().numpy(), 
+                    vmin=min_value, vmax=max_value
+                )
+                if r == 0:
+                    if num_heads > 1:
+                        layer_idx = m // num_heads
+                        head_idx = m % num_heads
+                        axeslist[r, c].set_title(f"Layer {layer_idx}, Head {head_idx}")
+                    else:
+                        axeslist[r, c].set_title(f"Layer {m} (averaged)")
+                if c == 0:
+                    axeslist[r, c].set_ylabel(f"Example {r+1}", rotation=0, size='large', labelpad=30)
+        
+        fig.colorbar(im, ax=axeslist, shrink=0.4)
+        fig.suptitle("Example attention matrices")
+        plt.savefig(os.path.join(plot_dir, 'attention_matrices.png'))
+        plt.close()
+
+
+class SimpleL2Attention(nn.Module):
+    def __init__(self, emb_size, num_heads, dropout, attention_type='dot'):
+        super().__init__()
+        self.num_heads = num_heads
+        self.attention_type = attention_type
+        self.scale = emb_size ** -0.5 
+        # make scale a learnable parameter
+        # self.scale = nn.Parameter(torch.ones(num_heads) * (emb_size ** -0.5))
+        
+        self.batch_first = False
+        self._qkv_same_embed_dim = True
+        
+        self.key = nn.Linear(emb_size, emb_size, bias=False)
+        self.value = nn.Linear(emb_size, emb_size, bias=False)
+        self.query = nn.Linear(emb_size, emb_size, bias=False)
+        
+        self.key.weight.data.copy_(torch.eye(emb_size))
+        self.value.weight.data.copy_(torch.eye(emb_size))
+        self.query.weight.data.copy_(torch.eye(emb_size))
+        
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key, value, attn_mask=None, key_padding_mask=None, **kwargs):
+        k = self.key(key)  # [B, T, D]
+        k = rearrange(k, 'b t (h d_h) -> b h d_h t', h=self.num_heads)  # [B, H, d_head, T]
+        q = self.query(query)  # [B, T, D]
+        q = rearrange(q, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # [B, H, T, d_head]
+        v = self.value(value)  # [B, T, D]
+        v = rearrange(v, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # [B, H, T, d_head]
+
+        if self.attention_type == 'L2':
+            # L2 attention computation
+            q_norm_sq = torch.sum(q**2, dim=-1, keepdim=True)  # [B, H, T, 1]
+            k_norm_sq = torch.sum(k**2, dim=-2, keepdim=True)  # [B, H, 1, T]
+            dot_product = torch.matmul(q, k)  # [B, H, T, T]
+            content_attn = -0.5 * (q_norm_sq + k_norm_sq - 2 * dot_product) * self.scale
+        else:
+            content_attn = torch.matmul(q, k) * self.scale  # [B, H, T, T]
+
+        attn = F.softmax(content_attn, dim=-1)
+        attn = self.dropout(attn)
+        
+        out = torch.matmul(attn, v)  # [B, H, T, d_head]
+        out = rearrange(out, 'b h t d_h -> b t (h d_h)')  # [B, T, D]
+        
+        return out, attn.mean(dim=1)  
