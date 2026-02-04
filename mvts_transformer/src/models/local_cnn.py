@@ -82,16 +82,9 @@ class LocalCNN(nn.Module):
         self.pool = pool
         self.pos_encoding = pos_encoding
         self.where_to_add_abspos = where_to_add_abspos
-        self.num_heads = num_heads
 
         # Embedding layer
-        if self.where_to_add_abspos == "start_concat":
-            # If concatenating pos emb at start, use half of the dimensions for content and half for position
-            content_embed_dim = embed_dim // 2
-        else:
-            content_embed_dim = embed_dim
-
-        self.embed_layer = nn.Linear(patch_size*in_channels, content_embed_dim)  # Each patch has patch_size*num_variables (P*V) elements. Map to embed_dim/2 (D/2).
+        self.embed_layer = nn.Linear(patch_size*in_channels, embed_dim)  # Each patch has patch_size*num_variables (P*V) elements. Map to embed_dim (D).
         self.seq_len = int((max_len - patch_size) / stride + 1)  # Number of patches in time dimension, AFTER PATCHING
 
         if self.conv_type == "hierarchical":  # Gradually reduces number of timesteps
@@ -148,7 +141,7 @@ class LocalCNN(nn.Module):
             else:
                 absolute_emb_dim = num_heads
         else:
-            absolute_emb_dim = content_embed_dim
+            absolute_emb_dim = embed_dim
         ClimaX.setup_absolute_posenc(self, pos_encoding, self.output_seq_len, absolute_emb_dim)
 
         # Setup pooling
@@ -178,9 +171,6 @@ class LocalCNN(nn.Module):
             # CURRENT: add the positional embedding
             x = x + self.pos_embed
             x = self.pos_drop(x)
-        elif self.pos_embed is not None and self.where_to_add_abspos == "start_concat":
-            # Repeat pos embed along batch dimension, then concatenate along embedding dimension
-            x = torch.cat((x, self.pos_embed.unsqueeze(0).repeat_interleave(x.shape[0], dim=0)), dim=2)  # [B, T, D]
 
         # Main convolutional (local) backbone
         if self.conv_type == "lstm":
@@ -208,11 +198,6 @@ class LocalCNN(nn.Module):
     def pool_smoothness_loss(self):
         return ClimaX.pool_smoothness_loss(self)
 
-    def jacobian_loss(self, input):
-        return ClimaX.jacobian_loss(self, input)
-
-    def predict_summed(self, func, input):
-        return ClimaX.predict_summed(self, func, input)
 
 
 

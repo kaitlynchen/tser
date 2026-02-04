@@ -87,12 +87,7 @@ def model_factory(config, data):
                           alibi_max_slope=config['alibi_max_slope'],
                           pool=config['pool'],
                           attention_type=config['attention_type'],
-                          learnable_scale=config.get('learnable_scale', False)),
-                          lambda_neutreno=config['lambda_neutreno'],
-                          attn_scale=config['attn_scale'],
-                          feat_scale=config['feat_scale'],
-                          centered_attn=config['centered_attn']
-                          )
+                          learnable_scale=config.get('learnable_scale', False))
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -111,7 +106,7 @@ class ClimaX(nn.Module):
 
     Args:
         default_vars (list): list of default variables to be used for training
-        img_size (list): image size of the input data. [n_examples*T_orig, V]
+        img_size (list): image size of the input data
         patch_size (int): patch size of the input data
         embed_dim (int): embedding dimension
         depth (int): number of transformer layers
@@ -127,7 +122,6 @@ class ClimaX(nn.Module):
         agg_vars: whether to use cross-variable attention (if False, lumps all variables into one token)
         local_mask: if set to a positive number, only allow attention between tokens that are at most this distance apart. If set to -1, no restriction.
         causal_mask (bool): if True, mask out attention matrix entries that are paying attention to "future" timesteps.
-        lambda_neutreno, attn_scale, feat_scale, centered_attn: various attempts to mitigate oversmoothing, see options.py for details.
     """
 
     def __init__(
@@ -150,7 +144,7 @@ class ClimaX(nn.Module):
         drop_rate=0.1,
         norm='BatchNorm',
         activation='gelu',
-        pos_encoding='learnable_uniform_init',
+        pos_encoding='learnable_random_init',
         where_to_add_abspos='start_add',
         relative_pos_encoding='none',
         where_to_add_relpos='before',
@@ -165,10 +159,6 @@ class ClimaX(nn.Module):
         alibi_min_slope=0.25,
         attention_type='dot',
         learnable_scale=False,
-        lambda_neutreno=0.,
-        attn_scale=False,
-        feat_scale=False,
-        centered_attn=False,
     ):
         super().__init__()
 
@@ -179,7 +169,6 @@ class ClimaX(nn.Module):
         self.max_len = max_seq_len
         self.num_layers = depth
         self.num_heads = num_heads
-        self.embed_dim = embed_dim
         self.pos_encoding = pos_encoding
         self.where_to_add_abspos = where_to_add_abspos
         self.relative_pos_encoding = relative_pos_encoding
@@ -197,46 +186,37 @@ class ClimaX(nn.Module):
         self.pool = pool
         self.attention_type = attention_type
         self.learnable_scale = learnable_scale
-        self.lambda_neutreno = lambda_neutreno
-        self.attn_scale = attn_scale
-        self.feat_scale = feat_scale
-        self.centered_attn = centered_attn
-
-        if self.where_to_add_abspos == "start_concat":
-            content_embed_dim = embed_dim // 2
-        else:
-            content_embed_dim = embed_dim
 
         if self.agg_vars:
             # Variable tokenization: create tokens for each variable, of size "patch_size"
             # Here we use the same embedding layer for all variables.
             # TODO: In Climax code, I think they use separate embedding layers for each input?
             # https://github.com/microsoft/ClimaX/blob/main/src/climax/arch.py 
-            self.embed_layer = nn.Linear(patch_size, content_embed_dim)
+            self.embed_layer = nn.Linear(patch_size, embed_dim)
 
             # Variable embedding to denote which variable each token belongs to
             # helps in aggregating variables
-            self.var_embed = self.create_var_embedding(content_embed_dim)  # [V, D]
+            self.var_embed = self.create_var_embedding(embed_dim)  # [V, D]
 
             # variable aggregation: a learnable query and a single-layer cross attention
-            self.var_query = nn.Parameter(torch.zeros(1, 1, content_embed_dim), requires_grad=True)  # [1, 1, D]
-            self.var_agg = nn.MultiheadAttention(content_embed_dim, num_heads, batch_first=True)
+            self.var_query = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)  # [1, 1, D]
+            self.var_agg = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
             seq_len = int((max_seq_len - patch_size) / stride + 1)
 
         elif self.conv_transformer:
             # Convolutional encoder
-            self.embed_layer = ConvEmbed(patch_size, img_size[1], content_embed_dim,
+            self.embed_layer = ConvEmbed(patch_size, img_size[1], embed_dim,
                                          stride, padding=int(np.ceil((patch_size-stride)/2)),  # Ensures that num_patches (T) is num_timesteps/stride
                                          norm_layer=nn.BatchNorm1d)
             seq_len = int(max_seq_len // stride)
         else:
-            self.embed_layer = nn.Linear(patch_size*img_size[1], content_embed_dim)  # Each patch has patch_size*num_variables (P*V) elements. Map to embed_dim (D).
+            self.embed_layer = nn.Linear(patch_size*img_size[1], embed_dim)  # Each patch has patch_size*num_variables (P*V) elements. Map to embed_dim (D).
 
             # Number of tokens (patches) in the time dimension (T)
             seq_len = int((max_seq_len - patch_size) / stride + 1)
         self.seq_len = seq_len
 
-        # Set up positional embedding
+        # Positional embedding
         # Note: if absolute positional embedding is added inside the pooling attention,
         # the embedding size is equal to the number of heads. Otherwise it's the normal embedding dim.
         if where_to_add_abspos in ["pooling_before_softmax", "pooling_gating"]:
@@ -245,7 +225,7 @@ class ClimaX(nn.Module):
             else:
                 absolute_emb_dim = num_heads
         else:
-            absolute_emb_dim = content_embed_dim
+            absolute_emb_dim = embed_dim
         self.setup_absolute_posenc(pos_encoding, seq_len, absolute_emb_dim)
         self.setup_relative_posenc(relative_pos_encoding, seq_len, self.num_layers, num_heads)
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -256,9 +236,7 @@ class ClimaX(nn.Module):
                                                  feedforward_dim, drop_rate * (1.0 - freeze), attention_type=attention_type, learnable_scale=learnable_scale)
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
-                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos,
-                conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale,
-                lambda_neutreno=lambda_neutreno, attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn)
+                embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos, conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale)
         
         # Create TransformerEncoder with multiple layers
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
@@ -268,7 +246,7 @@ class ClimaX(nn.Module):
         self.dropout1 = nn.Dropout(p=drop_rate)
 
         # TODO: Try not initializing weights and stick with default (Kaiming uniform)?
-        # self.initialize_weights()
+        self.initialize_weights()
 
         # Initialize pooling
         self.setup_pooling(embed_dim, num_heads, seq_len, num_classes)
@@ -285,6 +263,10 @@ class ClimaX(nn.Module):
         if self.causal_mask:
             causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq_len).to(device)  # 0 for valid, -inf for invalid (future)
             self.invalid_mask += causal_mask
+            # if self.invalid_mask is None:
+            #     self.invalid_mask = (causal_mask != 0)
+            # else:
+            #     self.invalid_mask = self.invalid_mask & (causal_mask != 0)
 
 
     def setup_relative_posenc(self, relative_pos_encoding, seq_len, num_layers, num_heads):
@@ -337,7 +319,6 @@ class ClimaX(nn.Module):
                 bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
             elif relative_pos_encoding == "erpe_alibi_init":
                 # ALIBI with custom slopes
-                self.alibi_heads = num_heads
                 log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
                 slopes = 2 ** log_slopes
                 bias_table_init = torch.zeros(2*seq_len-1, num_heads)
@@ -612,17 +593,6 @@ class ClimaX(nn.Module):
                 nn.ReLU(),
                 nn.Linear(embed_dim, num_classes)
             )
-        elif self.pool == "seqpool_cls":
-            self.pool_query = nn.Parameter(torch.randn(pool_input_dim), requires_grad=True)
-            self.pool_key = nn.Linear(pool_input_dim, pool_input_dim)
-            self.pool_value = nn.Linear(pool_input_dim, pool_input_dim)
-            self.pool_temp = nn.Parameter(torch.ones(num_heads))
-            self.fc = nn.Sequential(
-                nn.Linear(pool_input_dim, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, num_classes)
-            )
-        
         elif self.pool == "average":
             self.fc = nn.Sequential(
                 nn.AdaptiveAvgPool1d(1),
@@ -700,7 +670,6 @@ class ClimaX(nn.Module):
         Returns x: [B, T, D]. attn_weights: [B, L*H, T, T]
         """
 
-        # Tokenization
         if self.agg_vars:
             # Tokenize each variable separately. Each patch contains one variable, P timesteps.
             x = rearrange(x, "b t_orig v -> b v t_orig")  # [B, V, T_orig]
@@ -725,7 +694,7 @@ class ClimaX(nn.Module):
                 x = rearrange(x, "b t_orig v -> b v t_orig")
                 x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
                 x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
-            x = self.embed_layer(x) * math.sqrt(self.embed_dim)  # [B, T, D]. TODO Changed to match ts_transformer
+            x = self.embed_layer(x)  # [B, T, D]
 
         # Add ABSOLUTE pos embedding if using.
         # At this point, X should be [B, T, D], and pos_embed should be [T, D]. (T = number of patches along time dimension)
@@ -733,9 +702,6 @@ class ClimaX(nn.Module):
             # CURRENT: add the positional embedding
             x = x + self.pos_embed
             x = self.pos_drop(x)
-        elif self.pos_embed is not None and self.where_to_add_abspos == "start_concat":
-            # Repeat pos embed along batch dimension, then concatenate along embedding dimension
-            x = torch.cat((x, self.pos_embed.unsqueeze(0).repeat_interleave(x.shape[0], dim=0)), dim=2)  # [B, T, D]
 
         # Construct mask for relative positional encoding.
         offset_mask = None
@@ -753,7 +719,7 @@ class ClimaX(nn.Module):
             
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = biases.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
-            offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L, H, T, T]
+            offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L. H, T, T]
             offset_mask = offset_mask.repeat((1, x.shape[0], 1, 1))  # [L, B*H, T, T]
 
         elif self.relative_pos_encoding == "convit":
@@ -904,7 +870,7 @@ class ClimaX(nn.Module):
             plt.savefig(os.path.join(plot_dir, 'timestep_similarities.png'))
             plt.close()
 
-            # Plot attention matrices: for each example, plot random subset of layers/heads. attn_matrices: [B, n_matrices, T, T]
+            # Plot attention matrices: for each example, plot random subset of layers/heads. attn_weights_enc: [L, B, H, T, T]
             min_value, max_value = utils.approx_min_max(attn_matrices)
 
             # Random subset of heads/layers
@@ -1007,22 +973,12 @@ class ClimaX(nn.Module):
         # POOLING. Note that "preds" shape is [B, T, D]
         pooling_attn = None
         if "seqpool" in self.pool:
-            # Compute pooling attention scores BEFORE SOFTMAX, which should be [B, T, H]
-            if self.pool == "seqpool_cls":
-                q = rearrange(self.pool_query, '(h d_h) -> 1 h 1 d_h', h=self.num_heads)  # [1, H, 1, D]
-                k = rearrange(self.pool_key(preds), 'b t (h d_h) -> b h d_h t', h=self.num_heads)  # [B, H, D, T]    
-                qk = torch.matmul(q, k)  # [1, H, 1, D] x [B, H, D, T] -> [B, H, 1, T]
-                qk = rearrange(qk, 'b h 1 t -> b t h') 
-                pooling_attn_before_softmax = qk / self.pool_temp # Divide by pool_temp which is [H]
-            else:
-                pooling_attn_before_softmax = self.attention_pool(preds) / self.pool_temp
-            
-            # Add absolute position to before-softmax pooling attn if desired
+            # Compute pooling attention scores
             if self.where_to_add_abspos == "pooling_before_softmax":
-                pooling_attn = F.softmax(pooling_attn_before_softmax + self.pos_embed, dim=1)  # [B, T, H]
+                pooling_attn = F.softmax(self.attention_pool(preds) / self.pool_temp + self.pos_embed, dim=1)  # [B, T, H]
             elif self.where_to_add_abspos == "pooling_gating":
                 # Content and positional attention
-                pooling_content_attn = F.softmax(pooling_attn_before_softmax, dim=1)  # [B, T, H]
+                pooling_content_attn = F.softmax(self.attention_pool(preds) / self.pool_temp, dim=1)  # [B, T, H]
                 pooling_pos_attn = F.softmax(self.pos_embed, dim=0).unsqueeze(0)  # [1, T, H]
 
                 # Combine them with gating
@@ -1030,7 +986,7 @@ class ClimaX(nn.Module):
                 pooling_attn = (1.-torch.sigmoid(pooling_gating)) * pooling_content_attn + torch.sigmoid(pooling_gating) * pooling_pos_attn
                 pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [B, T, H]
             else:
-                pooling_attn = F.softmax(pooling_attn_before_softmax, dim=1)  # [B, T, H]
+                pooling_attn = F.softmax(self.attention_pool(preds) / self.pool_temp, dim=1)  # [B, T, H]
 
             # Do the pooling
             if self.pool == "seqpool":
@@ -1061,12 +1017,6 @@ class ClimaX(nn.Module):
                 pooling_attn = F.softmax(pooling_attn, dim=2)  # [B, H, T]
                 aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, T] x [B, T, D] -> [B, H, D]
                 aggregated_x = rearrange(aggregated_x, 'b h d -> b (h d)')  # Combine head embeddings: [B, H*D]
-                preds = self.fc(aggregated_x)  # [B, num_classes]
-            elif self.pool == "seqpool_cls":
-                pooling_attn = rearrange(pooling_attn, 'b t h -> b h 1 t')
-                preds = rearrange(self.pool_value(preds), 'b t (h d_h) -> b h t d_h', h=self.num_heads)
-                aggregated_x = torch.matmul(pooling_attn, preds)  # [B, H, 1, T] x [B, H, T, d_h] -> [B, H, 1, d_h]
-                aggregated_x = rearrange(aggregated_x, 'b h 1 d_h -> b (h d_h)')  # Combine head embeddings: [B, H*d_h]
                 preds = self.fc(aggregated_x)  # [B, num_classes]
 
         elif self.pool == "linear":
@@ -1182,10 +1132,7 @@ class ClimaX(nn.Module):
         Smoothness on attention matrices (excluding pooling attention)
         """
         # self.attn_matrices is [B, L*H, T, T]
-        if self.where_to_add_relpos == "only_relpos":
-            attn_weights_layers = self.attn_matrices[0]  # If only_relpos, all examples have same attn
-        else:
-            attn_weights_layers = rearrange(self.attn_matrices, "b n t0 t1 -> (b n) t0 t1")  # Convert to [..., T, T] - list of attention matrices
+        attn_weights_layers = rearrange(self.attn_matrices, "b n t0 t1 -> (b n) t0 t1")  # Convert to [..., T, T] - list of attention matrices
         attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).abs()).sum(dim=2).mean()
         return attn_smoothness_loss
 
@@ -1254,11 +1201,9 @@ class ClimaX(nn.Module):
         X_min = input.min(dim=0, keepdim=True).values
         X_max = input.max(dim=0, keepdim=True).values
         random_vals = torch.rand_like(input, device=input.device) * (X_max - X_min) + X_min
-
-        # TODO: Where should Jacobian be calculated? At input points, noised inputs, or random?
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning) 
-            jacobian = torch.func.jacrev(self.predict_summed, argnums=1)(self.forward, input)  # [B, T, V]
+            jacobian = torch.func.jacrev(self.predict_summed, argnums=1)(self.forward, random_vals)  # [B, T, V]
         jacobian = rearrange(jacobian, "b t v -> b (t v)")
         jacobian_loss = torch.linalg.norm(jacobian, dim=1).mean()
         self.train(was_training)
@@ -1390,15 +1335,11 @@ class TransformerEncoder(nn.modules.Module):
         embeddings_layers = [output]  # Also store the pre-encoder embedding
 
         # Compute forward pass
-        output0 = None
         for layer_idx, mod in enumerate(self.layers):
             mask = masks[layer_idx] if masks is not None else None
-            assert output0 is not None or layer_idx == 0, "output0 should be set in the first layer"
-            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers, plot_dir=plot_dir, output0=output0)  # output: [B, T, D], attn_weights: [B, H, T, T]
+            output, attn_weights = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers, plot_dir=plot_dir)  # output: [B, T, D], attn_weights: [B, H, T, T]
             attn_weights_layers.append(attn_weights)
             embeddings_layers.append(output)
-            if layer_idx == 0:
-                output0 = output.detach()
 
         attn_weights_layers = torch.stack(attn_weights_layers, dim=0)  # [L, B, H, T, T]
         embeddings_layers = torch.stack(embeddings_layers, dim=0)  # [L+1, B, T, D]
@@ -1423,13 +1364,12 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none',
-                 where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False,
-                 lambda_neutreno=0.0, attn_scale=False, feat_scale=False, centered_attn=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none', where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         # if where_to_add_relpos == "before":
         #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
-        #     # Currently commenting this out so we can use the customized Attention_Rel_Scl below - TODO Check they behave similarly.
+        #     # TODO: Currently commenting this out so we can use the customized verson below.
+        #     # Note: we could also use Attention_Rel_Scl here. TODO - check that they behave the same way
         #     self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         #     assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         # else:
@@ -1438,10 +1378,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             self.self_attn = AttentionWithRoPE(d_model, nhead, attn_drop=dropout, proj_drop=dropout)
         else:
             # Custom attention if we want relative position offset to be applied after softmax
-            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection,
-                                               where_to_add_relpos=where_to_add_relpos,
-                                               attention_type=attention_type, learnable_scale=learnable_scale,
-                                               attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn)
+            self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection, where_to_add_relpos=where_to_add_relpos, attention_type=attention_type, learnable_scale=learnable_scale)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1455,18 +1392,16 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         self.dropout2 = Dropout(dropout)
 
         self.activation = F.gelu
-        self.lambda_neutreno = lambda_neutreno
 
 
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
-                src_key_padding_mask: Optional[Tensor] = None, plot_dir = None, output0 = None) -> Tensor:
+                src_key_padding_mask: Optional[Tensor] = None, plot_dir = None) -> Tensor:
         r"""Pass the input through the encoder layer.
 
         Args:
             src: the sequence to the encoder layer (required). Shape: [B, T, D]
             src_mask: the mask for the src sequence (optional). Shape: [B*H, T, T]
             src_key_padding_mask: the mask for the src keys per batch (optional).
-            output0: if passed, adjust outputs by adding (output - output0)
 
         Output:
             src: [B, T, D]
@@ -1476,10 +1411,6 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             # Attention_Rel_Scl allows plot_dir
             src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
                                 key_padding_mask=src_key_padding_mask, average_attn_weights=False, plot_dir=plot_dir)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
-            if self.lambda_neutreno > 0:
-                if output0 is not None:
-                    src2 = src2 + self.lambda_neutreno * (output0 - src2)
-
         else:
             src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
                                 key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
@@ -1504,9 +1435,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 # We try various approaches to combine positional and content attention.
 # ========================================================================================
 class Attention_Rel_Scl(nn.Module):
-    def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos,
-                 attention_type='dot', learnable_scale=False,
-                 attn_scale=False, feat_scale=False, centered_attn=False, **kwargs):
+    def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos, attention_type='dot', learnable_scale=False, **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.conv_projection = conv_projection
@@ -1518,18 +1447,7 @@ class Attention_Rel_Scl(nn.Module):
         else:
             self.scale = (emb_size / num_heads) ** -0.5
 
-        # Attention/feature scaling: for mitigating oversmoothness
-        self.attn_scale = attn_scale
-        if self.attn_scale:
-            self.attn_scale_lamb = nn.Parameter(torch.zeros(num_heads), requires_grad=True)
-        self.feat_scale = feat_scale
-        if self.feat_scale:
-            self.feat_scale_lamb1 = nn.Parameter(torch.zeros(emb_size), requires_grad=True)
-            self.feat_scale_lamb2 = nn.Parameter(torch.zeros(emb_size), requires_grad=True)
-        self.centered_attn = centered_attn
-
         if conv_projection:
-            # If conv_projection, the query/key/value are convolutions
             self.key = nn.Sequential(OrderedDict([
                 ('rearrange_to_conv', Rearrange('b t c -> b c t')),
                 ('conv', nn.Conv1d(emb_size, emb_size, kernel_size=5, padding=2,stride=1, bias=False, groups=emb_size)),
@@ -1552,37 +1470,15 @@ class Attention_Rel_Scl(nn.Module):
                 ('linear', nn.Linear(emb_size, emb_size, bias=False))
             ]))
         else:
-            # Default: query/key/value are per-timestep linear projections
             self.key = nn.Linear(emb_size, emb_size, bias=False)
             self.value = nn.Linear(emb_size, emb_size, bias=False)
             self.query = nn.Linear(emb_size, emb_size, bias=False)
+            self.key.weight.data.copy_(torch.eye(emb_size))
+            self.value.weight.data.copy_(torch.eye(emb_size))
+            self.query.weight.data.copy_(torch.eye(emb_size))
 
-            # TODO Not sure why this got added?
-            # self.key.weight.data.copy_(torch.eye(emb_size))
-            # self.value.weight.data.copy_(torch.eye(emb_size))
-            # self.query.weight.data.copy_(torch.eye(emb_size))
-
-        # Output projection
-        self.out_proj = nn.Linear(emb_size, emb_size)
         self.dropout = nn.Dropout(dropout)
-
-        # Gating parameter (if using gating to combine content/position attention)
-        self.gating_param = nn.Parameter(torch.ones(num_heads))  # nn.Parameter(torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
-        
-
-
-    def freq_decompose(self, x):
-        """
-        Helper function to decompose features into two components: low-frequency
-        (mean across all timesteps) and high-frequency (local differences from mean)
-
-        Source: https://github.com/VITA-Group/ViT-Anti-Oversmoothing/blob/main/featscale.py
-        
-        x should have shape [B, T, D]
-        """
-        x_d = torch.mean(x, -2, keepdim=True) # [B, 1, D]
-        x_h = x - x_d # high freq [B, T, D]
-        return x_d, x_h
+        self.gating_param = nn.Parameter(torch.ones(num_heads))  # torch.cat([-1*torch.ones(num_heads//2), torch.ones(num_heads//2)]))
 
 
     def forward(self, query, key, value, attn_mask, plot_dir=None, **kwargs):
@@ -1591,11 +1487,10 @@ class Attention_Rel_Scl(nn.Module):
         as the linear projections happen inside the method.
         Mask should be [B*H, T, T]
 
-        Output is [B, T, D], and attn matrix [B, H, T, T], and values [B, T, D] (only used for NeuTRENO)
+        Output is [B, T, D], and attn matrix [B, H, T, T]
         """
         assert query.shape == key.shape
         assert query.shape == value.shape
-        B, T, D = query.shape
 
         if self.where_to_add_relpos == "only_relpos":
             # If only_relpos, we don't need to calcualte content attention - just
@@ -1636,10 +1531,9 @@ class Attention_Rel_Scl(nn.Module):
             attn = F.softmax(content_attn + attn_mask, dim=-1)
         else:
             # Take softmax of content attention first (relative position encoding added later)
-            attn = F.softmax(content_attn, dim=-1) # [B, H, T, T]
+            attn = F.softmax(content_attn, dim=-1)
             content_attn = attn
 
-        # If adding relative position biases after softmax, add it here
         if attn_mask is not None:
             if self.where_to_add_relpos == 'after':
                 # In this case, content_attn has been passed through softmax already
@@ -1693,37 +1587,10 @@ class Attention_Rel_Scl(nn.Module):
                 plt.savefig(os.path.join(plot_dir, 'attention_breakdown.png'))
                 plt.close()
 
-        # AttnScale
-        if self.attn_scale:
-            # Low-pass: uniform attention matrix
-            attn_d = torch.ones(attn.shape[-2:], device=attn.device) / T    # [T, T]
-            attn_d = attn_d[None, None, ...]                                # [1, 1, T, T]
-
-            # High-pass component: local differences from uniform average
-            attn_h = attn - attn_d                                          # [B, H, T, T]
-            attn_h = attn_h * (1. + self.attn_scale_lamb[None, :, None, None])         # [B, H, T, T]
-            attn = attn_d + attn_h                                          # [B, H, T, T]
-            # attn = self.attn_drop(attn)
-        if self.centered_attn:
-            # Centered attention: Section 3.2 from https://arxiv.org/pdf/2306.01610
-            attn_offset = -1 * torch.ones(attn.shape[-2:], device=attn.device) / T    # [T, T]
-            attn = attn + attn_offset
-
-        # Aggregate values using attention
         out = torch.matmul(attn, v)  # [B, H, T, T] * [B, H, T, d_head] -> [B, H, T, d_head]
+        # out.shape = (batch_size, num_heads, seq_len, d_head)
         out = rearrange(out, 'b h t d_h -> b t (h d_h)')  # Reunify the heads, output is [B, T, D]
-
-        # Output projection
-        out = self.out_proj(out) # [B, T, D]
-        # out = self.dropout(out)  # TODO No dropout for now
-
-        # FeatScale
-        if self.feat_scale:
-            x_d, x_h = self.freq_decompose(out)
-            x_d = x_d * self.feat_scale_lamb1
-            x_h = x_h * self.feat_scale_lamb2
-            out = out + x_d + x_h
-        return out, attn  # Also return attn for visualization purposes
+        return out, attn
 
 
 # ========================================================================

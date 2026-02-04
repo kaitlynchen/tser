@@ -73,10 +73,34 @@ def main(config):
         logger.info("Device index: {}".format(torch.cuda.current_device()))
 
     # Build data
-    if config["model"] is not None and config["model"] == "climax_smooth":
+    if config["model"] is not None and config["model"] == "swin":
+        from models.ts_swin import model_factory
+    elif config["model"] is not None and config["model"] == "swin_pool":
+        from models.ts_swin_pool import model_factory
+    elif config["model"] is not None and config["model"] == "smooth":
+        from models.ts_smooth_transformer import model_factory
+    elif config["model"] is not None and config["model"] == "patch":
+        from models.patch_tst import model_factory
+    elif config["model"] is not None and config["model"] == "climax":
+        from models.ts_climax_base import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth":
         from models.ts_climax import model_factory
-    elif config["model"] is not None and config["model"] == "local_cnn":
+    elif config["model"] is not None and config["model"] == "convit":
+        from models.climax_convit import model_factory
+    elif config["model"] is not None and config["model"] == "convit_smooth":
+        from models.climax_convit_smooth import model_factory
+    elif config["model"] is not None and config["model"] == "convit_2":
+        from models.climax_with_convit_blocks import model_factory
+    elif config["model"] is not None and config["model"] in ["local_cnn", "local_cnn2"]:
         from models.local_cnn import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth_plot":
+        from models.ts_climax_timestep import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth_pool":
+        from models.ts_climax_seqpool_smooth import model_factory
+    elif config["model"] is not None and config["model"] == "climax_max_pool":
+        from models.ts_climax_max_pool import model_factory
+    elif config["model"] is not None and config["model"] == "climax_seqpool":
+        from models.ts_climax_seqpool import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -180,13 +204,7 @@ def main(config):
             threshold = np.quantile(start_times["time_int"], 1 - config['val_ratio'])
             train_indices = start_times[start_times["time_int"] < threshold].index  # example_idx became index after groupby
             val_indices = start_times[start_times["time_int"] >= threshold].index
-        elif config["val_sequential_split"]:
-            cutoff = int(len(my_data.all_IDs) * (1 - config["val_ratio"]))
-            print("Sequential split, Train indices", my_data.all_IDs)
-            train_indices = my_data.all_IDs[0:cutoff]
-            val_indices = my_data.all_IDs[cutoff:]
         else:
-            print("Random split")
             train_indices, val_indices = split_dataset(
                 data_indices=my_data.all_IDs,
                 validation_method=validation_method,

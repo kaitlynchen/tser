@@ -64,7 +64,6 @@ class Options(object):
         self.parser.add_argument('--val_ratio', type=float, default=0.2,
                                  help="Proportion of the dataset to be used as a validation set")
         self.parser.add_argument('--val_temporal_split', action='store_true', help="If set, split train/val set temporally.")
-        self.parser.add_argument('--val_sequential_split', action='store_true', help="If set, split train/val set sequentially.")
         self.parser.add_argument('--pattern', type=str,
                                  help='Regex pattern used to select files contained in `data_dir`. If None, all data will be used.')
         self.parser.add_argument('--val_pattern', type=str, default=None,
@@ -207,7 +206,7 @@ class Options(object):
         self.parser.add_argument('--pos_encoding', choices={'fixed_sin', 'learnable', 'learnable_zero_init', 'learnable_uniform_init',
                                                             'learnable_sin_init', 'learnable_tape_init', 'none'}, default='learnable_uniform_init',
                                  help='Method for ABSOLUTE positional encoding. learnable defaults to learnable_uniform_init')
-        self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "start_concat", "before_pool_add", "before_pool_concat",
+        self.parser.add_argument('--where_to_add_abspos', type=str, choices=["start_add", "before_pool_add", "before_pool_concat",
                                                                              "pooling_before_softmax", "pooling_gating"], default="start_add",
                                  help='Where to inject the absolute positional embedding: at start (add), before seqpool (add/concat), or as learnable offset in the pooling softmax.')
         self.parser.add_argument('--relative_pos_encoding', choices={'alibi', 'erpe_zero_init', 'erpe_uniform_init',
@@ -239,18 +238,8 @@ class Options(object):
                                  help='Number of decoder layers')
 
         # Pooling
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'seqpool_cls', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
                                  help='Type of final pooling')
-
-        # Oversmoothing related
-        self.parser.add_argument('--lambda_neutreno', type=float, default=0,
-                                 help="Weight for NeuTRENO regularization. See https://arxiv.org/pdf/2312.00751")
-        self.parser.add_argument('--attn_scale', action='store_true',
-                                help="""If set, learn scaling factors (per layer/head) for the high-frequency component of attn matrix. See https://arxiv.org/pdf/2203.05962""")
-        self.parser.add_argument('--feat_scale', action='store_true',
-                                help="""If set, learn scaling factors (per layer/channel) for the high-frequency component of embeddings (post-attention). See https://arxiv.org/pdf/2203.05962""")
-        self.parser.add_argument('--centered_attn', action='store_true',
-                                help="""If set, subtract 1/T from attention matrix so that it sums to 0 instead of 1. See https://arxiv.org/pdf/2306.01610""")
 
         # Local-CNN specific
         self.parser.add_argument('--conv_type', type=str, choices=['hierarchical', 'local', 'per_timestep', 'lstm'], default='hierarchical',
@@ -258,12 +247,9 @@ class Options(object):
         # self.parser.add_argument('--local_cnn2_batch_norm', action='store_true', help='Set to use batchnorm in LocalCNN2.')
         # self.parser.add_argument('--local_cnn2_spectral_norm', action='store_true', help='Set to use spectral norm in LocalCNN2.')
 
-        # Augmentation
-        self.parser.add_argument('--input_noise_std', type=float, default=0.0)
-
         # C-Mixup specific
-        self.parser.add_argument('--mixtype', type=str, default='none', choices=['none', 'kde', 'random', 'dtw'],
-                                 help="If set to kde, random, or dtw, use C-Mixup with given sampling probabilities. kde is recommended (interpolate beteen points with nearby labels)")
+        self.parser.add_argument('--mixtype', type=str, default='random',
+                                 help="random or kde or erm or dtw")
         self.parser.add_argument('--kde_bandwidth', type=float, default=1.0,
                                  help="bandwidth")
         self.parser.add_argument('--mix_alpha', type=float, default=2)

@@ -1,22 +1,16 @@
 #!/bin/bash
 
-# ============================= USAGE ==============================
-# Tunes hyperparameters for Convit.
+# Usage on Slurm:
+# sbatch repro_scripts/convalibi_dilated.sh AppliancesEnergy
+# Output will appear in a file 'slurm-N.out' where N is the job ID.
+# Change dataset in DATA below.
 
-# ./repro_scripts/convit.sh <DATASET>
-# (replace <DATASET> with one of: AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent)
-# Don't forget to change DATA_DIR and "ACTIVATE ENVIRONMENT" commands.
-
-# Results will be written to `output/${OUTPUT_FILE}.xls` (you can modify OUTPUT_FILE in this script).
-# Then, we test the best hyperparameters, and write result to `output/${OUTPUT_FILE}_TESTBEST.xls`
-# NOTE: The "test loss" column is MSE, take square root to get RMSE (except for MEAN/STD rows, which are RMSE)
-
-# ======== SLURM BOILERPLATE - Ignore if not using Slurm. =========
 # Request the full partition
 #SBATCH -p full
 #SBATCH --exclude=c0020,c0002
+
 # Name the job so it's meaningful in the job list
-#SBATCH -J erpe_convalibi
+#SBATCH -J convit_ieeeppg
 # Request 1 V100 GPU
 #SBATCH --gpus v100:1
 # Request 4 CPU cores (8 hyperthreads).
@@ -28,18 +22,13 @@
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
-# ============================ DATASET ============================
-DATA=$1
-echo $DATA
-DATA_DIR="/mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/"  # TODO: Change this!!!
-
-# ========== ACTIVATE ENVIRONMENT (TODO: Change this!!!) ==========
+# Activate environment
 source ~/.bashrc
-conda activate tser
+conda activate crop-updated
 
-# ======================= HYPERPARAMETERS =========================
-# Default settings
-SPLIT=""
+# Dataset
+# AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
+DATA="IEEEPPG"
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -74,7 +63,7 @@ else
 fi
 
 # OUTPUT FILE
-OUTPUT_FILE="${DATA}_CONVIT_TUNING"
+OUTPUT_FILE="${DATA}_CONVIT"
 
 # TUNING
 for LR in 1e-2 1e-3 1e-4
@@ -87,10 +76,10 @@ do
             do
                 # BASIC
                 PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
-                python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                    --records_file "output/${OUTPUT_FILE}.xls" \
-                    --data_dir $DATA_DIR --data_class tsra \
-                    --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                python mvts_transformer/src/main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+                    --records_file "${OUTPUT_FILE}.xls" \
+                    --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
+                    --pattern TRAIN --val_ratio 0.2 \
                     --epochs 2000 --patience 200 \
                     --lr $LR --batch_size $BS \
                     --num_layers 3 --num_heads $HEADS --d_model $D_MODEL --dim_feedforward $DIM_FEEDFORWARD \
@@ -106,4 +95,4 @@ do
 done
 
 # TEST
-python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+python mvts_transformer/src/test_best.py --records_file "${OUTPUT_FILE}.xls"
