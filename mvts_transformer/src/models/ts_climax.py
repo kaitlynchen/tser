@@ -1582,7 +1582,7 @@ class Attention_Rel_Scl(nn.Module):
         as the linear projections happen inside the method.
         Mask should be [B*H, T, T]
 
-        Output is [B, T, D], and attn matrix [B, H, T, T], and values [B, T, D] (only used for NeuTRINO)
+        Output is [B, T, D], and attn matrix [B, H, T, T], and values [B, T, D] (only used for NeuTRENO)
         """
         assert query.shape == key.shape
         assert query.shape == value.shape
@@ -1693,11 +1693,10 @@ class Attention_Rel_Scl(nn.Module):
         # Aggregate values using attention
         out = torch.matmul(attn, v)  # [B, H, T, T] * [B, H, T, d_head] -> [B, H, T, d_head]
         out = rearrange(out, 'b h t d_h -> b t (h d_h)')  # Reunify the heads, output is [B, T, D]
-        # v = rearrange(v, 'b h t d_h -> b t (h d_h)')  # Same for v
 
         # Output projection
         out = self.out_proj(out) # [B, T, D]
-        # out = self.dropout(out) TODO No dropout for now
+        # out = self.dropout(out)  # TODO No dropout for now
 
         # FeatScale
         if self.feat_scale:

@@ -548,8 +548,6 @@ class SupervisedRunner(BaseRunner):
 
     def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, need_attn_weights=False):
         self.model = self.model.train()
-        # for name, parameter in self.model.named_parameters():
-        #     print(f"Parameter {name}, Shape {parameter.shape}, Req grad {parameter.requires_grad}")
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch

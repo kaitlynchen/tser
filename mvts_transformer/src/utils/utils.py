@@ -91,7 +91,6 @@ def get_mixup_sample_rate(args, data_packet, device='cuda', use_kde = False):
         mix_idx = each_rate
     else:
         for i in range(N):
-            print("MIXTYPE", args["mixtype"])
             if args["mixtype"] == 'kde' or use_kde: # kde
                 data_i = data_list[i]
                 data_i = data_i.reshape(-1,data_i.shape[0]) # get 2D
