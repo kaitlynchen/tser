@@ -1,9 +1,8 @@
 # Scikit-learn baselines. Usage:
 # ./run_sklearn.sh AppliancesEnergy
-# # Josh's results:
 
 
-# IEEEPPG LiveFuelMoistureContent BeijingPM10Quality
+# AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
 DATA=${1}
 
 # for MODEL in lasso ridge xgboost random_forest
