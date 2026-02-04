@@ -82,10 +82,12 @@ def model_factory(config, data):
                           conv_projection=config['conv_projection'],
                           local_mask=config['local_mask'],
                           causal_mask=config['causal_mask'],
-                          pool=config['pool'],
                           convit_slope=config['convit_slope'],
                           alibi_min_slope=config['alibi_min_slope'],
                           alibi_max_slope=config['alibi_max_slope'],
+                          pool=config['pool'],
+                          attention_type=config['attention_type'],
+                          learnable_scale=config.get('learnable_scale', False)),
                           lambda_neutreno=config['lambda_neutreno'],
                           attn_scale=config['attn_scale'],
                           feat_scale=config['feat_scale'],
@@ -161,6 +163,8 @@ class ClimaX(nn.Module):
         convit_slope=1.0,
         alibi_max_slope=4.0,
         alibi_min_slope=0.25,
+        attention_type='dot',
+        learnable_scale=False,
         lambda_neutreno=0.,
         attn_scale=False,
         feat_scale=False,
@@ -180,6 +184,10 @@ class ClimaX(nn.Module):
         self.where_to_add_abspos = where_to_add_abspos
         self.relative_pos_encoding = relative_pos_encoding
         self.where_to_add_relpos = where_to_add_relpos
+        self.convit_slope = convit_slope
+        self.alibi_max_slope = alibi_max_slope
+        self.alibi_min_slope = alibi_min_slope
+        self.alibi_heads = num_heads
         self.agg_vars = agg_vars
         self.conv_transformer = conv_transformer
         self.device = device
@@ -187,9 +195,8 @@ class ClimaX(nn.Module):
         self.causal_mask = causal_mask
         self.conv_projection = conv_projection
         self.pool = pool
-        self.convit_slope = convit_slope
-        self.alibi_max_slope = alibi_max_slope
-        self.alibi_min_slope = alibi_min_slope
+        self.attention_type = attention_type
+        self.learnable_scale = learnable_scale
         self.lambda_neutreno = lambda_neutreno
         self.attn_scale = attn_scale
         self.feat_scale = feat_scale
@@ -246,12 +253,12 @@ class ClimaX(nn.Module):
         # Define single encoder layer
         if self.conv_transformer:
             encoder_layer = ConvTransformerBlock(embed_dim, num_heads, patch_size,
-                                                 feedforward_dim, drop_rate * (1.0 - freeze))
+                                                 feedforward_dim, drop_rate * (1.0 - freeze), attention_type=attention_type, learnable_scale=learnable_scale)
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos,
-                conv_projection=conv_projection, lambda_neutreno=lambda_neutreno,
-                attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn)
+                conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale,
+                lambda_neutreno=lambda_neutreno, attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn)
         
         # Create TransformerEncoder with multiple layers
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
@@ -347,8 +354,6 @@ class ClimaX(nn.Module):
                 self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
                 self.convit_offsets = torch.tensor([0] + [-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                           [2.0 ** i for i in range(self.convit_heads//2 - 1)], device=self.device)
-                # self.convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
-                #                                 [3.0 ** i for i in range(self.convit_heads//2)], device=self.device)
                 convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
                 bias_table_init[:, :self.convit_heads] = convit_biases
                 # bias_table_init = torch.clamp(bias_table_init, min=-5)
@@ -366,6 +371,7 @@ class ClimaX(nn.Module):
                 else:
                     self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
                                                    [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
+                                                   
                 convit_biases = -1.0 * self.convit_slopes * torch.abs(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
 
                 # Alibi heads
@@ -455,7 +461,6 @@ class ClimaX(nn.Module):
                 self.alibi_heads = num_heads // 2
                 log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = (2 ** log_slopes) ** 2
-                print("Alibi slopes quadratic", self.alibi_slopes)
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
                 alibi_biases = -1.0 * self.alibi_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
@@ -482,7 +487,6 @@ class ClimaX(nn.Module):
                 self.alibi_heads = num_heads // 2
                 log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
                 self.alibi_slopes = (2 ** log_slopes)
-                print("Alibi slopes quadratic", self.alibi_slopes)
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
                 alibi_biases = -1.0 * self.alibi_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
@@ -505,7 +509,6 @@ class ClimaX(nn.Module):
             coords_t = torch.arange(seq_len, device=self.device)
             relative_coords = coords_t[:, None] - coords_t[None, :]  # [T, T]. Each entry (i, j) contains (i - j)
             relative_coords += seq_len - 1  # shift to start from 0. Each entry (i, j) contains (i - j) + T - 1
-            print("RELATIVE COORDS", relative_coords[0:10, 0:10])
             self.register_buffer("relative_coords", relative_coords)
 
         elif relative_pos_encoding == "convit":
@@ -1024,7 +1027,6 @@ class ClimaX(nn.Module):
 
                 # Combine them with gating
                 pooling_gating = self.pooling_gating_param.view(1,1,-1)  # [1, 1, H]
-                # print("Pooling gating", pooling_gating.shape, pooling_gating, pooling_content_attn.shape, pooling_pos_attn.shape)
                 pooling_attn = (1.-torch.sigmoid(pooling_gating)) * pooling_content_attn + torch.sigmoid(pooling_gating) * pooling_pos_attn
                 pooling_attn /= pooling_attn.sum(dim=1, keepdims=True)  # [B, T, H]
             else:
@@ -1421,9 +1423,9 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none', 
-                 where_to_add_relpos='before', conv_projection=False, lambda_neutreno=0.0,
-                 attn_scale=False, feat_scale=False, centered_attn=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none',
+                 where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False,
+                 lambda_neutreno=0.0, attn_scale=False, feat_scale=False, centered_attn=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         # if where_to_add_relpos == "before":
         #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
@@ -1437,8 +1439,9 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         else:
             # Custom attention if we want relative position offset to be applied after softmax
             self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection,
-                                               where_to_add_relpos=where_to_add_relpos, attn_scale=attn_scale,
-                                               feat_scale=feat_scale, centered_attn=centered_attn)
+                                               where_to_add_relpos=where_to_add_relpos,
+                                               attention_type=attention_type, learnable_scale=learnable_scale,
+                                               attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1502,12 +1505,18 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 # ========================================================================================
 class Attention_Rel_Scl(nn.Module):
     def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos,
+                 attention_type='dot', learnable_scale=False,
                  attn_scale=False, feat_scale=False, centered_attn=False, **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.conv_projection = conv_projection
         self.where_to_add_relpos = where_to_add_relpos
-        self.scale = emb_size ** -0.5
+        self.attention_type = attention_type
+        self.learnable_scale = learnable_scale
+        if learnable_scale:
+            self.scale = nn.Parameter(torch.tensor((emb_size / num_heads) ** -0.5), requires_grad=True)
+        else:
+            self.scale = (emb_size / num_heads) ** -0.5
 
         # Attention/feature scaling: for mitigating oversmoothness
         self.attn_scale = attn_scale
@@ -1601,7 +1610,17 @@ class Attention_Rel_Scl(nn.Module):
             q = rearrange(q, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, T, d_head]
             # # k shape = [B, H, d_head, T]
             # # v,q shape = [B, H, T, d_head]
-            content_attn = torch.matmul(q, k) * self.scale  # attn shape [B, H, T, T]
+            if self.attention_type == 'L2':
+                # ||q_i - k_j||^2 = ||q_i||^2 + ||k_j||^2 - 2*q_i^T*k_j
+                q_norm_sq = torch.sum(q**2, dim=-1, keepdim=True)  # [B, H, T, 1]
+                k_norm_sq = torch.sum(k**2, dim=-2, keepdim=True)  # [B, H, 1, T]
+                dot_product = torch.matmul(q, k)  # [B, H, T, T]
+                
+                # Negative squared L2 distance (higher similarity = smaller distance)
+                content_attn = -0.5 * (q_norm_sq + k_norm_sq - 2 * dot_product) * self.scale
+            else:
+                # Standard dot-product attention
+                content_attn = torch.einsum('bhlk,bhkt->bhlt', [q, k]) * self.scale  # [B, H, T, T]
 
         # Calculate value in all cases
         v = self.value(value)  # [B, T, D]
@@ -1769,14 +1788,21 @@ class Attention(nn.Module):
                  method='linear',  # 'dw_bn', TODO @joshuafan changed to make this similar to original to full transformer
                  kernel_size=3,
                  stride=1,
-                 padding="same"
+                 padding="same",
+                 attention_type='dot',
+                 learnable_scale=False
                  ):
         super().__init__()
         self.stride = stride
         self.dim = dim_out
         self.num_heads = num_heads
+        self.attention_type = attention_type
+        self.learnable_scale = learnable_scale
         # head_dim = self.qkv_dim // num_heads
-        self.scale = dim_out ** -0.5
+        if learnable_scale:
+            self.scale = nn.Parameter(torch.tensor(dim_out ** -0.5), requires_grad=True)
+        else:
+            self.scale = dim_out ** -0.5
 
         # Decide how much to use positional vs content attention
         # init_gating = torch.ones(self.num_heads)*2 # Second half of heads prefer position attention
@@ -1882,7 +1908,20 @@ class Attention(nn.Module):
         k = rearrange(self.proj_k(k), 'b t (h d) -> b h t d', h=self.num_heads)
         v = rearrange(self.proj_v(v), 'b t (h d) -> b h t d', h=self.num_heads)
 
-        attn_score = torch.einsum('bhlk,bhtk->bhlt', [q, k]) * self.scale
+        if self.attention_type == 'L2':
+            # L2 self-attention: compute negative squared L2 distance
+            # ||q_i - k_j||^2 = ||q_i||^2 + ||k_j||^2 - 2*q_i^T*k_j
+            k = rearrange(k, 'b h t d -> b h d t') # [B, H, D, T]
+            q_norm_sq = torch.sum(q**2, dim=-1, keepdim=True)  # [B, H, T, 1]
+            k_norm_sq = torch.sum(k**2, dim=-2, keepdim=True)  # [B, H, 1, T]
+            dot_product = torch.matmul(q, k)  # [B, H, T, T]
+            
+            # Negative squared L2 distance (higher similarity = smaller distance)
+            attn_score = -0.5 * (q_norm_sq + k_norm_sq - 2 * dot_product) * self.scale
+        else:
+            # Standard dot-product attention
+            attn_score = torch.einsum('bhlk,bhkt->bhlt', [q, k]) * self.scale  # [B, H, T, T]
+
         # if src_mask is not None:
         #     attn_score = attn_score + rearrange(src_mask, '(b h) l t -> b h l t', h=self.num_heads)
 
@@ -1890,7 +1929,6 @@ class Attention(nn.Module):
         attn = F.softmax(attn_score, dim=-1)
 
         if src_mask is not None:
-            # print("Gating (Pr position)", torch.sigmoid(self.gating_param))
             gating = self.gating_param.view(1,-1,1,1)
             src_mask = rearrange(src_mask, '(b h) l t -> b h l t', h=self.num_heads)
             attn = (1.-torch.sigmoid(gating))*attn + torch.sigmoid(gating)*F.softmax(src_mask, dim=-1)  # First term is original content attention, second term is position attention
@@ -1914,13 +1952,15 @@ class ConvTransformerBlock(nn.Module):
                  n_head,
                  kernel_size,
                  dim_feedforward=2048,
-                 dropout=0.1):
+                 dropout=0.1,
+                 attention_type='dot',
+                 learnable_scale=False):
         super().__init__()
 
         self.norm1 = BatchNorm1d(d_model, eps=1e-5)
         self.attn = Attention(
             d_model, d_model, n_head, attn_drop=dropout, proj_drop=dropout,
-            kernel_size=kernel_size  # stride=stride, padding=padding,
+            kernel_size=kernel_size, attention_type=attention_type, learnable_scale=learnable_scale
         )
 
         self.drop_path = DropPath(dropout) \
