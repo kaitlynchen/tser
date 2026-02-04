@@ -50,8 +50,8 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
 elif [ "$DATA" = "BenzeneConcentration" ]; then
     SPLIT="--val_sequential_split"
 elif [ "$DATA" = "IEEEPPG" ]; then
-    PATCH=4
-    STRIDE=4
+    PATCH=16
+    STRIDE=8
     SPLIT="--val_sequential_split"
 elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
     PATCH=8
@@ -60,36 +60,165 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 
-# Run both per-timestep MLP and LSTM
-for CONV_TYPE in per_timestep lstm
+
+
+# # Jacobian loss
+# for CONV_TYPE in per_timestep
+# do
+#     OUTPUT_FILE="${DATA}_${CONV_TYPE}_JACOBIAN"
+#     for POOL in seqpool_cls
+#     do
+#         for WHERE_ABSPOS in start_concat
+#         do
+#             for BS in 16
+#             do
+#                 for LR in 1e-4 1e-3 1e-2
+#                 do
+#                     for LAM in 1 1e-2 1e-4 0
+#                     do
+#                         for SEED in 0
+#                         do
+#                             PARAM_STR="BS=${BS}_LR=${LR}_LAM=${LAM}_SEED=${SEED}"
+#                             python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+#                                 --records_file "output/${OUTPUT_FILE}.xls" \
+#                                 --data_dir $DATA_DIR --data_class tsra \
+#                                 --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                                 --epochs 2000 --patience 200 \
+#                                 --lr $LR --batch_size $BS --input_noise_std 0.1 --lambda_jacobian $LAM \
+#                                 --num_heads 8 --d_model 256 \
+#                                 --optimizer RAdam --task regression --normalize_label \
+#                                 --model local_cnn --conv_type $CONV_TYPE \
+#                                 --patch_length $PATCH --stride $STRIDE --smooth_attention \
+#                                 --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
+#                                 --pool $POOL \
+#                                 --plot_loss --plot_accuracy
+#                         done
+#                     done
+#                 done
+#             done
+#         done
+#     done
+
+#     python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+# done
+
+
+# Test abspos variants, seqpool_cls
+for CONV_TYPE in per_timestep
 do
-    OUTPUT_FILE="${DATA}_${CONV_TYPE}_TUNING"
-    for POOL in seqpool_multihead
+    for POOL in seqpool_cls
     do
-        for WHERE_ABSPOS in before_pool_concat
+        for WHERE_ABSPOS in before_pool_concat start_concat
         do
+            OUTPUT_FILE="TIMESTEP20260113_NOMIXUP_${DATA}_${CONV_TYPE}_pool=${POOL}_abspos=${WHERE_ABSPOS}"
+
             for LR in 1e-4 1e-3 1e-2
             do
-                for SEED in 0
+                for NOISE in 0 1e-2 1e-1
                 do
-                    PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_SEED=${SEED}"
-                    python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                        --records_file "output/${OUTPUT_FILE}.xls" \
-                        --data_dir $DATA_DIR --data_class tsra \
-                        --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                        --epochs 2000 --patience 200 \
-                        --lr $LR --batch_size $BS \
-                        --num_heads 16 --d_model 128 \
-                        --optimizer RAdam --task regression --normalize_label \
-                        --model local_cnn --conv_type $CONV_TYPE \
-                        --patch_length $PATCH --stride $STRIDE --smooth_attention \
-                        --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
-                        --pool $POOL \
-                        --plot_loss --plot_accuracy
+                    for SEED in 0
+                    do
+                        PARAM_STR="BS=${BS}_LR=${LR}_NOISE=${NOISE}_SEED=${SEED}"
+                        python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+                            --records_file "output/${OUTPUT_FILE}.xls" \
+                            --data_dir $DATA_DIR --data_class tsra \
+                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                            --epochs 2000 --patience 200 \
+                            --lr $LR --batch_size $BS --input_noise_std $NOISE \
+                            --num_heads 16 --d_model 256 \
+                            --optimizer RAdam --task regression --normalize_label \
+                            --model local_cnn --conv_type $CONV_TYPE \
+                            --patch_length $PATCH --stride $STRIDE --smooth_attention \
+                            --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
+                            --pool $POOL \
+                            --plot_loss --plot_accuracy
+                    done
                 done
             done
+            python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+
         done
     done
-
-    python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
 done
+
+
+
+
+# # Run both per-timestep MLP and LSTM
+# for CONV_TYPE in per_timestep
+# do
+#     OUTPUT_FILE="${DATA}_${CONV_TYPE}_PATCH_TUNING"
+#     for POOL in seqpool_cls
+#     do
+#         for WHERE_ABSPOS in before_pool_concat
+#         do
+#             for PATCH in 1 4 8 16 32
+#             do
+#                 for LR in 1e-4 1e-3 1e-2
+#                 do
+#                     for SEED in 0
+#                     do
+#                         PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_SEED=${SEED}"
+#                         python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+#                             --records_file "output/${OUTPUT_FILE}.xls" \
+#                             --data_dir $DATA_DIR --data_class tsra \
+#                             --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                             --epochs 2000 --patience 200 \
+#                             --lr $LR --batch_size $BS \
+#                             --num_heads 16 --d_model 128 \
+#                             --optimizer RAdam --task regression --normalize_label \
+#                             --model local_cnn --conv_type $CONV_TYPE \
+#                             --patch_length $PATCH --stride $PATCH --smooth_attention \
+#                             --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
+#                             --pool $POOL \
+#                             --plot_loss --plot_accuracy
+#                     done
+#                 done
+#             done
+
+#             for LR in 1e-4 1e-3 1e-2
+#             do
+#                 for SEED in 0
+#                 do
+#                     PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_SEED=${SEED}"
+#                     python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+#                         --records_file "output/${OUTPUT_FILE}.xls" \
+#                         --data_dir $DATA_DIR --data_class tsra \
+#                         --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                         --epochs 2000 --patience 200 \
+#                         --lr $LR --batch_size $BS \
+#                         --num_heads 16 --d_model 128 \
+#                         --optimizer RAdam --task regression --normalize_label \
+#                         --model local_cnn --conv_type $CONV_TYPE \
+#                         --patch_length 16 --stride 8 --smooth_attention \
+#                         --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
+#                         --pool $POOL \
+#                         --plot_loss --plot_accuracy
+#                 done
+#             done
+
+#             for LR in 1e-4 1e-3 1e-2
+#             do
+#                 for SEED in 0
+#                 do
+#                     PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_SEED=${SEED}"
+#                     python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+#                         --records_file "output/${OUTPUT_FILE}.xls" \
+#                         --data_dir $DATA_DIR --data_class tsra \
+#                         --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                         --epochs 2000 --patience 200 \
+#                         --lr $LR --batch_size $BS \
+#                         --num_heads 16 --d_model 128 \
+#                         --optimizer RAdam --task regression --normalize_label \
+#                         --model local_cnn --conv_type $CONV_TYPE \
+#                         --patch_length 32 --stride 16 --smooth_attention \
+#                         --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
+#                         --pool $POOL \
+#                         --plot_loss --plot_accuracy
+#                 done
+#             done
+#         done
+#     done
+
+#     python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+# done

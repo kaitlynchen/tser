@@ -64,7 +64,7 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 # OUTPUT FILE
-OUTPUT_FILE="${DATA}_LADAA_TUNING"
+OUTPUT_FILE="${DATA}_LADAA_TUNING2"
 
 # TUNING
 for LR in 1e-3 1e-2
@@ -73,33 +73,65 @@ do
     do
         for HEADS in 16
         do
-            for SMOOTH in 1e-2 1e-1
+            for NOISE in 0 1e-2 1e-1
             do
-                for L1 in 0 1e-4 1e-3
+                for SEED in 0
                 do
-                    for SEED in 0
-                    do
-                        # BASIC
-                        PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_L1=${LAM2}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
-                        python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                            --records_file "output/${OUTPUT_FILE}.xls" \
-                            --data_dir $DATA_DIR --data_class tsra \
-                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                            --epochs 2000 --patience $PATIENCE \
-                            --lr $LR --batch_size $BS \
-                            --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                            --optimizer RAdam --task regression \
-                            --plot_loss --plot_accuracy \
-                            --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                            --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-                            --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
-                    done
+                    # BASIC
+                    PARAM_STR="LR=${LR}_NOISE=${NOISE}"
+                    python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+                        --records_file "output/${OUTPUT_FILE}.xls" \
+                        --data_dir $DATA_DIR --data_class tsra \
+                        --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                        --epochs 2000 --patience $PATIENCE \
+                        --lr $LR --batch_size $BS \
+                        --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                        --optimizer RAdam --task regression \
+                        --plot_loss --plot_accuracy \
+                        --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                        --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+                        --pool seqpool_multihead --input_noise_std $NOISE
                 done
             done
         done
     done
 done
+
+# # TUNING
+# for LR in 1e-3 1e-2
+# do
+#     for CONVIT_SLOPE in 0.25
+#     do
+#         for HEADS in 16
+#         do
+#             for SMOOTH in 1e-2 1e-1
+#             do
+#                 for L1 in 0 1e-4 1e-3
+#                 do
+#                     for SEED in 0
+#                     do
+#                         # BASIC
+#                         PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_L1=${LAM2}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+#                         python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+#                             --records_file "output/${OUTPUT_FILE}.xls" \
+#                             --data_dir $DATA_DIR --data_class tsra \
+#                             --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                             --epochs 2000 --patience $PATIENCE \
+#                             --lr $LR --batch_size $BS \
+#                             --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+#                             --optimizer RAdam --task regression \
+#                             --plot_loss --plot_accuracy \
+#                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+#                             --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+#                             --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+#                             --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
 
 # TEST
 python test_best.py --records_file "output/${OUTPUT_FILE}.xls"

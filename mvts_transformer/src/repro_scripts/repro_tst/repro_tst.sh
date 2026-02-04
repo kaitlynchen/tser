@@ -40,7 +40,7 @@ conda activate tser
 if [ "$DATA" = "AppliancesEnergy" ]; then
     D_MODEL=128
     D_FEEDFORWARD=512
-    PATIENCE=500
+    PATIENCE=5000
 elif [ "$DATA" = "BenzeneConcentration" ]; then
     D_MODEL=128
     D_FEEDFORWARD=256
@@ -73,14 +73,14 @@ else
 fi
 
 
-OUTPUT_FILE="${DATA}_REPRO_ZERVEAS"
+OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000"
 
 for SEED in 0 1 2
 do
     PARAM_STR="SEED=${SEED}"
-    python main.py --output_dir "./output/output_zerveas" \
+    python main.py --output_dir "./output/output_zerveas2" \
         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-        --records_file "output/output_zerveas/${OUTPUT_FILE}.xls" \
+        --records_file "output/output_zerveas2/${OUTPUT_FILE}.xls" \
         --data_dir $DATA_DIR --data_class tsra \
         --pattern TRAIN --val_pattern TEST \
         --epochs 2000 --patience $PATIENCE \
@@ -89,11 +89,17 @@ do
         --optimizer RAdam --task regression \
         --model transformer --pos_encoding learnable \
         --plot_loss --plot_accuracy
+done
 
+OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000_CLIMAX"
+
+for SEED in 0 1 2
+do
     # Replication of Zerveas model using our "Climax" codebase
-    python main.py --output_dir "./output/output_zerveas" \
-        --seed $SEED --name "ZERVEAS_CLIMAX_${OUTPUT_FILE}_${PARAM_STR}"  \
-        --records_file "output/output_zerveas/ZERVEAS_CLIMAX_${DATA}_TEST.xls" \
+    PARAM_STR="SEED=${SEED}"
+    python main.py --output_dir "./output/output_zerveas2" \
+        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+        --records_file "output/output_zerveas2/${OUTPUT_FILE}.xls" \
         --data_dir $DATA_DIR --data_class tsra \
         --pattern TRAIN --val_pattern TEST \
         --epochs 2000 --patience $PATIENCE \

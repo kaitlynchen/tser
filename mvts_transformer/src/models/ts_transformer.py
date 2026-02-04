@@ -289,7 +289,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
             self.pos_enc = get_pos_encoder(pos_encoding)(d_model, dropout=dropout * (1.0 - freeze), max_len=max_len)
             self.output_layer = self.build_output_module(d_model, max_len, num_classes)
 
-        # Add a class token
+        # Add a class token. TODO Move to "include_cls_token" branch?
         self.class_token = nn.Parameter(torch.zeros(1, 1, feat_dim))
 
         if norm == 'LayerNorm':
