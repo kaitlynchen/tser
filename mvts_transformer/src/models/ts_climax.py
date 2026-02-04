@@ -87,12 +87,11 @@ def model_factory(config, data):
                           alibi_max_slope=config['alibi_max_slope'],
                           pool=config['pool'],
                           attention_type=config['attention_type'],
-                          learnable_scale=config.get('learnable_scale', False)),
+                          learnable_scale=config.get('learnable_scale', False),
                           lambda_neutreno=config['lambda_neutreno'],
                           attn_scale=config['attn_scale'],
                           feat_scale=config['feat_scale'],
-                          centered_attn=config['centered_attn']
-                          )
+                          centered_attn=config['centered_attn'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
