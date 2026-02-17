@@ -781,18 +781,22 @@ class ClimaX(nn.Module):
         return x, attn_weights, embeddings_layers
 
 
-    def forward(self, x, plot_dir=None):
+    def forward(self, x, plot_dir=None, return_embeddings=False):
         """Forward pass through the model.
 
         Args:
             x: `[B, T_orig, V]` shape.
             plot_dir: if provided, plot attention matrices and distances between timestep feature vectors at each layer.
+            return_embeddings: if True, also return embeddings_layers for oversmoothing analysis.
         Returns:
             preds (torch.Tensor): `[B]` shape. Predicted output.
+            attn_weights_enc: [L, B, H, T, T] attention weights.
+            pooling_attn: pooling attention weights.
+            embeddings_layers (optional): [L+1, B, T, D] embeddings at start and after each layer.
         """
 
         # ENCODER forward pass
-        preds, attn_weights_enc, embeddings_layers = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [B, T, D], attn_weights_enc: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
+        preds, attn_weights_enc, embeddings_layers = self.forward_encoder(x, plot_dir=plot_dir)  # preds: [B, T, D], attn_weights_enc: [L, B, H, T, T], embeddings_layers: [L+1, B, T, D]
 
         # Pooling
         preds, pooling_attn = self.forward_pooling(preds)
@@ -800,6 +804,7 @@ class ClimaX(nn.Module):
         # Save attention in case we use it for regularization later
         self.attn_matrices = attn_matrices = rearrange(attn_weights_enc, "l b h t0 t1 -> b (l h) t0 t1")  # Reshape to [B, L*H (num matrices), T, T]
         self.pooling_attn = pooling_attn
+        self.embeddings_layers = embeddings_layers  # Save for potential external access
 
         if plot_dir is not None:
             # ALL VISUALIZATIONS of timestep distances/similarities, positional encodings, and
@@ -951,6 +956,9 @@ class ClimaX(nn.Module):
             # Visualize SeqPool attention weights
             if self.pool in ["seqpool", "seqpool_multihead", "seqpool_multihead_smoothed"]:
                 visualization_utils.visualize_pooling_attn(pooling_attn, plot_dir)
+
+        if return_embeddings:
+            return preds, attn_weights_enc, pooling_attn, embeddings_layers
 
         return preds, attn_weights_enc, pooling_attn
 

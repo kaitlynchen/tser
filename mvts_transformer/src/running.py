@@ -18,6 +18,7 @@ import numpy as np
 import sklearn
 
 from utils import utils, analysis, visualization_utils
+from utils.oversmoothing import OverSmoothingMetrics
 from models.loss import l1_reg_loss, l2_reg_loss
 from datasets.dataset import (
     ImputationDataset,
@@ -545,6 +546,8 @@ class SupervisedRunner(BaseRunner):
             self.analyzer = analysis.Analyzer(print_conf_mat=True)
         else:
             self.classification = False
+        
+        self.oversmoothing_tracker = OverSmoothingMetrics()
 
     def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, need_attn_weights=False):
         self.model = self.model.train()
@@ -553,6 +556,10 @@ class SupervisedRunner(BaseRunner):
         total_samples = 0  # total samples in epoch
         supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss = 0, 0, 0, 0, 0, 0, 0, 0
         all_predictions, all_targets = [], []
+        
+        self.oversmoothing_tracker.reset()
+        track_oversmoothing = config.get('track_oversmoothing', False)
+        oversmoothing_log_interval = config.get('oversmoothing_log_interval', 10)
 
         for i, batch in enumerate(self.dataloader):
             X, targets, padding_masks, IDs = batch  # @joshuafan added time
@@ -571,14 +578,26 @@ class SupervisedRunner(BaseRunner):
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
+            should_track_batch = track_oversmoothing and (i % oversmoothing_log_interval == 0)
+            
+            embeddings_layers = None
+            attn_weights_layers = None
             if require_padding:
-                if need_attn_weights:
-                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                if need_attn_weights or should_track_batch:
+                    result = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir, return_embeddings=should_track_batch)
+                    if should_track_batch:
+                        predictions, attn_weights_layers, attn_weights_pool, embeddings_layers = result
+                    else:
+                        predictions, attn_weights_layers, attn_weights_pool = result
                 else:
                     predictions = self.model(X.to(self.device), padding_masks)
             else:
-                if need_attn_weights:
-                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), plot_dir=plot_dir)
+                if need_attn_weights or should_track_batch:
+                    result = self.model(X.to(self.device), plot_dir=plot_dir, return_embeddings=should_track_batch)
+                    if should_track_batch:
+                        predictions, attn_weights_layers, attn_weights_pool, embeddings_layers = result
+                    else:
+                        predictions, attn_weights_layers, attn_weights_pool = result
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
@@ -675,6 +694,12 @@ class SupervisedRunner(BaseRunner):
             with torch.no_grad():
                 total_samples += len(loss)
                 epoch_loss += batch_loss.item()  # add total loss of batch
+                
+                if should_track_batch and embeddings_layers is not None and attn_weights_layers is not None:
+                    oversmoothing_metrics = self.oversmoothing_tracker.compute_metrics(
+                        embeddings_layers, attn_weights_layers
+                    )
+                    self.oversmoothing_tracker.accumulate(oversmoothing_metrics)
 
         # average loss per sample for whole epoch
         epoch_loss = epoch_loss / total_samples
@@ -687,9 +712,11 @@ class SupervisedRunner(BaseRunner):
 
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
+        
+        oversmoothing_summary = self.oversmoothing_tracker.get_epoch_summary() if track_oversmoothing else None
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss, oversmoothing_summary
 
         return self.epoch_metrics
 

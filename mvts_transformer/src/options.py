@@ -183,6 +183,12 @@ class Options(object):
                                  help="""Type of self-attention mechanism.""")
         self.parser.add_argument('--learnable_scale', action='store_true',
                                  help="""If set, the attention scale factor becomes a learnable parameter.""")
+        
+        # Oversmoothing tracking
+        self.parser.add_argument('--track_oversmoothing', action='store_true',
+                                 help="Track oversmoothing metrics (effective rank, cosine similarity, attention entropy, high-freq ratio)")
+        self.parser.add_argument('--oversmoothing_log_interval', type=int, default=10,
+                                 help="Compute oversmoothing metrics every N batches (default: 10)")
 
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
