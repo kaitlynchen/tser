@@ -2,6 +2,7 @@ import math
 import numpy as np
 import os
 import pandas as pd
+import torch
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import Normalize
@@ -9,6 +10,70 @@ from scipy.interpolate import interpn
 
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from utils.utils import approx_min_max
+from einops import rearrange
+
+
+def visualize_absolute_posenc(pos_embed, plot_dir):
+    """
+    pos_embed should have shape [T, D]
+
+    Create plots of absolute positional embedding.
+    """
+    # Plot positional encoding
+    fig, ax = plt.subplots(1, 1, figsize=(0.05*pos_embed.shape[1]+2, 0.05*pos_embed.shape[0]), layout="constrained")
+    im = ax.imshow(pos_embed.detach().cpu().numpy())  # pos_embed: [T, D]
+    ax.set_xlabel("Embedding index")
+    ax.set_ylabel("Timestep")
+    fig.colorbar(im, ax=ax, shrink=0.4)
+    fig.suptitle("Absolute positional embeddings")
+    plt.savefig(os.path.join(plot_dir, 'pos_encoding.png'))
+    plt.close()
+
+    # Compute pairwise distance between each pair of positions
+    pairwise_distances = torch.cdist(pos_embed.unsqueeze(0), pos_embed.unsqueeze(0)).squeeze(0)
+    fig, ax = plt.subplots(1, 1, figsize=(0.05*pairwise_distances.shape[1], 0.05*pairwise_distances.shape[0]), layout="constrained")
+    im = ax.imshow(pairwise_distances.detach().cpu().numpy())
+    fig.colorbar(im)
+    fig.suptitle("Pairwise distances between absolute pos encodings")
+    plt.savefig(os.path.join(plot_dir, 'pos_encoding_distances.png'))
+    plt.close()
+
+
+def visualize_pooling_attn(pooling_attn, plot_dir):
+    """
+    pooling_attn assumed to have shape [B, H, T]
+
+    For a few examples, visualize pooling attention. Each plot is an example.
+    """
+    n_rows = 1
+    n_cols = 5
+    fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 7*n_rows), layout="constrained")
+    timesteps = np.arange(pooling_attn.shape[2])
+    for example_idx in range(n_cols):
+        for head_idx in range(pooling_attn.shape[1]):
+            axeslist[example_idx].plot(timesteps, pooling_attn[example_idx, head_idx, :].cpu().detach().numpy(),
+                                        label=f"Head {head_idx}")
+        axeslist[example_idx].set_xlabel("Timestep")
+        axeslist[example_idx].set_ylabel("Attn weight")
+        axeslist[example_idx].set_title(f"Example {example_idx}: Pooling attn")
+        axeslist[example_idx].legend()
+    fig.suptitle("Pooling attention")
+    plt.savefig(os.path.join(plot_dir, 'pooling_attn_weights.png'))
+    plt.close()
+
+    # pooling_attn is [B, H, T]
+    min_value, max_value = approx_min_max(pooling_attn)  #  pooling_attn is [B, H, T]
+    fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*pooling_attn.shape[1]+3, 0.03*n_rows*pooling_attn.shape[2]), layout="constrained")
+    for c in range(n_cols):
+        im = axeslist[c].imshow(rearrange(pooling_attn[c, :, :], 'h t -> t h').detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x)
+        axeslist[c].set_xlabel("Head number")
+        axeslist[c].set_ylabel("Timestep")
+        axeslist[c].set_title(f"Example {c}")
+    fig.colorbar(im, ax=axeslist, shrink=0.4)
+    fig.suptitle("Pooling attention")
+    plt.savefig(os.path.join(plot_dir, 'pooling_attn_weights_colorbar.png'))
+    plt.close()
 
 
 def plot_single_scatter_file(x, y, x_label, y_label, plot_dir, title_description="", filename_description="", should_align=False):

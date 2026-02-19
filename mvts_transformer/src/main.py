@@ -18,7 +18,8 @@ from options import Options
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 import torch
-from tqdm import tqdm
+# from tqdm import tqdm
+from tqdm.auto import tqdm  # https://stackoverflow.com/questions/63908917/progress-bar-using-tqdm-prints-in-a-new-line-everytime-the-update-is-called-on
 import json
 import pickle
 import time
@@ -58,7 +59,8 @@ def main(config):
         torch.manual_seed(config["seed"])
         torch.cuda.manual_seed(config["seed"])
         torch.cuda.manual_seed_all(config["seed"])
-        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)  # a few operations such as AdaptiveMaxPool2d do not have deterministic implementations
         random.seed(config["seed"])
         np.random.seed(config["seed"])
 
@@ -89,8 +91,16 @@ def main(config):
         from models.climax_convit_smooth import model_factory
     elif config["model"] is not None and config["model"] == "convit_2":
         from models.climax_with_convit_blocks import model_factory
-    elif config["model"] is not None and config["model"] == "local_cnn":
+    elif config["model"] is not None and config["model"] in ["local_cnn", "local_cnn2"]:
         from models.local_cnn import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth_plot":
+        from models.ts_climax_timestep import model_factory
+    elif config["model"] is not None and config["model"] == "climax_smooth_pool":
+        from models.ts_climax_seqpool_smooth import model_factory
+    elif config["model"] is not None and config["model"] == "climax_max_pool":
+        from models.ts_climax_max_pool import model_factory
+    elif config["model"] is not None and config["model"] == "climax_seqpool":
+        from models.ts_climax_seqpool import model_factory
     else:
         from models.ts_transformer import model_factory
 
@@ -188,18 +198,25 @@ def main(config):
     # Note: currently a validation set must exist, either with `val_pattern` or `val_ratio`
     # Using a `val_pattern` means that `val_ratio` == 0 and `test_ratio` == 0
     if config["val_ratio"] > 0:
-        train_indices, val_indices = split_dataset(
-            data_indices=my_data.all_IDs,
-            validation_method=validation_method,
-            n_splits=1,
-            validation_ratio=config["val_ratio"],
-            random_seed=1337,
-            labels=labels,
-        )
-        # `split_dataset` returns a list of indices *per fold/split*
-        train_indices = train_indices[0]
-        # `split_dataset` returns a list of indices *per fold/split*
-        val_indices = val_indices[0]
+        if config["val_temporal_split"]:
+            my_data.time_df["example_idx"] = my_data.time_df.index
+            start_times = my_data.time_df.groupby('example_idx').first()  # Start time of each example
+            threshold = np.quantile(start_times["time_int"], 1 - config['val_ratio'])
+            train_indices = start_times[start_times["time_int"] < threshold].index  # example_idx became index after groupby
+            val_indices = start_times[start_times["time_int"] >= threshold].index
+        else:
+            train_indices, val_indices = split_dataset(
+                data_indices=my_data.all_IDs,
+                validation_method=validation_method,
+                n_splits=1,
+                validation_ratio=config["val_ratio"],
+                random_seed=1337,
+                labels=labels,
+            )
+            # `split_dataset` returns a list of indices *per fold/split*
+            train_indices = train_indices[0]
+            # `split_dataset` returns a list of indices *per fold/split*
+            val_indices = val_indices[0]
     else:
         train_indices = my_data.all_IDs
         if test_indices is None:
@@ -323,9 +340,8 @@ def main(config):
     )
 
     plot_losses = config["plot_loss"] and config["task"] == "regression"
-    need_attn_weights=(config["model"] == "smooth" or config["model"] == "climax_smooth" or config["model"] == "convit_smooth") and config["smooth_attention"]
+    need_attn_weights=((config["model"] in ["smooth", "climax_smooth", "convit_smooth", "climax_smooth_plot", "climax_smooth_pool", "climax_max_pool", "climax_seqpool", "local_cnn", "local_cnn2", "transformer"]) and config["smooth_attention"]) or config["model"] == "transformer"
     use_smoothing = need_attn_weights and config["task"] == "regression"
-    smoothing_lambda = config["reg_lambda"]
 
     if config["test_only"] == "testset":  # Only evaluate and skip training
         dataset_class, collate_fn, runner_class = pipeline_factory(config)
@@ -380,6 +396,10 @@ def main(config):
     )
 
     train_dataset = dataset_class(my_data, train_indices, timestep_indices=timestep_indices)
+
+    if train_dataset.time_df is not None:
+        print("Check timestamps. TRAIN", train_dataset.time_df.shape, train_dataset.time_df["timestamp"].min(), train_dataset.time_df["timestamp"].max())
+        print("Check timestamps. VAL", val_dataset.time_df.shape, val_dataset.time_df["timestamp"].min(), val_dataset.time_df["timestamp"].max())
 
     # Store mean/std label
     config["label_mean"] = train_dataset.label_mean
@@ -440,27 +460,69 @@ def main(config):
     train_epochs = []
     train_losses_sup = []
     train_losses_smoothness = []
+    train_losses_pool_smoothness = []
     train_losses_posenc = []
+    train_losses_locality = []
+    train_losses_erpe_linear = []
+    train_losses_focus = []
+    train_losses_jacobian = []
     val_epochs = []
     val_losses = []
     all_val_preds = []
+    
+    # Oversmoothing metrics tracking
+    oversmoothing_effective_ranks = []
+    oversmoothing_cosine_sims = []  
+    oversmoothing_attn_entropies = []  
+    oversmoothing_attn_entropies_per_head = [] 
+    oversmoothing_high_freq_ratios = []
+    oversmoothing_depth_snapshots = []  
+    depth_snapshot_interval = config.get('oversmoothing_log_interval', 10)
 
     # Number of epochs since the previous "best" (for early stopping)
     num_epochs_no_improvement = 0
+    num_epochs_no_improvement_no_lrdecay = 0
 
     # Store prediction/target of best model
     best_val_predictions = None
     best_val_targets = None
 
-    for epoch in tqdm(range(start_epoch + 1, config["epochs"] + 1), desc="Training Epoch", leave=False):
+    for epoch in tqdm(range(start_epoch + 1, config["epochs"] + 1), desc="Training Epoch", position=0, leave=True):
         mark = epoch if config["save_all"] else "last"
         epoch_start_time = time.time()
         # dictionary of aggregate epoch metrics
-        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, posenc_loss = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, smoothing_lambda=smoothing_lambda, need_attn_weights=need_attn_weights)
+        aggr_metrics_train, _, _, supervised_loss, supervised_smoothness_loss, pool_smoothness_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss, oversmoothing_summary = trainer.train_epoch(config, epoch, keep_predictions=True, require_padding=require_padding, use_smoothing=use_smoothing, need_attn_weights=need_attn_weights)
         train_epochs.append(epoch)
         train_losses_sup.append(supervised_loss)
         train_losses_smoothness.append(supervised_smoothness_loss)
+        train_losses_pool_smoothness.append(pool_smoothness_loss)
         train_losses_posenc.append(posenc_loss)
+        train_losses_locality.append(locality_loss)
+        train_losses_erpe_linear.append(erpe_linear_loss)
+        train_losses_focus.append(focus_loss)
+        train_losses_jacobian.append(jacobian_loss)
+        
+        # Store oversmoothing metrics if tracking is enabled
+        if oversmoothing_summary is not None:
+            oversmoothing_effective_ranks.append(oversmoothing_summary['effective_rank'])
+            oversmoothing_cosine_sims.append(oversmoothing_summary['cosine_similarity'])
+            oversmoothing_attn_entropies.append(oversmoothing_summary['attention_entropy'])
+            oversmoothing_attn_entropies_per_head.append(oversmoothing_summary['attention_entropy_per_head'])
+            oversmoothing_high_freq_ratios.append(oversmoothing_summary['high_freq_ratio'])
+            
+            if epoch == 1 or epoch % depth_snapshot_interval == 0 or epoch == config['epochs']:
+                oversmoothing_depth_snapshots.append((epoch, oversmoothing_summary.copy()))
+            
+            # Log to tensorboard
+            if config.get('track_oversmoothing', False):
+                for layer_idx, val in enumerate(oversmoothing_summary['effective_rank']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/effective_rank_layer_{layer_idx}', val, epoch)
+                for layer_idx, val in enumerate(oversmoothing_summary['cosine_similarity']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/cosine_similarity_layer_{layer_idx}', val, epoch)
+                for layer_idx, val in enumerate(oversmoothing_summary['attention_entropy']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/attention_entropy_layer_{layer_idx}', val, epoch)
+                for layer_idx, val in enumerate(oversmoothing_summary['high_freq_ratio']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/high_freq_ratio_layer_{layer_idx}', val, epoch)
 
         if config["baseline"] is not None:
             # early prediction
@@ -486,28 +548,28 @@ def main(config):
                 plt.close()
 
         epoch_runtime = time.time() - epoch_start_time
-        print()
-        print_str = "Epoch {} Training Summary: ".format(epoch)
-        for k, v in aggr_metrics_train.items():
-            tensorboard_writer.add_scalar("{}/train".format(k), v, epoch)
-            print_str += "{}: {:8f} | ".format(k, v)
-        logger.info(print_str)
-        logger.info(
-            "Epoch runtime: {} hours, {} minutes, {} seconds\n".format(
-                *utils.readable_time(epoch_runtime)
-            )
-        )
+        # print()
+        # print_str = "Epoch {} Training Summary: ".format(epoch)
+        # for k, v in aggr_metrics_train.items():
+        #     tensorboard_writer.add_scalar("{}/train".format(k), v, epoch)
+        #     print_str += "{}: {:8f} | ".format(k, v)
+        # logger.info(print_str)
+        # logger.info(
+        #     "Epoch runtime: {} hours, {} minutes, {} seconds\n".format(
+        #         *utils.readable_time(epoch_runtime)
+        #     )
+        # )
         total_epoch_time += epoch_runtime
         avg_epoch_time = total_epoch_time / (epoch - start_epoch)
         avg_batch_time = avg_epoch_time / len(train_loader)
         avg_sample_time = avg_epoch_time / len(train_dataset)
-        logger.info(
-            "Avg epoch train. time: {} hours, {} minutes, {} seconds".format(
-                *utils.readable_time(avg_epoch_time)
-            )
-        )
-        logger.info("Avg batch train. time: {} seconds".format(avg_batch_time))
-        logger.info("Avg sample train. time: {} seconds".format(avg_sample_time))
+        # logger.info(
+        #     "Avg epoch train. time: {} hours, {} minutes, {} seconds".format(
+        #         *utils.readable_time(avg_epoch_time)
+        #     )
+        # )
+        # logger.info("Avg batch train. time: {} seconds".format(avg_batch_time))
+        # logger.info("Avg sample train. time: {} seconds".format(avg_sample_time))
 
         # evaluate if first or last epoch or at specified interval
         if ((epoch == config["epochs"]) or (epoch == start_epoch + 1) or (epoch % config["val_interval"] == 0)):
@@ -535,8 +597,10 @@ def main(config):
                 best_val_predictions = predictions
                 best_val_targets = targets
                 num_epochs_no_improvement = 0
+                num_epochs_no_improvement_no_lrdecay = 0
             else:
                 num_epochs_no_improvement += config["val_interval"]
+                num_epochs_no_improvement_no_lrdecay += config["val_interval"]
 
         if num_epochs_no_improvement > config["patience"]:
             print(f"Early stopping: no improvement for {config['patience']} epochs")
@@ -549,8 +613,22 @@ def main(config):
         #     optimizer,
         # )
 
-        # Learning rate scheduling
-        if epoch == config["lr_step"][lr_step]:
+        # Decay LR on plateau: Does not really work well currently!
+        if isinstance(config["lr_step"], str) and config["lr_step"].startswith("plateau"):
+            if num_epochs_no_improvement_no_lrdecay > int(config["lr_step"].split("plateau")[1]):
+                utils.save_model(
+                    os.path.join(config["save_dir"], "model_{}.pth".format(epoch)),
+                    epoch,
+                    model,
+                    optimizer,
+                )
+                lr = lr * config["lr_factor"][lr_step]
+                logger.info(f"Learning rate updated to: {lr}")
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = lr
+                num_epochs_no_improvement_no_lrdecay = 0
+
+        elif epoch == config["lr_step"][lr_step]:  # Learning rate scheduling
             utils.save_model(
                 os.path.join(config["save_dir"], "model_{}.pth".format(epoch)),
                 epoch,
@@ -558,10 +636,11 @@ def main(config):
                 optimizer,
             )
             lr = lr * config["lr_factor"][lr_step]
+
             # so that this index does not get out of bounds
             if lr_step < len(config["lr_step"]) - 1:
                 lr_step += 1
-            logger.info("Learning rate updated to: ", lr)
+            logger.info(f"Learning rate updated to: {lr}")
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
@@ -569,9 +648,13 @@ def main(config):
         if config["harden"] and check_progress(epoch):
             train_loader.dataset.update()
             val_loader.dataset.update()
+        tqdm._instances.clear()  # https://stackoverflow.com/questions/41707229/why-is-tqdm-printing-to-a-newline-instead-of-updating-the-same-line/57072638#57072638
 
     # Scatterplot on validation set
-    visualization_utils.plot_single_scatter_file(best_val_predictions, best_val_targets, "predicted", "true", config['plot_dir'],
+    if best_val_predictions is None:
+        print("best_val_predictions is None")
+    else:
+        visualization_utils.plot_single_scatter_file(best_val_predictions, best_val_targets, "predicted", "true", config['plot_dir'],
                                                  title_description=f"{config['experiment_name']}",
                                                  filename_description="val", should_align=True)
 
@@ -614,10 +697,22 @@ def main(config):
 
     # Plot loss curves
     if plot_losses:
-        plt.plot(train_epochs, train_losses_sup, label="Train loss (MSE, supervised)")
-        plt.plot(train_epochs, train_losses_smoothness, label="Attn smoothness loss")
-        plt.plot(train_epochs, train_losses_posenc, label="Pos enc smoothness loss")
-        plt.plot(val_epochs, val_losses, label="Val loss (MSE)")
+        plt.plot(train_epochs[1:], train_losses_sup[1:], label="Train loss (MSE, supervised)")
+        if config["smooth_attention"] and config["reg_lambda"] > 0:
+            plt.plot(train_epochs[1:], train_losses_smoothness[1:], label="Attn smoothness loss")
+        if config["smooth_attention"] and config["reg_lambda_pool"] > 0:
+            plt.plot(train_epochs[1:], train_losses_pool_smoothness[1:], label="Pool attn smoothness loss")
+        if config["lambda_posenc_smoothness"] > 0:
+            plt.plot(train_epochs[1:], train_losses_posenc[1:], label="Pos enc smoothness loss")
+        if config["lambda_locality"] > 0:
+            plt.plot(train_epochs[1:], train_losses_locality[1:], label="Locality loss")
+        if config["lambda_erpe_linear"] > 0:
+            plt.plot(train_epochs[1:], train_losses_erpe_linear[1:], label="ERPE linear loss")
+        if config["lambda_focus"] > 0:
+            plt.plot(train_epochs[1:], train_losses_focus[1:], label="Focus loss")
+        if config["lambda_jacobian"] > 0:
+            plt.plot(train_epochs[1:], train_losses_jacobian[1:], label="Jacobian loss")
+        plt.plot(val_epochs[1:], val_losses[1:], label="Val loss (MSE)")
         plt.ylabel("Loss")
         plt.xlabel("Epoch")
         plt.title("Losses per epoch")
@@ -648,6 +743,174 @@ def main(config):
         metrics_filepath, metrics, header, sheet_name="metrics"
     )
 
+    if config.get('track_oversmoothing', False) and len(oversmoothing_effective_ranks) > 0:
+        oversmoothing_data = {'epoch': train_epochs}
+        
+        # Add per-layer metrics
+        num_embed_layers = len(oversmoothing_effective_ranks[0]) if oversmoothing_effective_ranks else 0
+        num_attn_layers = len(oversmoothing_attn_entropies[0]) if oversmoothing_attn_entropies else 0
+        
+        for layer_idx in range(num_embed_layers):
+            oversmoothing_data[f'effective_rank_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_effective_ranks]
+            oversmoothing_data[f'cosine_similarity_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_cosine_sims]
+            oversmoothing_data[f'high_freq_ratio_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_high_freq_ratios]
+        
+        for layer_idx in range(num_attn_layers):
+            oversmoothing_data[f'attention_entropy_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_attn_entropies]
+        
+        oversmoothing_df = pd.DataFrame(oversmoothing_data)
+        oversmoothing_filepath = os.path.join(
+            config["output_dir"], "oversmoothing_metrics_" + config["experiment_name"] + ".csv"
+        )
+        oversmoothing_df.to_csv(oversmoothing_filepath, index=False)
+        logger.info("Exported oversmoothing metrics to '{}'".format(oversmoothing_filepath))
+        
+        # Plot oversmoothing metrics
+        # 1. Effective Rank per layer
+        plt.figure(figsize=(10, 6))
+        for layer_idx in range(num_embed_layers):
+            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_effective_ranks], 
+                     label=f'Layer {layer_idx}', marker='o', markersize=2)
+        plt.xlabel('Epoch')
+        plt.ylabel('Effective Rank')
+        plt.title('Effective Rank per Layer over Training')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_effective_rank.png"), dpi=150)
+        plt.close()
+        
+        # 2. Cosine Similarity per layer
+        plt.figure(figsize=(10, 6))
+        for layer_idx in range(num_embed_layers):
+            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_cosine_sims], 
+                     label=f'Layer {layer_idx}', marker='o', markersize=2)
+        plt.xlabel('Epoch')
+        plt.ylabel('Average Cosine Similarity')
+        plt.title('Average Pairwise Cosine Similarity per Layer over Training')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_cosine_similarity.png"), dpi=150)
+        plt.close()
+        
+        # 3. Attention Entropy per layer
+        plt.figure(figsize=(10, 6))
+        for layer_idx in range(num_attn_layers):
+            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_attn_entropies], 
+                     label=f'Layer {layer_idx}', marker='o', markersize=2)
+        plt.xlabel('Epoch')
+        plt.ylabel('Attention Entropy')
+        plt.title('Attention Entropy per Layer over Training')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_attention_entropy.png"), dpi=150)
+        plt.close()
+        
+        # 4. High-Frequency Energy Ratio per layer
+        plt.figure(figsize=(10, 6))
+        for layer_idx in range(num_embed_layers):
+            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_high_freq_ratios], 
+                     label=f'Layer {layer_idx}', marker='o', markersize=2)
+        plt.xlabel('Epoch')
+        plt.ylabel('High-Freq Energy Ratio')
+        plt.title('High-Frequency Energy Ratio per Layer over Training')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_high_freq_ratio.png"), dpi=150)
+        plt.close()
+        
+        logger.info("Saved oversmoothing plots to '{}'".format(config["plot_dir"]))
+        
+        # ===== DEPTH-WISE PLOTS (metrics across layers at different epochs) =====
+        if len(oversmoothing_depth_snapshots) > 0:
+            # Get layer labels for x-axis
+            embed_layer_labels = ['Input'] + [f'Layer {i+1}' for i in range(num_embed_layers - 1)]
+            attn_layer_labels = [f'Layer {i+1}' for i in range(num_attn_layers)]
+            
+            # 1. Depth-wise Effective Rank
+            plt.figure(figsize=(12, 6))
+            for epoch_num, snapshot in oversmoothing_depth_snapshots:
+                plt.plot(range(num_embed_layers), snapshot['effective_rank'], 
+                         label=f'Epoch {epoch_num}', marker='o')
+            plt.xticks(range(num_embed_layers), embed_layer_labels, rotation=45)
+            plt.xlabel('Layer')
+            plt.ylabel('Effective Rank')
+            plt.title('Effective Rank Across Network Depth')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_depth_effective_rank.png"), dpi=150)
+            plt.close()
+            
+            # 2. Depth-wise Cosine Similarity
+            plt.figure(figsize=(12, 6))
+            for epoch_num, snapshot in oversmoothing_depth_snapshots:
+                plt.plot(range(num_embed_layers), snapshot['cosine_similarity'], 
+                         label=f'Epoch {epoch_num}', marker='o')
+            plt.xticks(range(num_embed_layers), embed_layer_labels, rotation=45)
+            plt.xlabel('Layer')
+            plt.ylabel('Average Cosine Similarity')
+            plt.title('Cosine Similarity Across Network Depth')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_depth_cosine_similarity.png"), dpi=150)
+            plt.close()
+            
+            # 3. Depth-wise High-Frequency Ratio
+            plt.figure(figsize=(12, 6))
+            for epoch_num, snapshot in oversmoothing_depth_snapshots:
+                plt.plot(range(num_embed_layers), snapshot['high_freq_ratio'], 
+                         label=f'Epoch {epoch_num}', marker='o')
+            plt.xticks(range(num_embed_layers), embed_layer_labels, rotation=45)
+            plt.xlabel('Layer')
+            plt.ylabel('High-Freq Energy Ratio')
+            plt.title('High-Frequency Energy Ratio Across Network Depth')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_depth_high_freq_ratio.png"), dpi=150)
+            plt.close()
+            
+            # 4. Depth-wise Attention Entropy (averaged across heads)
+            plt.figure(figsize=(12, 6))
+            for epoch_num, snapshot in oversmoothing_depth_snapshots:
+                plt.plot(range(num_attn_layers), snapshot['attention_entropy'], 
+                         label=f'Epoch {epoch_num}', marker='o')
+            plt.xticks(range(num_attn_layers), attn_layer_labels, rotation=45)
+            plt.xlabel('Layer')
+            plt.ylabel('Attention Entropy')
+            plt.title('Attention Entropy Across Network Depth')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_depth_attention_entropy.png"), dpi=150)
+            plt.close()
+            
+            # 5. Depth-wise Attention Entropy per Head (final epoch only for clarity)
+            final_epoch, final_snapshot = oversmoothing_depth_snapshots[-1]
+            if final_snapshot['attention_entropy_per_head'].size > 0:
+                attn_per_head = final_snapshot['attention_entropy_per_head']  # [L, H]
+                num_heads = attn_per_head.shape[1] if attn_per_head.ndim > 1 else 1
+                
+                plt.figure(figsize=(12, 6))
+                if attn_per_head.ndim > 1:
+                    for head_idx in range(num_heads):
+                        plt.plot(range(num_attn_layers), attn_per_head[:, head_idx], 
+                                 label=f'Head {head_idx}', marker='o')
+                else:
+                    plt.plot(range(num_attn_layers), attn_per_head, label='Head 0', marker='o')
+                plt.xticks(range(num_attn_layers), attn_layer_labels, rotation=45)
+                plt.xlabel('Layer')
+                plt.ylabel('Attention Entropy')
+                plt.title(f'Attention Entropy per Head Across Network Depth (Epoch {final_epoch})')
+                plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_depth_attention_entropy_per_head.png"), dpi=150)
+                plt.close()
+            
+            logger.info("Saved depth-wise oversmoothing plots to '{}'".format(config["plot_dir"]))
+
     # Export record metrics to a file accumulating records from all experiments
     utils.register_record(
         config["records_file"],
@@ -656,7 +919,7 @@ def main(config):
         best_metrics,
         aggr_metrics_val,
         aggr_metrics_test,
-        comment=config["comment"] + ".  COMMMAND: " + " ".join(sys.argv),
+        comment=" ".join(sys.argv),
     )
 
     logger.info(

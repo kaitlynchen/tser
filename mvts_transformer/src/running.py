@@ -18,6 +18,7 @@ import numpy as np
 import sklearn
 
 from utils import utils, analysis, visualization_utils
+from utils.oversmoothing import OverSmoothingMetrics
 from models.loss import l1_reg_loss, l2_reg_loss
 from datasets.dataset import (
     ImputationDataset,
@@ -86,13 +87,7 @@ def setup(args):
     # Create output directory
     initial_timestamp = datetime.now()
     output_dir = config["output_dir"]
-    if not os.path.isdir(output_dir):
-        raise IOError(
-            "Root directory '{}', where the directory of the experiment will be created, must exist".format(
-                output_dir
-            )
-        )
-
+    os.makedirs(output_dir, exist_ok=True)
     output_dir = os.path.join(output_dir, config["experiment_name"])
 
     formatted_timestamp = initial_timestamp.strftime("%Y-%m-%d_%H-%M-%S")
@@ -251,7 +246,7 @@ def validate(
 ):
     """Run an evaluation on the validation set while logging metrics, and handle outcome"""
 
-    logger.info("Evaluating on validation set ...")
+    # logger.info("Evaluating on validation set ...")
     eval_start_time = time.time()
     with torch.no_grad():
         if keep_predictions:
@@ -267,11 +262,11 @@ def validate(
             aggr_metrics, per_batch = val_evaluator.evaluate(epoch, config, keep_all=True, require_padding=require_padding, need_attn_weights=need_attn_weights)
 
     eval_runtime = time.time() - eval_start_time
-    logger.info(
-        "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
-            *utils.readable_time(eval_runtime)
-        )
-    )
+    # logger.info(
+    #     "Validation runtime: {} hours, {} minutes, {} seconds\n".format(
+    #         *utils.readable_time(eval_runtime)
+    #     )
+    # )
 
     global val_times
     val_times["total_time"] += eval_runtime
@@ -279,20 +274,21 @@ def validate(
     avg_val_time = val_times["total_time"] / val_times["count"]
     avg_val_batch_time = avg_val_time / len(val_evaluator.dataloader)
     avg_val_sample_time = avg_val_time / len(val_evaluator.dataloader.dataset)
-    logger.info(
-        "Avg val. time: {} hours, {} minutes, {} seconds".format(
-            *utils.readable_time(avg_val_time)
-        )
-    )
-    logger.info("Avg batch val. time: {} seconds".format(avg_val_batch_time))
-    logger.info("Avg sample val. time: {} seconds".format(avg_val_sample_time))
+    # logger.info(
+    #     "Avg val. time: {} hours, {} minutes, {} seconds".format(
+    #         *utils.readable_time(avg_val_time)
+    #     )
+    # )
+    # logger.info("Avg batch val. time: {} seconds".format(avg_val_batch_time))
+    # logger.info("Avg sample val. time: {} seconds".format(avg_val_sample_time))
 
-    print()
-    print_str = "Epoch {} Validation Summary: ".format(epoch)
-    for k, v in aggr_metrics.items():
-        tensorboard_writer.add_scalar("{}/val".format(k), v, epoch)
-        print_str += "{}: {:8f} | ".format(k, v)
-    logger.info(print_str)
+    if epoch % 20 == 0:
+        print()
+        print_str = "Epoch {} Validation Summary: ".format(epoch)
+        for k, v in aggr_metrics.items():
+            tensorboard_writer.add_scalar("{}/val".format(k), v, epoch)
+            print_str += "{}: {:8f} | ".format(k, v)
+        logger.info(print_str)
 
     if config["key_metric"] in NEG_METRICS:
         condition = aggr_metrics[config["key_metric"]] < best_value
@@ -406,12 +402,12 @@ class UnsupervisedRunner(BaseRunner):
             # (batch_size, padded_length, feat_dim)
             if require_padding:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks)
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device), padding_masks)
                 else:
                     predictions = self.model(X.to(self.device), padding_masks)
             else:
                 if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device))
+                    predictions, attn_weights_layers, attn_weights_pool = self.model(X.to(self.device))
                 else:
                     predictions = self.model(X.to(self.device))
 
@@ -433,8 +429,11 @@ class UnsupervisedRunner(BaseRunner):
 
             if use_smoothing:
                 attn_smoothness_loss = 0
-                for attn_weights in attn_weights_layers:
-                  attn_smoothness_loss += torch.sum((attn_weights[:, 1:] - attn_weights[:, :-1]) ** 2)
+                if attn_weights_layers is not None:
+                    attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [n_matrices, T, T] - list of attention matrices
+                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).abs()).sum(dim=2).mean()
+                if attn_weights_pool is not None:  # attn_weights_pool has shape [B, H, T]
+                    attn_smoothness_loss += ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]).abs()).sum(dim=2).mean()
                 total_loss += smoothing_lambda * attn_smoothness_loss
 
             # Zero gradients, perform a backward pass, and update the weights.
@@ -547,14 +546,20 @@ class SupervisedRunner(BaseRunner):
             self.analyzer = analysis.Analyzer(print_conf_mat=True)
         else:
             self.classification = False
+        
+        self.oversmoothing_tracker = OverSmoothingMetrics()
 
-    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, smoothing_lambda=0, need_attn_weights=False):
+    def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, need_attn_weights=False):
         self.model = self.model.train()
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss, posenc_loss = 0, 0, 0
+        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss = 0, 0, 0, 0, 0, 0, 0, 0
         all_predictions, all_targets = [], []
+        
+        self.oversmoothing_tracker.reset()
+        track_oversmoothing = config.get('track_oversmoothing', False)
+        oversmoothing_log_interval = config.get('oversmoothing_log_interval', 10)
 
         for i, batch in enumerate(self.dataloader):
             X, targets, padding_masks, IDs = batch  # @joshuafan added time
@@ -562,24 +567,37 @@ class SupervisedRunner(BaseRunner):
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
-            # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0:
-                plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
-                os.makedirs(plot_dir, exist_ok=True)
-            else:
-                plot_dir = None
+            # Plot dir if needed. Currently None so we don't plot for training batches (only validation)
+            # if i == 0 and epoch_num % 200 == 0:
+            #     plot_dir = os.path.join(config['plot_dir'], f'train_epoch{epoch_num}')
+            #     os.makedirs(plot_dir, exist_ok=True)
+            # else:
+            #     plot_dir = None
+            plot_dir = None
 
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
+            should_track_batch = track_oversmoothing and (i % oversmoothing_log_interval == 0)
+            
+            embeddings_layers = None
+            attn_weights_layers = None
             if require_padding:
-                if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                if need_attn_weights or should_track_batch:
+                    result = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir, return_embeddings=should_track_batch)
+                    if should_track_batch:
+                        predictions, attn_weights_layers, attn_weights_pool, embeddings_layers = result
+                    else:
+                        predictions, attn_weights_layers, attn_weights_pool = result
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks)
             else:
-                if need_attn_weights:
-                    predictions, attn_weights_layers = self.model(X.to(self.device), plot_dir=plot_dir)
+                if need_attn_weights or should_track_batch:
+                    result = self.model(X.to(self.device), plot_dir=plot_dir, return_embeddings=should_track_batch)
+                    if should_track_batch:
+                        predictions, attn_weights_layers, attn_weights_pool, embeddings_layers = result
+                    else:
+                        predictions, attn_weights_layers, attn_weights_pool = result
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
@@ -588,7 +606,7 @@ class SupervisedRunner(BaseRunner):
             all_predictions.append(predictions.detach().flatten())
             all_targets.append(targets.detach().flatten())
 
-            # (batch_size,) loss for each sample in the batch
+            # (B,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
             batch_loss = torch.sum(loss)
             # mean loss (over samples) used for optimization
@@ -604,26 +622,61 @@ class SupervisedRunner(BaseRunner):
 
             supervised_loss += batch_loss.item()  # total_loss.cpu().detach().numpy()
 
-            if use_smoothing:  # attn_weights_layers: [batch, n_layers*n_heads, seq_len, seq_len]
+            if use_smoothing:  # attn_weights_layers: [B, L*H, T, T]
+                # Smoothness on the attn weights
+                attn_smoothness_loss = torch.tensor(0)
+                if attn_weights_layers is not None:
+                    attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
+                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).square()).sum(dim=2).mean()  # TODO square or abs?
+                total_loss += config['reg_lambda'] * attn_smoothness_loss
 
-                attn_smoothness_loss = 0
-                attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [something, seq_len, seq_len] - list of attention matrices
-                # attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]) ** 2).sum(dim=2).mean()
-                attn_smoothness_loss = ((attn_weights_layers[:, :, 2:] + attn_weights_layers[:, :, :-2] - 2*attn_weights_layers[:, :, 1:-1]) ** 2).sum(dim=2).mean()
-                total_loss += smoothing_lambda * attn_smoothness_loss
+                # Pooling smoothness loss
+                pool_smoothness_loss = torch.tensor(0)
+                if attn_weights_pool is not None:  # attn_weights_pool has shape [B, H, T]
+                    pool_smoothness_loss = ((attn_weights_pool[:, :, 1:] - attn_weights_pool[:, :, :-1]).square()).sum(dim=2).mean()
+                total_loss += config['reg_lambda_pool'] * pool_smoothness_loss
+
             else:
                 attn_smoothness_loss = torch.tensor(0)
+                pool_smoothness_loss = torch.tensor(0)
 
-            supervised_smoothing_loss += (attn_smoothness_loss.item() * smoothing_lambda * len(loss))  # put in same scale as batch_loss
+            supervised_smoothing_loss += (attn_smoothness_loss.item() * config["reg_lambda"] * len(loss))  # put in same scale as batch_loss
+            pool_smoothing_loss += (pool_smoothness_loss.item() * config["reg_lambda_pool"] * len(loss))  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
-            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or (config['relative_pos_encoding'] == 'erpe')):
+            if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or (config['relative_pos_encoding'] in ["convit", "convit_half"])):
                 # if config['lambda_posenc_smoothness'] > 0:
-                posenc_loss_batch = self.model.posenc_smoothness_loss(logger, plot_dir=plot_dir, epoch_num=epoch_num)
+                posenc_loss_batch = self.model.posenc_smoothness_loss(logger)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
                 posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * len(loss)  # put in same scale as batch_loss
             else:
                 assert config['lambda_posenc_smoothness'] == 0
+
+            # Locality loss
+            if config["lambda_locality"] > 0:
+                if 'erpe' in config['relative_pos_encoding'] and config['where_to_add_relpos'] == 'only_relpos':
+                    locality_loss_batch = self.model.locality_loss_erpe()
+                else:
+                    locality_loss_batch = self.model.locality_loss_attention()
+                locality_loss += config["lambda_locality"] * locality_loss_batch.item() * len(loss)  # put in same scale as batch_loss
+                total_loss += config["lambda_locality"] * locality_loss_batch 
+
+            if config["lambda_erpe_linear"] > 0:
+                erpe_linear_loss_batch = self.model.erpe_linear_loss()
+                erpe_linear_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch.item() * len(loss)
+                total_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch
+
+            if config["lambda_focus"] > 0:
+                focus_loss_batch = self.model.focus_loss()
+                focus_loss += config["lambda_focus"] * focus_loss_batch.item() * len(loss)
+                total_loss += config["lambda_focus"] * focus_loss_batch
+
+            # Jacobian loss
+            if config["lambda_jacobian"] > 0:
+                jacobian_loss_batch = self.model.jacobian_loss(X.to(self.device))
+                jacobian_loss += config["lambda_jacobian"] * jacobian_loss_batch.item() * len(loss)
+                total_loss += config["lambda_jacobian"] * jacobian_loss_batch
+                
 
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
@@ -634,24 +687,36 @@ class SupervisedRunner(BaseRunner):
             self.optimizer.step()
 
             metrics = {"loss": mean_loss.item()}
-            if i % self.print_interval == 0:
-                ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
-                self.print_callback(i, metrics, prefix="Training " + ending)
+            # if i % self.print_interval == 0:
+            #     ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
+            #     self.print_callback(i, metrics, prefix="Training " + ending)
 
             with torch.no_grad():
                 total_samples += len(loss)
                 epoch_loss += batch_loss.item()  # add total loss of batch
+                
+                if should_track_batch and embeddings_layers is not None and attn_weights_layers is not None:
+                    oversmoothing_metrics = self.oversmoothing_tracker.compute_metrics(
+                        embeddings_layers, attn_weights_layers
+                    )
+                    self.oversmoothing_tracker.accumulate(oversmoothing_metrics)
 
         # average loss per sample for whole epoch
         epoch_loss = epoch_loss / total_samples
         supervised_loss = supervised_loss / total_samples
         posenc_loss = posenc_loss / total_samples
+        locality_loss = locality_loss / total_samples
+        erpe_linear_loss = erpe_linear_loss / total_samples
+        focus_loss = focus_loss / total_samples
+        jacobian_loss = jacobian_loss / total_samples
 
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
+        
+        oversmoothing_summary = self.oversmoothing_tracker.get_epoch_summary() if track_oversmoothing else None
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, posenc_loss
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss, oversmoothing_summary
 
         return self.epoch_metrics
 
@@ -677,7 +742,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:
+            if i == 0 and epoch_num % 200 == 0 and config is not None:
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:
@@ -685,12 +750,12 @@ class SupervisedRunner(BaseRunner):
 
             if require_padding:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)[0]
                 else:
                     predictions = self.model(X.to(self.device), padding_masks, plot_dir=plot_dir)
             else:
                 if need_attn_weights:
-                    predictions, _ = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)[0]
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
@@ -710,9 +775,9 @@ class SupervisedRunner(BaseRunner):
             per_batch["IDs"].append(np.array(IDs))
 
             metrics = {"loss": mean_loss}
-            if i % self.print_interval == 0:
-                ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
-                self.print_callback(i, metrics, prefix="Evaluating " + ending)
+            # if i % self.print_interval == 0:
+            #     ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
+            #     self.print_callback(i, metrics, prefix="Evaluating " + ending)
 
             total_samples += len(loss)
             epoch_loss += batch_loss  # add total loss of batch

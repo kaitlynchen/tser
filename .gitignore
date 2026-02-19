@@ -8,7 +8,6 @@ __pycache__/
 *$py.class
 
 # launch bash
-*.sh
 # nsight system report files
 *.nsys-rep
 *.sqlite
@@ -140,3 +139,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Excel outputs
+*.xls
+
+# Slurm outputs
+*.out
