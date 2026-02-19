@@ -117,7 +117,6 @@ def get_mixup_sample_rate(args, data_packet, device='cuda', use_kde = False):
             mix_idx.append(each_rate)
 
     mix_idx = np.array(mix_idx)
-    # print("mixup_sample_rate", mix_idx.shape)
     # print(mix_idx[0])
     # print(y_list)
 
@@ -136,7 +135,7 @@ def get_batch_kde_mixup_idx(args, Batch_X, Batch_Y, device):
     Batch_packet['x_train'] = Batch_X.cpu()
     Batch_packet['y_train'] = Batch_Y.cpu()
 
-    Batch_rate = get_mixup_sample_rate(args, Batch_packet, device, use_kde=True) # batch -> kde
+    Batch_rate = get_mixup_sample_rate(args, Batch_packet, device) #, use_kde=True) # batch -> kde
     if args["show_process"]:
         stats_values(Batch_rate[0])
         # print(f'Batch_rate[0][:20] = {Batch_rate[0][:20]}')
@@ -145,7 +144,8 @@ def get_batch_kde_mixup_idx(args, Batch_X, Batch_Y, device):
     return idx2
 
 def generate_mixup_data(args, X1, Y1, device):
-    lambd = np.random.beta(args["mix_alpha"], args["mix_alpha"])
+    # lambd = np.random.beta(args["mix_alpha"], args["mix_alpha"])
+    lambd = torch.distributions.beta.Beta(args["mix_alpha"], args["mix_alpha"]).sample((X1.shape[0], 1, 1)).to(device)
     idx2 = get_batch_kde_mixup_idx(args, X1, Y1, device)
     X2 = X1[idx2]
     Y2 = Y1[idx2]

@@ -1,16 +1,22 @@
 #!/bin/bash
 
-# Usage on Slurm:
-# sbatch repro_scripts/convalibi_dilated.sh AppliancesEnergy
-# Output will appear in a file 'slurm-N.out' where N is the job ID.
-# Change dataset in DATA below.
+# ============================= USAGE ==============================
+# Tunes hyperparameters for ConvTran.
 
+# ./repro_scripts/convtran_tuning.sh <DATASET>
+# (replace <DATASET> with one of: AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent)
+# Don't forget to change DATA_DIR and "ACTIVATE ENVIRONMENT" commands.
+
+# Results will be written to `output/${OUTPUT_FILE}.xls` (you can modify OUTPUT_FILE in this script).
+# Then, we test the best hyperparameters, and write result to `output/${OUTPUT_FILE}_TESTBEST.xls`
+# NOTE: The "test loss" column is MSE, take square root to get RMSE (except for MEAN/STD rows, which are RMSE)
+
+# ======== SLURM BOILERPLATE - Ignore if not using Slurm. =========
 # Request the full partition
 #SBATCH -p full
 #SBATCH --exclude=c0020,c0002
-
 # Name the job so it's meaningful in the job list
-#SBATCH -J convtran_ieeeppg
+#SBATCH -J erpe_convalibi
 # Request 1 V100 GPU
 #SBATCH --gpus v100:1
 # Request 4 CPU cores (8 hyperthreads).
@@ -22,13 +28,18 @@
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
-# Activate environment
-source ~/.bashrc
-conda activate crop-updated
+# ============================ DATASET ============================
+DATA=$1
+echo $DATA
+DATA_DIR="/mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/"  # TODO: Change this!!!
 
-# Dataset
-# AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent 
-DATA="IEEEPPG"
+# ========== ACTIVATE ENVIRONMENT (TODO: Change this!!!) ==========
+source ~/.bashrc
+conda activate tser
+
+# ======================= HYPERPARAMETERS =========================
+# Default settings
+SPLIT=""
 
 # Batch size: 16 for AppliancesEnergy, otherwise 128
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -74,10 +85,10 @@ do
         do
             # BASIC
             PARAM_STR="LR=${LR}_HEADS=${HEADS}_SEED=${SEED}"
-            python mvts_transformer/src/main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                --records_file "${OUTPUT_FILE}.xls" \
-                --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
-                --pattern TRAIN --val_ratio 0.2 \
+            python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+                --records_file "output/${OUTPUT_FILE}.xls" \
+                --data_dir $DATA_DIR --data_class tsra \
+                --pattern TRAIN --val_ratio 0.2 $SPLIT \
                 --epochs 2000 --patience 200 \
                 --lr $LR --batch_size $BS \
                 --num_layers 3 --num_heads $HEADS --d_model $D_MODEL --dim_feedforward $DIM_FEEDFORWARD \
@@ -92,4 +103,4 @@ do
 done
 
 # TEST
-python mvts_transformer/src/test_best.py --records_file "${OUTPUT_FILE}.xls"
+python test_best.py --records_file "output/${OUTPUT_FILE}.xls"

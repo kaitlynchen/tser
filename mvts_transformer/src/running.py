@@ -563,6 +563,7 @@ class SupervisedRunner(BaseRunner):
 
         for i, batch in enumerate(self.dataloader):
             X, targets, padding_masks, IDs = batch  # @joshuafan added time
+            X = X.to(self.device)
             targets = targets.to(self.device)
             padding_masks = padding_masks.to(self.device)  # 0s: ignore
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
@@ -575,6 +576,8 @@ class SupervisedRunner(BaseRunner):
             #     plot_dir = None
             plot_dir = None
 
+            if config["input_noise_std"] > 0:
+                X = X + torch.randn_like(X) * config["input_noise_std"]
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
@@ -590,7 +593,7 @@ class SupervisedRunner(BaseRunner):
                     else:
                         predictions, attn_weights_layers, attn_weights_pool = result
                 else:
-                    predictions = self.model(X.to(self.device), padding_masks)
+                    predictions = self.model(X, padding_masks)
             else:
                 if need_attn_weights or should_track_batch:
                     result = self.model(X.to(self.device), plot_dir=plot_dir, return_embeddings=should_track_batch)
@@ -599,7 +602,7 @@ class SupervisedRunner(BaseRunner):
                     else:
                         predictions, attn_weights_layers, attn_weights_pool = result
                 else:
-                    predictions = self.model(X.to(self.device), plot_dir=plot_dir)
+                    predictions = self.model(X, plot_dir=plot_dir)
 
             if config['normalize_label']:
                 predictions = predictions * config["label_std"] + config["label_mean"]
