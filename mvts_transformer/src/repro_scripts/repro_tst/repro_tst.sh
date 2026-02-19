@@ -73,23 +73,23 @@ else
 fi
 
 
-OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000"
+# OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000"
 
-for SEED in 0 1 2
-do
-    PARAM_STR="SEED=${SEED}"
-    python main.py --output_dir "./output/output_zerveas2" \
-        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-        --records_file "output/output_zerveas2/${OUTPUT_FILE}.xls" \
-        --data_dir $DATA_DIR --data_class tsra \
-        --pattern TRAIN --val_pattern TEST \
-        --epochs 2000 --patience $PATIENCE \
-        --lr 0.001 --batch_size $BS \
-        --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
-        --optimizer RAdam --task regression \
-        --model transformer --pos_encoding learnable \
-        --plot_loss --plot_accuracy
-done
+# for SEED in 0 1 2
+# do
+#     PARAM_STR="SEED=${SEED}"
+#     python main.py --output_dir "./output/output_zerveas2" \
+#         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
+#         --records_file "output/output_zerveas2/${OUTPUT_FILE}.xls" \
+#         --data_dir $DATA_DIR --data_class tsra \
+#         --pattern TRAIN --val_pattern TEST \
+#         --epochs 2000 --patience $PATIENCE \
+#         --lr 0.001 --batch_size $BS \
+#         --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
+#         --optimizer RAdam --task regression \
+#         --model transformer --pos_encoding learnable \
+#         --plot_loss --plot_accuracy
+# done
 
 OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000_CLIMAX"
 

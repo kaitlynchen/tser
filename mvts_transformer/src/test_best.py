@@ -43,6 +43,10 @@ if args.override_patience >= 0:
 # Run best command with multiple seeds
 for SEED in args.specific_seeds:
     seed_command = re.sub('--seed\s+\d+', f'--seed {SEED}', command)
+
+    # Modify note to reflect this is the final run
+    seed_command = re.sub(r'(--name\s+)(\S+)', rf'\1\2_TESTSEED={SEED}', seed_command)
+
     command_args = shlex.split(seed_command)
     command_args.insert(0, "python")
     print("ABOUT TO RUN", command_args)

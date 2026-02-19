@@ -23,7 +23,7 @@
 # Specify the resources should be assigned to a single task on one node.
 #SBATCH -N 1 -n 1
 # Request a total of 80GB RAM
-#SBATCH --mem=20GB
+#SBATCH --mem=80GB
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
@@ -62,26 +62,33 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 
-OUTPUT_FILE="${DATA}_OVERSMOOTHING_BASELINE8_L2"
+# 1) Abspos
+# 2) Pool
+# 3) Relpos: after_gating, convalibi_init
+# 4) Attn smoothing
+# 5) L2 attn/learnable scale/prenorm
+
+OUTPUT_DIR="./output/oversmoothing_baseline11_dot_SEQUENTIALSPLIT"
+OUTPUT_FILE="${DATA}_BASELINE11_CONVALIBI_DOT_SEQUENTIALSPLIT"
 
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 1
+    for CONVIT_SLOPE in 0.1 1 10
     do
-        for NOISE in 0 
+        for NOISE in 0
         do
-            for LAM in 0 1e-2
+            for LAM in 0
             do
-                for HEADS in 8 16
+                for HEADS in 16
                 do
                     for SEED in 0
                     do
-                        PARAM_STR="LR=${LR}_HEADS=${HEADS}_LAM=${LAM}"
+                        PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_LAM=${LAM}_HEADS=${HEADS}"
 
                         # Baseline, convalibi init relpos, before softmax
-                        python main.py --output_dir "./output/oversmoothing_baseline" \
+                        python main.py --output_dir "$OUTPUT_DIR" \
                             --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                            --records_file "output/${OUTPUT_FILE}.xls" \
+                            --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
                             --data_dir $DATA_DIR --data_class tsra \
                             --pattern TRAIN --val_ratio 0.2 $SPLIT \
                             --epochs 2000 --patience $PATIENCE \
@@ -92,7 +99,7 @@ do
                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                             --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
                             --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
-                            --pool seqpool_cls --attention_type L2 --learnable_scale --reg_lambda $LAM --reg_lambda_pool $LAM
+                            --pool seqpool_cls --attention_type dot --learnable_scale --reg_lambda $LAM --reg_lambda_pool $LAM
                     done
                 done
             done
@@ -100,7 +107,7 @@ do
     done
 done
 
-python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
 
 # TODO: Pooling seqpool_cls
 # TODO: absolute positional encoding: concat start

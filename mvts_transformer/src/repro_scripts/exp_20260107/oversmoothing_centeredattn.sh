@@ -3,6 +3,7 @@
 # ============================= USAGE ==============================
 # Best attempt to reproduce Zerveas TST results.
 
+# sbatch repro_scripts/exp_20260107/oversmoothing_centeredattn.sh BeijingPM10Quality; sbatch repro_scripts/exp_20260107/oversmoothing_centeredattn.sh BeijingPM25Quality; sbatch repro_scripts/exp_20260107/oversmoothing_centeredattn.sh IEEEPPG; sbatch repro_scripts/exp_20260107/oversmoothing_centeredattn.sh LiveFuelMoistureContent;
 # ./repro_scripts/repro_tst/repro_tst.sh <DATASET>
 # (replace <DATASET> with one of: AppliancesEnergy BeijingPM10Quality BeijingPM25Quality BenzeneConcentration IEEEPPG LiveFuelMoistureContent)
 # Don't forget to change DATA_DIR and "ACTIVATE ENVIRONMENT" commands.
@@ -62,40 +63,82 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 
-OUTPUT_FILE="${DATA}_OVERSMOOTHING_BASELINE7_CENTEREDATTN"
+OUTPUT_DIR="./output/oversmoothing_baseline12_centeredattn"
+OUTPUT_FILE="${DATA}_OVERSMOOTHING_BASELINE12_CENTEREDATTN_SMOOTHED"
 
-for LR in 1e-3 1e-2
-do
-    for CONVIT_SLOPE in 0.5 1
-    do
-        for NOISE in 0
-        do
-            for HEADS in 8 16
-            do
-                for SEED in 0
-                do
-                    PARAM_STR="LR=${LR}_HEADS=${HEADS}_SLOPE=${CONVIT_SLOPE}"
+# for LR in 1e-3 1e-2
+# do
+#     for CONVIT_SLOPE in 0.1 0.3 1 3 10
+#     do
+#         for NOISE in 0
+#         do
+#             for LAM in 0
+#             do
+#                 for HEADS in 16
+#                 do
+#                     for SEED in 0
+#                     do
+#                         PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_LAM=${LAM}_HEADS=${HEADS}"
 
-                    # Baseline, convalibi init relpos, before softmax
-                    python main.py --output_dir "./output/oversmoothing_baseline" \
-                        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                        --records_file "output/${OUTPUT_FILE}.xls" \
-                        --data_dir $DATA_DIR --data_class tsra \
-                        --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                        --epochs 2000 --patience $PATIENCE \
-                        --lr $LR --batch_size $BS --input_noise_std $NOISE \
-                        --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                        --optimizer RAdam --task regression \
-                        --plot_loss --plot_accuracy \
-                        --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                        --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
-                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
-                        --pool seqpool_cls --centered_attn
-                done
-            done
-        done
-    done
-done
+#                         # Baseline, convalibi init relpos, before softmax
+#                         python main.py --output_dir "$OUTPUT_DIR" \
+#                             --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+#                             --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+#                             --data_dir $DATA_DIR --data_class tsra \
+#                             --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                             --epochs 2000 --patience $PATIENCE \
+#                             --lr $LR --batch_size $BS --input_noise_std $NOISE \
+#                             --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+#                             --optimizer RAdam --task regression \
+#                             --plot_loss --plot_accuracy \
+#                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+#                             --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
+#                             --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
+#                             --pool seqpool_cls --attention_type L2 --learnable_scale --reg_lambda $LAM --reg_lambda_pool $LAM --centered_attn
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
+
+python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
 
 
-python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
+# OUTPUT_FILE="${DATA}_OVERSMOOTHING_BASELINE7_CENTEREDATTN"
+
+# for LR in 1e-3 1e-2
+# do
+#     for CONVIT_SLOPE in 0.5 1
+#     do
+#         for NOISE in 0
+#         do
+#             for HEADS in 8 16
+#             do
+#                 for SEED in 0
+#                 do
+#                     PARAM_STR="LR=${LR}_HEADS=${HEADS}_SLOPE=${CONVIT_SLOPE}"
+
+#                     # Baseline, convalibi init relpos, before softmax
+#                     python main.py --output_dir "./output/oversmoothing_baseline" \
+#                         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+#                         --records_file "output/${OUTPUT_FILE}.xls" \
+#                         --data_dir $DATA_DIR --data_class tsra \
+#                         --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                         --epochs 2000 --patience $PATIENCE \
+#                         --lr $LR --batch_size $BS --input_noise_std $NOISE \
+#                         --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+#                         --optimizer RAdam --task regression \
+#                         --plot_loss --plot_accuracy \
+#                         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+#                         --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
+#                         --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
+#                         --pool seqpool_cls --centered_attn
+#                 done
+#             done
+#         done
+#     done
+# done
+
+
+# python test_best.py --records_file "output/${OUTPUT_FILE}.xls"

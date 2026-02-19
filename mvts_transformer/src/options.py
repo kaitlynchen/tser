@@ -184,6 +184,14 @@ class Options(object):
                                  help="""Type of self-attention mechanism.""")
         self.parser.add_argument('--learnable_scale', action='store_true',
                                  help="""If set, the attention scale factor becomes a learnable parameter.""")
+        self.parser.add_argument('--pre_norm', action='store_true',
+                                 help="""If set, normalize before attention.""")
+        self.parser.add_argument('--qkv_identity_init', action='store_true',
+                                 help="""If set, initialize W_Q, W_K, and W_V matrices to identity, so that at the beginning of training, attention is simply dot product similarity between input tokens. Only applicable if not using conv_projection.""")
+        self.parser.add_argument('--tied_qk', action='store_true',
+                                 help="""If set, use same matrix for W_Q and W_K.""")
+        self.parser.add_argument('--key_bias', action='store_true',
+                                 help="""If set, add bias (attention sink) as a column in key matrix.""")
 
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
@@ -237,6 +245,13 @@ class Options(object):
                                  help='Number of time steps in each patch')
         self.parser.add_argument('--num_decoder_layers', type=int, default=2,
                                  help='Number of decoder layers')
+
+
+        # Input pooling
+        self.parser.add_argument('--input_pooling_patch', type=int, default=1,
+                                 help="Number of time steps in each input pooling patch. Only used with sklearn models at this time.")
+        self.parser.add_argument('--input_pooling_stride', type=int, default=1,
+                                 help="Stride for input pooling. Only used with sklearn models at this time.")
 
         # Pooling
         self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'seqpool_cls', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
