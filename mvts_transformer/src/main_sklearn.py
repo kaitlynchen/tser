@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import loguniform
+import torch.nn.functional as F
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s : %(message)s", level=logging.INFO
@@ -265,6 +266,13 @@ def main(config):
     Y_test = test_data.labels_df.loc[test_indices].to_numpy()
     print("Shape test", X_train.shape, X_test.shape, Y_train.shape, Y_test.shape)  # X: [n_examples, time, variables]  Y: [n_examples]
 
+    # Avg pooling
+    X_train, X_test = torch.tensor(X_train), torch.tensor(X_test)
+    X_train = F.avg_pool1d(X_train.transpose(1, 2), kernel_size=config['input_pooling_patch'], stride=config['input_pooling_stride']).transpose(1, 2).numpy()
+    X_test = F.avg_pool1d(X_test.transpose(1, 2), kernel_size=config['input_pooling_patch'], stride=config['input_pooling_stride']).transpose(1, 2).numpy()
+    print("Shape test after pool", X_train.shape, X_test.shape, Y_train.shape, Y_test.shape)  # X: [n_examples, time', variables]  Y: [n_examples]
+    N_TIMESTEPS = X_train.shape[1]
+
     # Flatten
     #X_train = X_train.mean(axis=1)
     #X_test = X_test.mean(axis=1)
@@ -312,13 +320,13 @@ def main(config):
                                                  filename_description="test", should_align=True)
 
     # Plot time series
-    visualization_utils.plot_time_series(X_train[0].reshape((my_data.max_seq_len, my_data.feature_df.shape[1])),
+    visualization_utils.plot_time_series(X_train[0].reshape((N_TIMESTEPS, my_data.feature_df.shape[1])),
                                          os.path.join(config['plot_dir'], f"{config['model']}_example_x0.png"))
 
     # For linear models, plot coefficients
     if args.model in ["ridge", "lasso", "linear"]:
         print("plot coefs")
-        coefs = regressor.best_estimator_.coef_.reshape((my_data.max_seq_len, my_data.feature_df.shape[1]))
+        coefs = regressor.best_estimator_.coef_.reshape((N_TIMESTEPS, my_data.feature_df.shape[1]))
         visualization_utils.plot_time_series(coefs, os.path.join(config['plot_dir'], f"{config['model']}_coefs.png"))
 
 if __name__ == "__main__":

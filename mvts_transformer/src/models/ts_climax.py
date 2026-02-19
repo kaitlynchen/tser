@@ -82,7 +82,6 @@ def model_factory(config, data):
                           conv_projection=config['conv_projection'],
                           local_mask=config['local_mask'],
                           causal_mask=config['causal_mask'],
-                          pool=config['pool'],
                           convit_slope=config['convit_slope'],
                           alibi_min_slope=config['alibi_min_slope'],
                           alibi_max_slope=config['alibi_max_slope'],
@@ -92,8 +91,11 @@ def model_factory(config, data):
                           lambda_neutreno=config['lambda_neutreno'],
                           attn_scale=config['attn_scale'],
                           feat_scale=config['feat_scale'],
-                          centered_attn=config['centered_attn']
-                          )
+                          centered_attn=config['centered_attn'],
+                          pre_norm=config['pre_norm'],
+                          qkv_identity_init=config['qkv_identity_init'],
+                          tied_qk=config['tied_qk'],
+                          key_bias=config['key_bias'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -170,6 +172,10 @@ class ClimaX(nn.Module):
         attn_scale=False,
         feat_scale=False,
         centered_attn=False,
+        pre_norm=False,
+        qkv_identity_init=False,
+        tied_qk=False,
+        key_bias=False,
     ):
         super().__init__()
 
@@ -185,7 +191,10 @@ class ClimaX(nn.Module):
         self.where_to_add_abspos = where_to_add_abspos
         self.relative_pos_encoding = relative_pos_encoding
         self.where_to_add_relpos = where_to_add_relpos
-
+        self.convit_slope = convit_slope
+        self.alibi_max_slope = alibi_max_slope
+        self.alibi_min_slope = alibi_min_slope
+        self.alibi_heads = num_heads
         self.agg_vars = agg_vars
         self.conv_transformer = conv_transformer
         self.device = device
@@ -193,15 +202,13 @@ class ClimaX(nn.Module):
         self.causal_mask = causal_mask
         self.conv_projection = conv_projection
         self.pool = pool
-
-        self.convit_slope = convit_slope
-        self.alibi_heads = num_heads
-        self.alibi_max_slope = alibi_max_slope
-        self.alibi_min_slope = alibi_min_slope
+        self.attention_type = attention_type
+        self.learnable_scale = learnable_scale
         self.lambda_neutreno = lambda_neutreno
         self.attn_scale = attn_scale
         self.feat_scale = feat_scale
         self.centered_attn = centered_attn
+        self.pre_norm = pre_norm
 
         if self.where_to_add_abspos == "start_concat":
             content_embed_dim = embed_dim // 2
@@ -258,9 +265,9 @@ class ClimaX(nn.Module):
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos,
-                attention_type=attention_type, learnable_scale=learnable_scale,
-                conv_projection=conv_projection, lambda_neutreno=lambda_neutreno,
-                attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn)
+                conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale,
+                lambda_neutreno=lambda_neutreno, attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn, pre_norm=self.pre_norm,
+                qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias)
         
         # Create TransformerEncoder with multiple layers
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
@@ -750,9 +757,8 @@ class ClimaX(nn.Module):
             num_heads = self.relative_bias_table.shape[2]
 
             # Divide biases by "temp", and clamp out extreme values
-            biases = self.relative_bias_table / self.relpos_temp  # # self.relpos_temp has shape [L, 1, H] so broadcasting works
+            biases = self.relative_bias_table / self.relpos_temp  # self.relpos_temp has shape [L, 1, H] so broadcasting works
             biases = torch.clamp(biases, min=-1000, max=1000)  # Prevent values from getting too extreme
-            
             flattened_indices = self.relative_coords.flatten()  # [T*T]
             offset_mask = biases.index_select(dim=1, index=flattened_indices) # [L, T*T, H]
             offset_mask = rearrange(offset_mask, 'l (t0 t1) h -> l h t0 t1', t0=self.seq_len)  # [L, H, T, T]
@@ -796,21 +802,22 @@ class ClimaX(nn.Module):
             # self.alibi: [H, T, T]
             offset_mask = self.alibi.repeat((self.num_layers, x.shape[0], 1, 1))  # Repeat along the layer and batch dimension: TransformerEncoder expects mask to be [L, B*H, T, T]
 
-        # If some positions are not allowed to attend, set those mask entries to -inf
+        # # If some positions are not allowed to attend, set those mask entries to -inf
+        # NOTE Doesn't work with after_gating!!!
         if self.invalid_mask is not None:
             if offset_mask is None:
                 offset_mask = torch.zeros((self.num_layers, x.shape[0]*self.num_heads, self.seq_len, self.seq_len), device=self.device)
             offset_mask += self.invalid_mask  # offset_mask is [L, B*H, T, T]. invalid_mask is shape [T, T], which adds -inf if the position is invalid, zero otherwise.
 
-            #     # If there is no relative position offset mask, create one from the
-            #     # invalid mask with shape [L, B*H, T, T]. At each layer, the mask is True
-            #     # at positions that are NOT ALLOWED to attend (too far).
-            #     offset_mask = torch.zeros((self.num_layers, x.shape[0]*self.num_heads, self.seq_len, self.seq_len))
-            #     offset_mask[:, :, self.invalid_mask] = float("-inf")
-            # else:
-            #     # Note: invalid_mask has shape [T, T], but offset_mask computed from
-            #     # relative dimension is of shape [L, B*H, T, T]
-            #     offset_mask[:, :, self.invalid_mask] = float("-inf")
+        #     # If there is no relative position offset mask, create one from the
+        #     # invalid mask with shape [L, B*H, T, T]. At each layer, the mask is True
+        #     # at positions that are NOT ALLOWED to attend (too far).
+        #     offset_mask = torch.zeros((self.num_layers, x.shape[0]*self.num_heads, self.seq_len, self.seq_len))
+        #     offset_mask[:, :, self.invalid_mask] = float("-inf")
+        # else:
+        #     # Note: invalid_mask has shape [T, T], but offset_mask computed from
+        #     # relative dimension is of shape [L, B*H, T, T]
+        #     offset_mask[:, :, self.invalid_mask] = float("-inf")
 
         # Pass through encoder
         x, attn_weights, embeddings_layers = self.transformer_encoder(x, masks=offset_mask, plot_dir=plot_dir)  # x: [B, T, D]. attn_weights: [L, B, H, T, T], embeddings_layers: [L, B, T, D]
@@ -1433,9 +1440,10 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         activation: the activation function of intermediate layer, relu or gelu (default=relu).
     """
 
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none', attention_type='dot', learnable_scale=False
-                 where_to_add_relpos='before', conv_projection=False, lambda_neutreno=0.0,
-                 attn_scale=False, feat_scale=False, centered_attn=False):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none',
+                 where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False,
+                 lambda_neutreno=0.0, attn_scale=False, feat_scale=False, centered_attn=False, pre_norm=False,
+                 qkv_identity_init=False, tied_qk=False, key_bias=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         # if where_to_add_relpos == "before":
         #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
@@ -1449,9 +1457,10 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         else:
             # Custom attention if we want relative position offset to be applied after softmax
             self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection,
+                                               where_to_add_relpos=where_to_add_relpos,
                                                attention_type=attention_type, learnable_scale=learnable_scale,
-                                               where_to_add_relpos=where_to_add_relpos, attn_scale=attn_scale,
-                                               feat_scale=feat_scale, centered_attn=centered_attn)
+                                               attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn,
+                                               qkv_identity_init=qkv_identity_init, tied_qk=tied_qk)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1461,11 +1470,54 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         # normalizes each feature across batch samples and time steps
         self.norm1 = BatchNorm1d(d_model, eps=1e-5)
         self.norm2 = BatchNorm1d(d_model, eps=1e-5)
+        self.norm1_wrapped = self.norm_wrapper(self.norm1)
+        self.norm2_wrapped = self.norm_wrapper(self.norm2)
         self.dropout1 = Dropout(dropout)
         self.dropout2 = Dropout(dropout)
 
         self.activation = F.gelu
         self.lambda_neutreno = lambda_neutreno
+        self.pre_norm = pre_norm
+
+
+    def norm_wrapper(self, norm_layer):
+        """
+        BatchNorm1d expects input of shape [B, D, T], but our input is [B, T, D].
+        This creates a wrapper that makes it compatible with [B, T, D].
+        """
+        return torch.nn.Sequential(
+            Rearrange('b t d -> b d t'),
+            norm_layer,
+            Rearrange('b d t -> b t d')
+        )
+
+
+    def _sa_block(self, x, attn_mask=None, key_padding_mask=None, plot_dir=None, output0=None):
+        """
+        Self-attention + dropout block. Source: https://github.com/pytorch/pytorch/blob/v2.10.0/torch/nn/modules/transformer.py#L961
+        """
+        if type(self.self_attn) == Attention_Rel_Scl:
+            x, attn_output_weights = self.self_attn(x, x, x, attn_mask=attn_mask,
+                                                    key_padding_mask=key_padding_mask,
+                                                    average_attn_weights=False, plot_dir=plot_dir)  # x: [B, T, D], attn_output_weights: [B, H, T, T]
+        else:
+            x, attn_output_weights = self.self_attn(x, x, x, attn_mask=attn_mask,
+                                                    key_padding_mask=key_padding_mask,
+                                                    average_attn_weights=False)
+        if output0 is not None and self.lambda_neutreno > 0:
+            x = x + self.lambda_neutreno * (output0 - x)
+        return self.dropout1(x), attn_output_weights
+
+        # src2, attn_output_weights = self.self_attn(x, x, x, attn_mask=attn_mask,
+        #                     key_padding_mask=key_padding_mask, average_attn_weights=False)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
+        # src = src + self.dropout1(src2)  # [B, T, D]
+        # src = self.norm_wrapper(src, self.norm1)
+        # return src, attn_output_weights
+
+
+    def _ff_block(self, x: Tensor) -> Tensor:
+        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        return self.dropout2(x)
 
 
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
@@ -1482,28 +1534,43 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             src: [B, T, D]
             attn_output_weights: [B, H, T, T]
         """
-        if type(self.self_attn) == Attention_Rel_Scl:
-            # Attention_Rel_Scl allows plot_dir
-            src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                                key_padding_mask=src_key_padding_mask, average_attn_weights=False, plot_dir=plot_dir)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
-            if self.lambda_neutreno > 0:
-                if output0 is not None:
-                    src2 = src2 + self.lambda_neutreno * (output0 - src2)
 
+        # Code inspired from https://github.com/pytorch/pytorch/blob/v2.10.0/torch/nn/modules/transformer.py#L946
+        # See Fig 1 of https://arxiv.org/pdf/2002.04745v1
+        x = src
+        if self.pre_norm:
+            sa_output, attn_output_weights = self._sa_block(
+                self.norm1_wrapped(x), src_mask, src_key_padding_mask, plot_dir=plot_dir, output0=output0)
+            x = x + sa_output
+            x = x + self._ff_block(self.norm2_wrapped(x))
         else:
-            src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
-                                key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
+            sa_output, attn_output_weights = self._sa_block(
+                x, src_mask, src_key_padding_mask, plot_dir=plot_dir, output0=output0)
+            x = self.norm1_wrapped(x + sa_output)
+            x = self.norm2_wrapped(x + self._ff_block(x))
+        return x, attn_output_weights
 
-        src = src + self.dropout1(src2)  # [B, T, D]
-        src = rearrange(src, 'b t d -> b d t')  # Convert to [B, D, T] only for normalization (which expects channel dim first)
-        src = self.norm1(src)
-        src = rearrange(src, 'b d t -> b t d')  # Restore [B, T, D]
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)  # [B, T, D]
-        src = rearrange(src, 'b t d -> b d t')
-        src = self.norm2(src)
-        src = rearrange(src, 'b d t -> b t d')  # Restore [B, T, D]
-        return src, attn_output_weights
+
+        # if type(self.self_attn) == Attention_Rel_Scl:
+        #     # Attention_Rel_Scl allows plot_dir
+        #     src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
+        #                         key_padding_mask=src_key_padding_mask, average_attn_weights=False, plot_dir=plot_dir)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
+        # else:
+        #     src2, attn_output_weights = self.self_attn(src, src, src, attn_mask=src_mask,
+        #                         key_padding_mask=src_key_padding_mask, average_attn_weights=False)  # src2: [B, T, D], attn_output_weights: [B, H, T, T]
+        # if output0 is not None and self.lambda_neutreno > 0:
+        #     src2 = src2 + self.lambda_neutreno * (output0 - src2)
+
+        # src = src + self.dropout1(src2)  # [B, T, D]
+        # src = rearrange(src, 'b t d -> b d t')  # Convert to [B, D, T] only for normalization (which expects channel dim first)
+        # src = self.norm1(src)
+        # src = rearrange(src, 'b d t -> b t d')  # Restore [B, T, D]
+        # src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        # src = src + self.dropout2(src2)  # [B, T, D]
+        # src = rearrange(src, 'b t d -> b d t')
+        # src = self.norm2(src)
+        # src = rearrange(src, 'b d t -> b t d')  # Restore [B, T, D]
+        # return src, attn_output_weights
 
 
 
@@ -1516,7 +1583,8 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 class Attention_Rel_Scl(nn.Module):
     def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos,
                  attention_type='dot', learnable_scale=False,
-                 attn_scale=False, feat_scale=False, centered_attn=False, **kwargs):
+                 attn_scale=False, feat_scale=False, centered_attn=False, 
+                 qkv_identity_init=False, tied_qk=False, key_bias=False, **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.conv_projection = conv_projection
@@ -1537,6 +1605,9 @@ class Attention_Rel_Scl(nn.Module):
             self.feat_scale_lamb1 = nn.Parameter(torch.zeros(emb_size), requires_grad=True)
             self.feat_scale_lamb2 = nn.Parameter(torch.zeros(emb_size), requires_grad=True)
         self.centered_attn = centered_attn
+        self.qkv_identity_init = qkv_identity_init
+        self.tied_qk = tied_qk
+        self.key_bias = key_bias
 
         if conv_projection:
             # If conv_projection, the query/key/value are convolutions
@@ -1567,10 +1638,20 @@ class Attention_Rel_Scl(nn.Module):
             self.value = nn.Linear(emb_size, emb_size, bias=False)
             self.query = nn.Linear(emb_size, emb_size, bias=False)
 
-            # TODO Not sure why this got added?
-            # self.key.weight.data.copy_(torch.eye(emb_size))
-            # self.value.weight.data.copy_(torch.eye(emb_size))
-            # self.query.weight.data.copy_(torch.eye(emb_size))
+            # # TODO Not sure why this got added?
+            if qkv_identity_init:
+                self.key.weight.data.copy_(torch.eye(emb_size))
+                self.value.weight.data.copy_(torch.eye(emb_size))
+                self.query.weight.data.copy_(torch.eye(emb_size))
+
+        # If tied qk, reset key = query
+        if tied_qk:
+            self.key = self.query
+
+        # Key bias: Table 4 of https://arxiv.org/pdf/2410.10781, 4th row
+        if self.key_bias:
+            raise NotImplementedError("Key_bias not implemented")
+            self.key_bias_table = nn.Parameter(torch.zeros(num_heads), requires_grad=True)  # [H]
 
         # Output projection
         self.out_proj = nn.Linear(emb_size, emb_size)
@@ -1615,11 +1696,14 @@ class Attention_Rel_Scl(nn.Module):
             # Calculate content attention
             # self.key, self.value, self.query output [B, T, D]. Reshape/permute to extract the head dimension.
             k = self.key(key)  # [B, T, D]
+            k0 = k
             k = rearrange(k, 'b t (h d_h) -> b h d_h t', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, d_head, T]
             q = self.query(query)  # [B, T, D]
+            q0 = q
             q = rearrange(q, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, T, d_head]
             # # k shape = [B, H, d_head, T]
             # # v,q shape = [B, H, T, d_head]
+
             if self.attention_type == 'L2':
                 # ||q_i - k_j||^2 = ||q_i||^2 + ||k_j||^2 - 2*q_i^T*k_j
                 q_norm_sq = torch.sum(q**2, dim=-1, keepdim=True)  # [B, H, T, 1]
@@ -1632,6 +1716,33 @@ class Attention_Rel_Scl(nn.Module):
                 # Standard dot-product attention
                 content_attn = torch.einsum('bhlk,bhkt->bhlt', [q, k]) * self.scale  # [B, H, T, T]
 
+            # Visualize distances
+            if plot_dir is not None and "debuggg" in plot_dir:
+                dist_before_projection = torch.cdist(key, query) ** 2 / math.sqrt(D) # [B, T, T]
+                dist_after_projection = torch.cdist(k0, q0) ** 2 / math.sqrt(D) # [B, T, T]
+
+                # Create a plot, where each row is an example
+                n_rows = 5  # Examples to plot
+                n_cols = 6
+                min_value, max_value = utils.approx_min_max(dist_before_projection / dist_before_projection.mean())
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
+                for r in range(n_rows):
+                    im = axeslist[r, 0].imshow((dist_before_projection[r, :, :] / dist_before_projection[r, :, :].mean()).detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    axeslist[r, 1].imshow((dist_after_projection[r, :, :] / dist_after_projection[r, :, :].mean()).detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    for h in range(n_cols - 2):
+                        head_dist = - content_attn[r, h, :, :]
+                        axeslist[r, 2+h].imshow((head_dist / head_dist.mean()).detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    if r == 0:
+                        axeslist[r, 0].set_title("Dist^2 before QKV")
+                        axeslist[r, 1].set_title("Dist^2 after QKV")
+                        for h in range(n_cols - 2):
+                            axeslist[r, 2+h].set_title(f"Dist^2, Head {h}")
+                fig.colorbar(im, ax=axeslist, shrink=0.4)  #[r,c])
+                fig.suptitle("Distance between timestep features (each matrix divided by average)")
+                plt.savefig(os.path.join(plot_dir, 'timestep_distances_debugl2.png'))
+                plt.close()
+                exit(1)
+
         # Calculate value in all cases
         v = self.value(value)  # [B, T, D]
         v = rearrange(v, 'b t (h d_h) -> b h t d_h', h=self.num_heads)  # Split embedding dimensions into heads, permute to [B, H, T, d_head]
@@ -1639,6 +1750,15 @@ class Attention_Rel_Scl(nn.Module):
         if attn_mask is not None:
             # Reshape attn_mask from [B*H, T, T] to [B, H, T, T]
             attn_mask = rearrange(attn_mask, '(b h) t0 t1 -> b h t0 t1', h=self.num_heads)
+            # print("ATTNMASK Offset mask", attn_mask.shape, attn_mask[0, 0, 0:8, 0:8])
+            # print("Offset mask", attn_mask[0, 1, 0:8, 0:8])
+            # print("Offset mask", attn_mask[0, 2, 0:8, 0:8])
+            # print("Offset mask", attn_mask[0, 3, 0:8, 0:8])
+            # print("Offset mask", attn_mask[0, 5, 0:8, 0:8])
+            # print("Offset mask", attn_mask[0, 7, 0:8, 0:8])
+
+            # If certain entries were masked out in attn_mask, also mask them out in content_attn. This is necessary if where_to_add_relpos is after_gating.
+            content_attn[torch.isneginf(attn_mask)] = float('-inf')
 
         # Perform softmax
         if (self.where_to_add_relpos in ['before', 'only_relpos']) and attn_mask is not None:
@@ -1657,10 +1777,14 @@ class Attention_Rel_Scl(nn.Module):
             elif self.where_to_add_relpos == "after_gating":
                 # In this case, content_attn has been passed through softmax already
                 gating = self.gating_param.view(1,-1,1,1)  # [1, H, 1, 1]
+                # print("CONTENT_ATTN", content_attn.shape, content_attn[0, 0, 0:8, 0:8])
+                # print("POS ATTN", attn_mask.shape, F.softmax(attn_mask, dim=-1)[0, 0, 0:8, 0:8])
 
                 # both content_attn and attn_mask should be [B, H, T, T]
                 attn = (1.-torch.sigmoid(gating))*content_attn + torch.sigmoid(gating)*F.softmax(attn_mask, dim=-1)  # First term is original content attention, second term is position attention
                 attn /= attn.sum(dim=-1).unsqueeze(-1)
+                # print("COMBINED", attn.shape, attn[0, 0, 0:8, 0:8])
+                # exit(1)
 
             if plot_dir is not None:
                 if self.where_to_add_relpos == "after_gating":
@@ -1668,7 +1792,7 @@ class Attention_Rel_Scl(nn.Module):
 
                 # PLOTTING ONLY
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads
-                n_rows = 4
+                n_rows = 8
                 n_cols = 3
                 fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
 
