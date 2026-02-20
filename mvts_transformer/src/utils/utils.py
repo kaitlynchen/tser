@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 def approx_min_max(values):
     """
-    Returns 1st and 99th quantiles of the entries in 'values' (flattened).
+    Returns 0.5th and 99.5th quantiles of the entries in 'values' (flattened).
     If 'values' contains more than 100000 entries, take quantiles of a random subset
     (since PyTorch quantile cannot handle large datasets).
     """
@@ -38,7 +38,7 @@ def approx_min_max(values):
         values = torch.cat([v.flatten() for v in values])
     sample_size = min(1000000, values.numel())
     sampled_values = values.flatten()[torch.randint(values.numel(), (sample_size,))]  # NOTE: changed view(-1) to flatten()
-    min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.01, 0.99]).to(sampled_values.device))
+    min_value, max_value = torch.quantile(sampled_values, torch.tensor([0.005, 0.995]).to(sampled_values.device))
     return min_value, max_value
 
 

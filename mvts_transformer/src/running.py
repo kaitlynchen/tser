@@ -609,6 +609,7 @@ class SupervisedRunner(BaseRunner):
                 predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions.detach().flatten())
             all_targets.append(targets.detach().flatten())
+            print("Loss", predictions.shape, targets.shape)
 
             # (B,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)
@@ -746,7 +747,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 100 == 0 and config is not None:
+            if i == 0 and epoch_num % 200 == 0 and config is not None:
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:

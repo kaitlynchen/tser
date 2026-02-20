@@ -48,15 +48,15 @@ elif [ "$DATA" = "BenzeneConcentration" ]; then
 elif [ "$DATA" = "BeijingPM10Quality" ]; then
     D_MODEL=64
     D_FEEDFORWARD=256
-    PATIENCE=100
+    PATIENCE=500
 elif [ "$DATA" = "BeijingPM25Quality" ]; then
     D_MODEL=128
     D_FEEDFORWARD=256
-    PATIENCE=100
+    PATIENCE=500
 elif [ "$DATA" = "LiveFuelMoistureContent" ] || [ "$DATA" = "LiveFuel2" ]; then
     D_MODEL=64
     D_FEEDFORWARD=256
-    PATIENCE=200
+    PATIENCE=500
 elif [ "$DATA" = "IEEEPPG" ]; then
     D_MODEL=512
     D_FEEDFORWARD=512
@@ -92,12 +92,12 @@ fi
 # done
 
 OUTPUT_DIR="./output/output_zerveas2"
-OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000_CLIMAX_QKVIDENTITY"
+OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000_CLIMAX_plotevery200"
 
 for SEED in 0 1 2
 do
     # Replication of Zerveas model using our "Climax" codebase
-    PARAM_STR="QKVIDENTITY_SEED=${SEED}"
+    PARAM_STR="SEED=${SEED}"
     python main.py --output_dir "$OUTPUT_DIR" \
         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
         --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
@@ -108,5 +108,5 @@ do
         --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
         --optimizer RAdam --task regression \
         --model climax_smooth --pos_encoding learnable --patch_length 1 --stride 1 --smooth_attention \
-        --plot_loss --plot_accuracy --qkv_identity_init
+        --plot_loss --plot_accuracy 
 done

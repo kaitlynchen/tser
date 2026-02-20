@@ -72,7 +72,7 @@ fi
 # Test per-timestep MLP
 for CONV_TYPE in per_timestep
 do
-    OUTPUT_FILE="${DATA}_${CONV_TYPE}_FINAL"
+    OUTPUT_FILE="${DATA}_${CONV_TYPE}_FINAL_MIXUP"
     for POOL in seqpool_multihead
     do
         for WHERE_ABSPOS in before_pool_concat
@@ -92,7 +92,7 @@ do
                     --patch_length $PATCH --stride $STRIDE --smooth_attention \
                     --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
                     --pool $POOL \
-                    --plot_loss --plot_accuracy
+                    --plot_loss --plot_accuracy --mixtype kde
             done
         done
     done

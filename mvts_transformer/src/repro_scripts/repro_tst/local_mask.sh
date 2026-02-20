@@ -47,33 +47,38 @@ elif [ "$DATA" = "BenzeneConcentration" ]; then
     D_MODEL=128
     D_FEEDFORWARD=256
     PATIENCE=500
+    BS=128
 elif [ "$DATA" = "BeijingPM10Quality" ]; then
     D_MODEL=64
     D_FEEDFORWARD=256
     PATIENCE=100
+    BS=128
 elif [ "$DATA" = "BeijingPM25Quality" ]; then
     D_MODEL=64
     D_FEEDFORWARD=256
     PATIENCE=100
+    BS=128
 elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
     D_MODEL=64
     D_FEEDFORWARD=256
     PATIENCE=100
+    BS=128
 elif [ "$DATA" = "IEEEPPG" ]; then
     D_MODEL=512
     D_FEEDFORWARD=512
     PATIENCE=100
+    BS=128
 else
     echo "Invalid value of DATA $DATA !"
     continue
 fi
 
-OUTPUT_DIR="./output/oversmoothing_metrics_test"
+OUTPUT_DIR="./output/local_mask_debug"
 for MASK in -1 0 4
 do
-    OUTPUT_FILE="${DATA}_BS=16_LOCALMASK=${MASK}"
+    OUTPUT_FILE="${DATA}_BS=16_LOCALMASK=${MASK}_SEQPOOLMULTIHEAD"
 
-    for SEED in 0
+    for SEED in 0 1 2
     do
         PARAM_STR="SEED=${SEED}"
         python main.py --output_dir "$OUTPUT_DIR" \
@@ -82,13 +87,12 @@ do
             --data_dir $DATA_DIR --data_class tsra \
             --pattern TRAIN --val_pattern TEST \
             --epochs 2000 --patience $PATIENCE \
-            --lr 0.001 --batch_size 128 \
+            --lr 0.001 --batch_size $BS \
             --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
             --optimizer RAdam --task regression \
             --model climax_smooth --patch_length 1 --stride 1 --smooth_attention \
-            --pos_encoding learnable_uniform_init --where_to_add_abspos start_add \
-            --pool seqpool_multihead --local_mask $MASK \
-            --plot_loss --plot_accuracy --qkv_identity_init --track_oversmoothing --oversmoothing_epoch_interval 50 --oversmoothing_log_interval 100
-        exit
+            --pos_encoding learnable \
+            --local_mask $MASK --pool seqpool_multihead \
+            --plot_loss --plot_accuracy  # --qkv_identity_init --track_oversmoothing --oversmoothing_epoch_interval 50 --oversmoothing_log_interval 100
     done
 done

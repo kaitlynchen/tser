@@ -11,6 +11,8 @@ D: 'channels' (embedding dimension)
 
 
 
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -162,7 +164,7 @@ class LocalCNN(nn.Module):
         self.pos_drop = nn.Dropout(p=0.1)
 
 
-    def forward(self, x, plot_dir=None):
+    def forward(self, x, plot_dir=None, return_embeddings=False):
         """
         x should have shape [B, T, input_vars]
         """
@@ -191,7 +193,9 @@ class LocalCNN(nn.Module):
             x = rearrange(x, 'b d t -> b t d')  # Change back to [B, T, D] for compatibility with pooling
 
         # Pooling
+        print("Before pool", x.shape)
         preds, pooling_attn = ClimaX.forward_pooling(self, x)
+        print("Preds shape", preds.shape, pooling_attn.shape)
         self.pooling_attn = pooling_attn
 
         # Visualize positional embedding
@@ -201,6 +205,10 @@ class LocalCNN(nn.Module):
         # Visualize SeqPool attention weights
         if plot_dir is not None and self.pool in ["seqpool", "seqpool_multihead", "seqpool_multihead_smoothed"]:
             visualization_utils.visualize_pooling_attn(pooling_attn, plot_dir)
+
+        if return_embeddings:
+            warnings.warn("TODO: LocalCNN doesn't support returning layer embeddings yet.")
+            return preds, None, pooling_attn, None
 
         return preds, None, pooling_attn
 

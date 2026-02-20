@@ -214,6 +214,7 @@ class ClimaX(nn.Module):
             content_embed_dim = embed_dim // 2
         else:
             content_embed_dim = embed_dim
+        self.content_embed_dim = content_embed_dim
 
         if self.agg_vars:
             # Variable tokenization: create tokens for each variable, of size "patch_size"
@@ -734,7 +735,7 @@ class ClimaX(nn.Module):
                 x = rearrange(x, "b t_orig v -> b v t_orig")
                 x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
                 x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
-            x = self.embed_layer(x) * math.sqrt(self.embed_dim)  # [B, T, D]. TODO Changed to match ts_transformer
+            x = self.embed_layer(x) * math.sqrt(self.content_embed_dim)  # [B, T, D]. TODO Changed to match ts_transformer
 
         # Add ABSOLUTE pos embedding if using.
         # At this point, X should be [B, T, D], and pos_embed should be [T, D]. (T = number of patches along time dimension)
@@ -1764,6 +1765,7 @@ class Attention_Rel_Scl(nn.Module):
         if (self.where_to_add_relpos in ['before', 'only_relpos']) and attn_mask is not None:
             # Add mask (relative position encoding) before softmax if specified
             attn = F.softmax(content_attn + attn_mask, dim=-1)
+
         else:
             # Take softmax of content attention first (relative position encoding added later)
             attn = F.softmax(content_attn, dim=-1) # [B, H, T, T]
