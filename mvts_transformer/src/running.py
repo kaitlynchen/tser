@@ -560,6 +560,7 @@ class SupervisedRunner(BaseRunner):
         self.oversmoothing_tracker.reset()
         track_oversmoothing = config.get('track_oversmoothing', False)
         oversmoothing_log_interval = config.get('oversmoothing_log_interval', 10)
+        oversmoothing_epoch_interval = config.get('oversmoothing_epoch_interval', 1)
 
         for i, batch in enumerate(self.dataloader):
             X, targets, padding_masks, IDs = batch  # @joshuafan added time
@@ -581,7 +582,7 @@ class SupervisedRunner(BaseRunner):
             if config["mixtype"] != 'none':
                 X, targets = utils.generate_mixup_data(config, X, targets, self.device)
 
-            should_track_batch = track_oversmoothing and (i % oversmoothing_log_interval == 0)
+            should_track_batch = track_oversmoothing and (i % oversmoothing_log_interval == 0) and (epoch_num % oversmoothing_epoch_interval == 0)
             
             embeddings_layers = None
             attn_weights_layers = None
@@ -629,8 +630,8 @@ class SupervisedRunner(BaseRunner):
                 # Smoothness on the attn weights
                 attn_smoothness_loss = torch.tensor(0)
                 if attn_weights_layers is not None:
-                    attn_weights_layers = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
-                    attn_smoothness_loss = ((attn_weights_layers[:, :, 1:] - attn_weights_layers[:, :, :-1]).square()).sum(dim=2).mean()  # TODO square or abs?
+                    attn_matrices = attn_weights_layers.reshape(-1, attn_weights_layers.shape[2], attn_weights_layers.shape[3])   # Convert to [..., T, T] - list of attention matrices
+                    attn_smoothness_loss = ((attn_matrices[:, :, 1:] - attn_matrices[:, :, :-1]).square()).sum(dim=2).mean()  # TODO square or abs?
                 total_loss += config['reg_lambda'] * attn_smoothness_loss
 
                 # Pooling smoothness loss
@@ -700,7 +701,7 @@ class SupervisedRunner(BaseRunner):
                 
                 if should_track_batch and embeddings_layers is not None and attn_weights_layers is not None:
                     oversmoothing_metrics = self.oversmoothing_tracker.compute_metrics(
-                        embeddings_layers, attn_weights_layers
+                        embeddings_layers, attn_weights_layers, max_examples=16
                     )
                     self.oversmoothing_tracker.accumulate(oversmoothing_metrics)
 

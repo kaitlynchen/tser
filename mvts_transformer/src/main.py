@@ -453,12 +453,16 @@ def main(config):
     all_val_preds = []
     
     # Oversmoothing metrics tracking
+    oversmoothing_epochs = []
     oversmoothing_effective_ranks = []
     oversmoothing_cosine_sims = []  
     oversmoothing_attn_entropies = []  
     oversmoothing_attn_entropies_per_head = [] 
     oversmoothing_high_freq_ratios = []
-    oversmoothing_depth_snapshots = []  
+    oversmoothing_effective_ranks_per_example = []
+    oversmoothing_same_diff_ratios = []
+    oversmoothing_attention_effective_ranks = []
+    oversmoothing_depth_snapshots = []
     depth_snapshot_interval = config.get('oversmoothing_log_interval', 10)
 
     # Number of epochs since the previous "best" (for early stopping)
@@ -485,12 +489,16 @@ def main(config):
         train_losses_jacobian.append(jacobian_loss)
         
         # Store oversmoothing metrics if tracking is enabled
-        if oversmoothing_summary is not None:
+        if oversmoothing_summary is not None and len(oversmoothing_summary['effective_rank']) > 0:
+            oversmoothing_epochs.append(epoch)
             oversmoothing_effective_ranks.append(oversmoothing_summary['effective_rank'])
             oversmoothing_cosine_sims.append(oversmoothing_summary['cosine_similarity'])
             oversmoothing_attn_entropies.append(oversmoothing_summary['attention_entropy'])
             oversmoothing_attn_entropies_per_head.append(oversmoothing_summary['attention_entropy_per_head'])
             oversmoothing_high_freq_ratios.append(oversmoothing_summary['high_freq_ratio'])
+            oversmoothing_effective_ranks_per_example.append(oversmoothing_summary['effective_rank_per_example'])
+            oversmoothing_same_diff_ratios.append(oversmoothing_summary['same_diff_ratio'])
+            oversmoothing_attention_effective_ranks.append(oversmoothing_summary['attention_effective_rank'])
             
             if epoch == 1 or epoch % depth_snapshot_interval == 0 or epoch == config['epochs']:
                 oversmoothing_depth_snapshots.append((epoch, oversmoothing_summary.copy()))
@@ -505,6 +513,12 @@ def main(config):
                     tensorboard_writer.add_scalar(f'oversmoothing/attention_entropy_layer_{layer_idx}', val, epoch)
                 for layer_idx, val in enumerate(oversmoothing_summary['high_freq_ratio']):
                     tensorboard_writer.add_scalar(f'oversmoothing/high_freq_ratio_layer_{layer_idx}', val, epoch)
+                for layer_idx, val in enumerate(oversmoothing_summary['effective_rank_per_example']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/effective_rank_per_example_layer_{layer_idx}', val, epoch)
+                for layer_idx, val in enumerate(oversmoothing_summary['same_diff_ratio']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/same_diff_ratio_layer_{layer_idx}', val, epoch)
+                for layer_idx, val in enumerate(oversmoothing_summary['attention_effective_rank']):
+                    tensorboard_writer.add_scalar(f'oversmoothing/attention_effective_rank_layer_{layer_idx}', val, epoch)
 
         if config["baseline"] is not None:
             # early prediction
@@ -726,7 +740,7 @@ def main(config):
     )
 
     if config.get('track_oversmoothing', False) and len(oversmoothing_effective_ranks) > 0:
-        oversmoothing_data = {'epoch': train_epochs}
+        oversmoothing_data = {'epoch': oversmoothing_epochs}
         
         # Add per-layer metrics
         num_embed_layers = len(oversmoothing_effective_ranks[0]) if oversmoothing_effective_ranks else 0
@@ -736,69 +750,60 @@ def main(config):
             oversmoothing_data[f'effective_rank_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_effective_ranks]
             oversmoothing_data[f'cosine_similarity_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_cosine_sims]
             oversmoothing_data[f'high_freq_ratio_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_high_freq_ratios]
-        
+            oversmoothing_data[f'effective_rank_per_example_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_effective_ranks_per_example]
+            oversmoothing_data[f'same_diff_ratio_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_same_diff_ratios]
         for layer_idx in range(num_attn_layers):
             oversmoothing_data[f'attention_entropy_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_attn_entropies]
-        
+            oversmoothing_data[f'attention_effective_rank_layer_{layer_idx}'] = [x[layer_idx] for x in oversmoothing_attention_effective_ranks]
+
         oversmoothing_df = pd.DataFrame(oversmoothing_data)
         oversmoothing_filepath = os.path.join(
             config["output_dir"], "oversmoothing_metrics_" + config["experiment_name"] + ".csv"
         )
         oversmoothing_df.to_csv(oversmoothing_filepath, index=False)
         logger.info("Exported oversmoothing metrics to '{}'".format(oversmoothing_filepath))
-        
+
+        def plot_metrics_per_layer(config, train_epochs, metrics_by_layer, metric_name, metric_name_filename):
+            """
+            Plots evolution of metrics over training epochs. Each layer is a line.
+
+            metrics_by_layer should be a list of lists: outer list is over epochs, inner list is over layers.
+            So metrics_by_layer[epoch][layer] gives the metric value for that layer at that epoch.
+            """
+            plt.figure(figsize=(10, 6))
+            for layer_idx in range(len(metrics_by_layer[0])):
+                plt.plot(train_epochs, [x[layer_idx] for x in metrics_by_layer],
+                         label=f'Layer {layer_idx}', marker='o', markersize=2)
+            plt.xlabel('Epoch')
+            plt.ylabel(metric_name)
+            plt.title(f'{metric_name} per Layer over Training')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(config["plot_dir"], f"oversmoothing_{metric_name_filename}.png"), dpi=150)
+            plt.close()
+
         # Plot oversmoothing metrics
         # 1. Effective Rank per layer
-        plt.figure(figsize=(10, 6))
-        for layer_idx in range(num_embed_layers):
-            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_effective_ranks], 
-                     label=f'Layer {layer_idx}', marker='o', markersize=2)
-        plt.xlabel('Epoch')
-        plt.ylabel('Effective Rank')
-        plt.title('Effective Rank per Layer over Training')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_effective_rank.png"), dpi=150)
-        plt.close()
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_effective_ranks, "Effective Rank", "effective_rank")
         
         # 2. Cosine Similarity per layer
-        plt.figure(figsize=(10, 6))
-        for layer_idx in range(num_embed_layers):
-            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_cosine_sims], 
-                     label=f'Layer {layer_idx}', marker='o', markersize=2)
-        plt.xlabel('Epoch')
-        plt.ylabel('Average Cosine Similarity')
-        plt.title('Average Pairwise Cosine Similarity per Layer over Training')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_cosine_similarity.png"), dpi=150)
-        plt.close()
-        
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_cosine_sims, "Average Cosine Similarity", "cosine_similarity")
+
         # 3. Attention Entropy per layer
-        plt.figure(figsize=(10, 6))
-        for layer_idx in range(num_attn_layers):
-            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_attn_entropies], 
-                     label=f'Layer {layer_idx}', marker='o', markersize=2)
-        plt.xlabel('Epoch')
-        plt.ylabel('Attention Entropy')
-        plt.title('Attention Entropy per Layer over Training')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_attention_entropy.png"), dpi=150)
-        plt.close()
-        
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_attn_entropies, "Attention Entropy", "attention_entropy")
+
         # 4. High-Frequency Energy Ratio per layer
-        plt.figure(figsize=(10, 6))
-        for layer_idx in range(num_embed_layers):
-            plt.plot(train_epochs, [x[layer_idx] for x in oversmoothing_high_freq_ratios], 
-                     label=f'Layer {layer_idx}', marker='o', markersize=2)
-        plt.xlabel('Epoch')
-        plt.ylabel('High-Freq Energy Ratio')
-        plt.title('High-Frequency Energy Ratio per Layer over Training')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(config["plot_dir"], "oversmoothing_high_freq_ratio.png"), dpi=150)
-        plt.close()
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_high_freq_ratios, "High-Frequency Energy Ratio", "high_freq_ratio")
+
+        # 5. Effective Rank (per example) per layer
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_effective_ranks_per_example, "Effective Rank (per example)", "effective_rank_per_example")
+
+        # 6. Same/Different class ratio per layer
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_same_diff_ratios, "Ratio of same example/diff example token distances", "same_diff_ratio")
+
+        # 7. Attention Effective Rank per layer
+        plot_metrics_per_layer(config, oversmoothing_epochs, oversmoothing_attention_effective_ranks, "Attention Effective Rank", "attention_effective_rank")
+
         
         logger.info("Saved oversmoothing plots to '{}'".format(config["plot_dir"]))
         

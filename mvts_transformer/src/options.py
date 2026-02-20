@@ -190,6 +190,8 @@ class Options(object):
                                  help="Track oversmoothing metrics (effective rank, cosine similarity, attention entropy, high-freq ratio)")
         self.parser.add_argument('--oversmoothing_log_interval', type=int, default=10,
                                  help="Compute oversmoothing metrics every N batches (default: 10)")
+        self.parser.add_argument('--oversmoothing_epoch_interval', type=int, default=1,
+                                 help="Compute oversmoothing metrics every N epochs (default: 1)")
         self.parser.add_argument('--pre_norm', action='store_true',
                                  help="""If set, normalize before attention.""")
         self.parser.add_argument('--qkv_identity_init', action='store_true',
