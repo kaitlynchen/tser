@@ -11,6 +11,7 @@ D: 'channels' (embedding dimension)
 
 
 
+import math
 import warnings
 
 import numpy as np
@@ -92,6 +93,7 @@ class LocalCNN(nn.Module):
             content_embed_dim = embed_dim // 2
         else:
             content_embed_dim = embed_dim
+        self.content_embed_dim = content_embed_dim
 
         self.embed_layer = nn.Linear(patch_size*in_channels, content_embed_dim)  # Each patch has patch_size*num_variables (P*V) elements. Map to embed_dim/2 (D/2).
         self.seq_len = int((max_len - patch_size) / stride + 1)  # Number of patches in time dimension, AFTER PATCHING
@@ -110,10 +112,10 @@ class LocalCNN(nn.Module):
         elif self.conv_type == "local":  # No reducing number of timesteps
             self.conv = nn.Sequential(
                 nn.Conv1d(embed_dim, embed_dim, 5, 1, padding='same'),
-                nn.BatchNorm1d(128),
+                nn.BatchNorm1d(embed_dim),
                 nn.ReLU(),
                 nn.Conv1d(embed_dim, embed_dim, 5, 1, dilation=3, padding='same'),
-                nn.BatchNorm1d(256),
+                nn.BatchNorm1d(embed_dim),
                 nn.ReLU(),
                 nn.Conv1d(embed_dim, embed_dim, 5, 1, dilation=5, padding='same'),
             )
@@ -172,7 +174,7 @@ class LocalCNN(nn.Module):
         x = rearrange(x, "b t_orig v -> b v t_orig")
         x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
         x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
-        x = self.embed_layer(x)  # [B, T, D]
+        x = self.embed_layer(x) * math.sqrt(self.content_embed_dim) # [B, T, D]
 
         # Add ABSOLUTE pos embedding (if adding at start)
         # At this point, X should be [B, T, D], and pos_embed should be [T, D]. (T = number of patches along time dimension)
@@ -193,9 +195,7 @@ class LocalCNN(nn.Module):
             x = rearrange(x, 'b d t -> b t d')  # Change back to [B, T, D] for compatibility with pooling
 
         # Pooling
-        print("Before pool", x.shape)
         preds, pooling_attn = ClimaX.forward_pooling(self, x)
-        print("Preds shape", preds.shape, pooling_attn.shape)
         self.pooling_attn = pooling_attn
 
         # Visualize positional embedding

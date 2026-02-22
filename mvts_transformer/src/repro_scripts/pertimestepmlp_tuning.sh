@@ -60,6 +60,46 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 
+# Test abspos variants, seqpool_cls
+for CONV_TYPE in per_timestep
+do
+    for POOL in seqpool_cls seqpool_multihead
+    do
+        for WHERE_ABSPOS in before_pool_concat start_concat
+        do
+            OUTPUT_DIR="./output/TIMESTEP_20260220"
+            OUTPUT_FILE="TIMESTEP_20260220_NOMIXUP_${DATA}_${CONV_TYPE}_POOL=${POOL}_ABSPOS=${WHERE_ABSPOS}"
+
+            for LR in 1e-4 1e-3 1e-2
+            do
+                for NOISE in 0
+                do
+                    for SEED in 0
+                    do
+                        PARAM_STR="LR=${LR}_SEED=${SEED}"
+                        python main.py --output_dir "$OUTPUT_DIR" \
+                            --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                            --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                            --data_dir $DATA_DIR --data_class tsra \
+                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                            --epochs 2000 --patience 200 \
+                            --lr $LR --batch_size $BS --input_noise_std $NOISE \
+                            --num_heads 16 --d_model 256 \
+                            --optimizer RAdam --task regression --normalize_label \
+                            --model local_cnn --conv_type $CONV_TYPE \
+                            --patch_length $PATCH --stride $STRIDE --smooth_attention \
+                            --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
+                            --pool $POOL \
+                            --plot_loss --plot_accuracy
+                    done
+                done
+            done
+            python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
+
+        done
+    done
+done
+
 
 
 # # Jacobian loss
@@ -102,44 +142,6 @@ fi
 #     python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
 # done
 
-
-# Test abspos variants, seqpool_cls
-for CONV_TYPE in per_timestep
-do
-    for POOL in seqpool_cls
-    do
-        for WHERE_ABSPOS in before_pool_concat start_concat
-        do
-            OUTPUT_FILE="TIMESTEP20260113_NOMIXUP_${DATA}_${CONV_TYPE}_pool=${POOL}_abspos=${WHERE_ABSPOS}"
-
-            for LR in 1e-4 1e-3 1e-2
-            do
-                for NOISE in 0 1e-2 1e-1
-                do
-                    for SEED in 0
-                    do
-                        PARAM_STR="BS=${BS}_LR=${LR}_NOISE=${NOISE}_SEED=${SEED}"
-                        python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                            --records_file "output/${OUTPUT_FILE}.xls" \
-                            --data_dir $DATA_DIR --data_class tsra \
-                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                            --epochs 2000 --patience 200 \
-                            --lr $LR --batch_size $BS --input_noise_std $NOISE \
-                            --num_heads 16 --d_model 256 \
-                            --optimizer RAdam --task regression --normalize_label \
-                            --model local_cnn --conv_type $CONV_TYPE \
-                            --patch_length $PATCH --stride $STRIDE --smooth_attention \
-                            --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
-                            --pool $POOL \
-                            --plot_loss --plot_accuracy
-                    done
-                done
-            done
-            python test_best.py --records_file "output/${OUTPUT_FILE}.xls"
-
-        done
-    done
-done
 
 
 

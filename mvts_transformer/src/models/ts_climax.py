@@ -853,6 +853,8 @@ class ClimaX(nn.Module):
         if plot_dir is not None:
             # ALL VISUALIZATIONS of timestep distances/similarities, positional encodings, and
             # attention matrices. Exception: attention breakdown is in Attention_Rel_Scl.forward()
+            # torch_rng = torch.Generator(device=self.device).manual_seed(0)  # Don't make random state depend on plotting
+            # numpy_rng = np.random.default_rng(seed=0)  # Don't make random state depend on plotting
 
             # Plot an example input and distances between timesteps (just for comparison with later)
             orig_input = x.detach().cpu()  # [B, T_orig, V]
@@ -878,7 +880,7 @@ class ClimaX(nn.Module):
             n_rows = 5  # Examples to plot
             n_cols = len(feature_distances_layers)
             # feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
-            min_value, max_value = utils.approx_min_max(feature_distances_layers)
+            min_value, max_value = utils.approx_min_max(feature_distances_layers) #, torch_rng)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
             for r in range(n_rows):
                 for c in range(n_cols):
@@ -900,7 +902,7 @@ class ClimaX(nn.Module):
             # Plot cosine similarity between timestep feature vectors (at each layer)
             n_cols = len(similarity_matrix_layers)
             # similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
-            min_value, max_value = utils.approx_min_max(similarity_matrix_layers)
+            min_value, max_value = utils.approx_min_max(similarity_matrix_layers) #, torch_rng)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
             for r in range(n_rows):
                 for c in range(n_cols):
@@ -920,12 +922,13 @@ class ClimaX(nn.Module):
             plt.close()
 
             # Plot attention matrices: for each example, plot random subset of layers/heads. attn_matrices: [B, n_matrices, T, T]
-            min_value, max_value = utils.approx_min_max(attn_matrices)
+            min_value, max_value = utils.approx_min_max(attn_matrices) #, torch_rng)
 
             # Random subset of heads/layers
             n_matrices = attn_matrices.shape[1]  # Total number of attention maps per example (L*H)
             n_cols = self.num_layers * 2
             matrix_indices = np.sort(np.random.choice(np.arange(n_matrices), n_cols, replace=False))
+            # matrix_indices = np.sort(numpy_rng.choice(np.arange(n_matrices), n_cols, replace=False))  # Randomly choose which attention maps to plot, but keep the same ones across examples. Sorted for better visualization.
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
             for r in range(n_rows):
                 for c in range(n_cols):
@@ -983,7 +986,7 @@ class ClimaX(nn.Module):
                 plt.close()
 
                 # Shaded plot
-                min_value, max_value = utils.approx_min_max(bias_table)
+                min_value, max_value = utils.approx_min_max(bias_table) #, torch_rng)
                 n_rows = 1
                 n_cols = self.num_layers
                 fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*bias_table.shape[2]+3, 0.03*n_rows*bias_table.shape[1]), layout="constrained")
@@ -1452,16 +1455,16 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         #     self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         #     assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         # else:
-        
+
         if relative_pos_encoding == "rope":
             self.self_attn = AttentionWithRoPE(d_model, nhead, attn_drop=dropout, proj_drop=dropout)
         else:
             # Custom attention if we want relative position offset to be applied after softmax
             self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection,
-                                               where_to_add_relpos=where_to_add_relpos,
-                                               attention_type=attention_type, learnable_scale=learnable_scale,
-                                               attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn,
-                                               qkv_identity_init=qkv_identity_init, tied_qk=tied_qk)
+                                            where_to_add_relpos=where_to_add_relpos,
+                                            attention_type=attention_type, learnable_scale=learnable_scale,
+                                            attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn,
+                                            qkv_identity_init=qkv_identity_init, tied_qk=tied_qk)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1596,6 +1599,7 @@ class Attention_Rel_Scl(nn.Module):
             self.scale = nn.Parameter(torch.tensor((emb_size / num_heads) ** -0.5), requires_grad=True)
         else:
             self.scale = (emb_size / num_heads) ** -0.5
+            # self.scale = emb_size ** -0.5 # ONLY PUTING HERE FOR REPRO TODO
 
         # Attention/feature scaling: for mitigating oversmoothness
         self.attn_scale = attn_scale
@@ -1656,6 +1660,8 @@ class Attention_Rel_Scl(nn.Module):
 
         # Output projection
         self.out_proj = nn.Linear(emb_size, emb_size)
+        # if qkv_identity_init:
+        #     self.out_proj.weight.data.copy_(torch.eye(emb_size))
         self.dropout = nn.Dropout(dropout)
 
         # Gating parameter (if using gating to combine content/position attention)
@@ -1721,11 +1727,12 @@ class Attention_Rel_Scl(nn.Module):
             if plot_dir is not None and "debuggg" in plot_dir:
                 dist_before_projection = torch.cdist(key, query) ** 2 / math.sqrt(D) # [B, T, T]
                 dist_after_projection = torch.cdist(k0, q0) ** 2 / math.sqrt(D) # [B, T, T]
+                torch_rng = torch.Generator(device=self.device).manual_seed(0)  # Don't make random state depend on plotting
 
                 # Create a plot, where each row is an example
                 n_rows = 5  # Examples to plot
                 n_cols = 6
-                min_value, max_value = utils.approx_min_max(dist_before_projection / dist_before_projection.mean())
+                min_value, max_value = utils.approx_min_max(dist_before_projection / dist_before_projection.mean(), torch_rng)
                 fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
                 for r in range(n_rows):
                     im = axeslist[r, 0].imshow((dist_before_projection[r, :, :] / dist_before_projection[r, :, :].mean()).detach().cpu().numpy(), vmin=min_value, vmax=max_value)

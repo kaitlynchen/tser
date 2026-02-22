@@ -17,13 +17,13 @@
 # Name the job so it's meaningful in the job list
 #SBATCH -J erpe_convalibi
 # Request 1 V100 GPU
-#SBATCH --gpus v100:1
+#SBATCH --gpus a100:1
 # Request 4 CPU cores (8 hyperthreads).
 #SBATCH -c 8
 # Specify the resources should be assigned to a single task on one node.
 #SBATCH -N 1 -n 1
 # Request a total of 80GB RAM
-#SBATCH --mem=20GB
+#SBATCH --mem=200GB
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
@@ -71,32 +71,17 @@ if [ "$DATA" = "IEEEPPG" ]; then
 else
     BS=128
 fi
+if [ "$DATA" = "AppliancesEnergy" ]; then
+    EPOCHS=5000
+else
+    EPOCHS=2000
+fi
 
-
-# OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000"
-
-# for SEED in 0 1 2
-# do
-#     PARAM_STR="SEED=${SEED}"
-#     python main.py --output_dir "./output/output_zerveas2" \
-#         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-#         --records_file "output/output_zerveas2/${OUTPUT_FILE}.xls" \
-#         --data_dir $DATA_DIR --data_class tsra \
-#         --pattern TRAIN --val_pattern TEST \
-#         --epochs 2000 --patience $PATIENCE \
-#         --lr 0.001 --batch_size $BS \
-#         --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
-#         --optimizer RAdam --task regression \
-#         --model transformer --pos_encoding learnable \
-#         --plot_loss --plot_accuracy
-# done
-
-OUTPUT_DIR="./output/output_zerveas2"
-OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000_CLIMAX_plotevery200"
+OUTPUT_DIR="./output/repro_our_zerveas"
+OUTPUT_FILE="${DATA}_REPRO_ZERVEAS2000"
 
 for SEED in 0 1 2
 do
-    # Replication of Zerveas model using our "Climax" codebase
     PARAM_STR="SEED=${SEED}"
     python main.py --output_dir "$OUTPUT_DIR" \
         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
@@ -107,6 +92,26 @@ do
         --lr 0.001 --batch_size $BS \
         --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
         --optimizer RAdam --task regression \
-        --model climax_smooth --pos_encoding learnable --patch_length 1 --stride 1 --smooth_attention \
-        --plot_loss --plot_accuracy 
+        --model transformer --pos_encoding learnable \
+        --plot_loss --plot_accuracy
 done
+
+# OUTPUT_DIR="./output/repro_zerveas_20260220_CLIMAX_MHA"
+# OUTPUT_FILE="${DATA}_repro_zerveas_20260220_CLIMAX_MHA_5000ep"
+
+# for SEED in 0 1 2
+# do
+#     # Replication of Zerveas model using our "Climax" codebase
+#     PARAM_STR="SQRT_EMBEDDIM_OVER_HEADS_SEED=${SEED}"
+#     python main.py --output_dir "$OUTPUT_DIR" \
+#         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+#         --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+#         --data_dir $DATA_DIR --data_class tsra \
+#         --pattern TRAIN --val_pattern TEST \
+#         --epochs $EPOCHS --patience $PATIENCE \
+#         --lr 0.001 --batch_size $BS \
+#         --num_layers 3 --num_heads 8 --d_model $D_MODEL --dim_feedforward $D_FEEDFORWARD \
+#         --optimizer RAdam --task regression \
+#         --model climax_smooth --pos_encoding learnable --patch_length 1 --stride 1 --smooth_attention \
+#         --plot_loss --plot_accuracy 
+# done

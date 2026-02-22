@@ -95,14 +95,16 @@ fi
 
 
 # OUTPUT FILE
-OUTPUT_FILE="${DATA}_LADAA_FINAL"
+OUTPUT_DIR="./output/LADAAREPRO_20260220_NOMIXUP"
+OUTPUT_FILE="${DATA}_LADAA_FINAL_QKVIDENTITY"
 
 for SEED in 0 1 2
 do
     # BASIC
     PARAM_STR="LR=${LR}_LSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
-    python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-        --records_file "output/${OUTPUT_FILE}.xls" \
+    python main.py --output_dir "$OUTPUT_DIR" \
+        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+        --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
         --data_dir $DATA_DIR --data_class tsra \
         --pattern TRAIN --val_pattern TEST \
         --epochs 2000 --patience $PATIENCE \
@@ -113,6 +115,6 @@ do
         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
         --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
         --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-        --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
+        --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1v --qkv_identity_init
 done
 

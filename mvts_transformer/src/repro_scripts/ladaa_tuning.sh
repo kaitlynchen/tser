@@ -54,8 +54,8 @@ elif [ "$DATA" = "BenzeneConcentration" ]; then
     SPLIT="--val_sequential_split"
 elif [ "$DATA" = "IEEEPPG" ]; then
     PATIENCE=200
-    PATCH=4
-    STRIDE=4
+    PATCH=16
+    STRIDE=8
     SPLIT="--val_sequential_split"
 elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
     PATCH=8
@@ -64,23 +64,25 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 # OUTPUT FILE
-OUTPUT_FILE="${DATA}_LADAA_TUNING2"
+OUTPUT_DIR="./output/LADAA_20260220_NOMIXUP"
+OUTPUT_FILE="LADAA_20260220_NOMIXUP_${DATA}"
 
 # TUNING
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 0.25
+    for CONVIT_SLOPE in 0.25 0.5 1
     do
-        for HEADS in 16
+        for HEADS in 8 16
         do
-            for NOISE in 0 1e-2 1e-1
+            for NOISE in 0
             do
                 for SEED in 0
                 do
                     # BASIC
-                    PARAM_STR="LR=${LR}_NOISE=${NOISE}"
-                    python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                        --records_file "output/${OUTPUT_FILE}.xls" \
+                    PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+                    python main.py --output_dir "$OUTPUT_DIR" \
+                        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                        --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
                         --data_dir $DATA_DIR --data_class tsra \
                         --pattern TRAIN --val_ratio 0.2 $SPLIT \
                         --epochs 2000 --patience $PATIENCE \
@@ -91,12 +93,17 @@ do
                         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                         --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
                         --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-                        --pool seqpool_multihead --input_noise_std $NOISE
+                        --pool seqpool_cls --input_noise_std $NOISE
                 done
             done
         done
     done
 done
+
+# TEST
+python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
+
+
 
 # # TUNING
 # for LR in 1e-3 1e-2
@@ -133,5 +140,3 @@ done
 #     done
 # done
 
-# TEST
-python test_best.py --records_file "output/${OUTPUT_FILE}.xls"

@@ -609,7 +609,6 @@ class SupervisedRunner(BaseRunner):
                 predictions = predictions * config["label_std"] + config["label_mean"]
             all_predictions.append(predictions.detach().flatten())
             all_targets.append(targets.detach().flatten())
-            print("Loss", predictions.shape, targets.shape)
 
             # (B,) loss for each sample in the batch
             loss = self.loss_module(predictions, targets)

@@ -70,9 +70,10 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 # Test per-timestep MLP
+OUTPUT_DIR="./output/pertimestepmlp_debug"
 for CONV_TYPE in per_timestep
 do
-    OUTPUT_FILE="${DATA}_${CONV_TYPE}_FINAL_MIXUP"
+    OUTPUT_FILE="${DATA}_${CONV_TYPE}_FINAL"
     for POOL in seqpool_multihead
     do
         for WHERE_ABSPOS in before_pool_concat
@@ -80,8 +81,9 @@ do
             for SEED in 0 1 2
             do
                 PARAM_STR="LR=${LR}_POOLSMOOTH=${LAM}_SEED=${SEED}"
-                python main.py --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}" \
-                    --records_file "output/${OUTPUT_FILE}.xls" \
+                python main.py --output_dir "$OUTPUT_DIR" \
+                    --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                    --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
                     --data_dir $DATA_DIR --data_class tsra \
                     --pattern TRAIN --val_pattern TEST \
                     --epochs 2000 --patience 200 \
@@ -92,7 +94,7 @@ do
                     --patch_length $PATCH --stride $STRIDE --smooth_attention \
                     --pos_encoding learnable_sin_init --where_to_add_abspos $WHERE_ABSPOS \
                     --pool $POOL \
-                    --plot_loss --plot_accuracy --mixtype kde
+                    --plot_loss --plot_accuracy
             done
         done
     done
