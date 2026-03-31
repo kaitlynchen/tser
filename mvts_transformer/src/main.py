@@ -13,6 +13,7 @@ from datasets.datasplit import split_dataset
 from datasets.data import data_factory, Normalizer
 from datasets.utils import process_data
 from utils import utils, visualization_utils
+from utils.hl_gauss import compute_hl_gauss_range
 from running import setup, pipeline_factory, validate, check_progress, NEG_METRICS
 from options import Options
 from torch.utils.tensorboard import SummaryWriter
@@ -260,6 +261,18 @@ def main(config):
             test_data.feature_df.loc[test_indices] = normalizer.normalize(
                 test_data.feature_df.loc[test_indices]
             )
+
+    if config["task"] == "regression" and config.get("regression_loss", "mse") == "hl_gauss":    
+        train_labels = my_data.labels_df.loc[train_indices].values
+        
+        if config["hl_gauss_min"] is None or config["hl_gauss_max"] is None:
+            if config.get("normalize_label", False):
+                config["hl_gauss_min"] = -5.0
+                config["hl_gauss_max"] = 5.0
+            else:
+                hl_min, hl_max = compute_hl_gauss_range(torch.tensor(train_labels), margin_factor=1.2)
+                config["hl_gauss_min"] = hl_min
+                config["hl_gauss_max"] = hl_max
 
     # Create model
     logger.info("Creating model ...")

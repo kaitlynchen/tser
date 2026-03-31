@@ -97,6 +97,16 @@ class Options(object):
                                        "                          transduction of features to other features,\n"
                                        "                          classification of entire time series,\n"
                                        "                          regression of scalar(s) for entire time series"))
+        self.parser.add_argument('--regression_loss', choices=['mse', 'hl_gauss'], default='mse',
+                                 help="Loss function for regression task")
+        self.parser.add_argument('--hl_gauss_num_bins', type=int, default=101,
+                                 help="Number of bins for HL-Gauss loss")
+        self.parser.add_argument('--hl_gauss_sigma_ratio', type=float, default=0.75,
+                                 help="Ratio of sigma to bin width for HL-Gauss smoothing")
+        self.parser.add_argument('--hl_gauss_min', type=float, default=None,
+                                 help="Min value for HL-Gauss bins. If None, uses -5 when --normalize_label, else computed from training data")
+        self.parser.add_argument('--hl_gauss_max', type=float, default=None,
+                                 help="Max value for HL-Gauss bins. If None, uses 5 when --normalize_label, else computed from training data")
         self.parser.add_argument('--masking_ratio', type=float, default=0.15,
                                  help='Imputation: mask this proportion of each variable')
         self.parser.add_argument('--mean_mask_length', type=float, default=3,
@@ -180,10 +190,14 @@ class Options(object):
         self.parser.add_argument('--lambda_erpe_linear', type=float, default=0, help="Weight for ERPE linear loss.")
         self.parser.add_argument('--lambda_focus', type=float, default=0, help="Weight for focus loss.")
         self.parser.add_argument('--lambda_jacobian', type=float, default=0, help="Weight for Jacobian reg loss.")
-        self.parser.add_argument('--attention_type', choices=['dot', 'L2'], default='dot',
+        self.parser.add_argument('--attention_type', choices=['dot', 'L2', 'krause'], default='dot',
                                  help="""Type of self-attention mechanism.""")
         self.parser.add_argument('--learnable_scale', action='store_true',
                                  help="""If set, the attention scale factor becomes a learnable parameter.""")
+        self.parser.add_argument('--krause_sigma_init', type=float, default=1.0,
+                                 help="""Initial value for learnable sigma in Krause attention RBF kernel.""")
+        self.parser.add_argument('--krause_top_k', type=int, default=-1,
+                                 help="""Top-k sparsity for Krause attention. -1 means no sparsity (use all tokens in window). Combine with --local_mask for bounded-confidence behavior.""")
         
         # Oversmoothing tracking
         self.parser.add_argument('--track_oversmoothing', action='store_true',

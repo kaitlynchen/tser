@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from utils.hl_gauss import HLGaussLoss
+
 
 def get_loss_module(config):
 
@@ -14,7 +16,16 @@ def get_loss_module(config):
         return NoFussCrossEntropyLoss(reduction='none')  # outputs loss for each batch sample
 
     if task == "regression":
-        return nn.MSELoss(reduction='none')  # outputs loss for each batch sample
+        if config.get('regression_loss', 'mse') == 'hl_gauss':
+            # HL-Gauss: Histogram Loss with Gaussian smoothing
+            return HLGaussLoss(
+                min_value=config['hl_gauss_min'],
+                max_value=config['hl_gauss_max'],
+                num_bins=config['hl_gauss_num_bins'],
+                sigma_ratio=config['hl_gauss_sigma_ratio']
+            )
+        else:
+            return nn.MSELoss(reduction='none')  # outputs loss for each batch sample
         # return nn.SmoothL1Loss(reduction='none')
     else:
         raise ValueError("Loss module for task '{}' does not exist".format(task))
