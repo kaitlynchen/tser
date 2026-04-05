@@ -68,8 +68,8 @@ fi
 # 4) Attn smoothing
 # 5) L2 attn/learnable scale/prenorm
 
-OUTPUT_DIR="./output/oversmoothing_baseline11_dot_SEQUENTIALSPLIT"
-OUTPUT_FILE="${DATA}_BASELINE11_CONVALIBI_DOT_SEQUENTIALSPLIT"
+OUTPUT_DIR="./output/oversmoothing_baseline15"
+OUTPUT_FILE="${DATA}_BASELINE15_L2"
 
 for LR in 1e-3 1e-2
 do
@@ -77,29 +77,32 @@ do
     do
         for NOISE in 0
         do
-            for LAM in 0
+            for HEADS in 16
             do
-                for HEADS in 16
+                for SMOOTH in 0 1e-3
                 do
-                    for SEED in 0
+                    for L1 in 0 
                     do
-                        PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_LAM=${LAM}_HEADS=${HEADS}"
+                        for SEED in 0
+                        do
+                            PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_LAM=${LAM}_HEADS=${HEADS}"
 
-                        # Baseline, convalibi init relpos, before softmax
-                        python main.py --output_dir "$OUTPUT_DIR" \
-                            --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                            --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
-                            --data_dir $DATA_DIR --data_class tsra \
-                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                            --epochs 2000 --patience $PATIENCE \
-                            --lr $LR --batch_size $BS --input_noise_std $NOISE \
-                            --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                            --optimizer RAdam --task regression \
-                            --plot_loss --plot_accuracy \
-                            --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                            --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
-                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
-                            --pool seqpool_cls --attention_type dot --learnable_scale --reg_lambda $LAM --reg_lambda_pool $LAM
+                            # Baseline, convalibi init relpos, before softmax
+                            python main.py --output_dir "$OUTPUT_DIR" \
+                                --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                                --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                                --data_dir $DATA_DIR --data_class tsra \
+                                --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                                --epochs 2000 --patience $PATIENCE \
+                                --lr $LR --batch_size $BS --input_noise_std $NOISE \
+                                --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                                --optimizer RAdam --task regression \
+                                --plot_loss --plot_accuracy \
+                                --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                                --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
+                                --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
+                                --pool seqpool_multihead --attention_type L2 --learnable_scale --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1
+                        done
                     done
                 done
             done

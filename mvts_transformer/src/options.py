@@ -180,6 +180,8 @@ class Options(object):
                                  help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
         self.parser.add_argument('--causal_mask', action='store_true',
                                  help="""Only applicable for ClimaX. If set, uses causal mask in self-attention.""")
+        self.parser.add_argument('--residual_weight', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, allows the model to learn how much of the residual connection to use, by multiplying the residual by a learnable parameter.""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--reg_lambda_pool', type=float, default=0,
@@ -276,7 +278,7 @@ class Options(object):
                                  help="Stride for input pooling. Only used with sklearn models at this time.")
 
         # Pooling
-        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_smoothed', 'seqpool_cls', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
+        self.parser.add_argument('--pool', type=str, choices=['seqpool', 'average', 'linear', 'seqpool_multihead', 'seqpool_multihead_fc1', 'seqpool_multihead_smoothed', 'seqpool_cls', 'maxpool', 'max_seq_hybrid', 'average_max'], default='linear',
                                  help='Type of final pooling')
 
         # Oversmoothing related

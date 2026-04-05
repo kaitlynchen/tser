@@ -42,7 +42,7 @@ conda activate tser
 BS=128
 PATCH=1
 STRIDE=1
-PATIENCE=100
+PATIENCE=200
 
 # Dataset-specific overrides
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -50,10 +50,8 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
     PATIENCE=500
     SPLIT="--val_sequential_split"
 elif [ "$DATA" = "BenzeneConcentration" ]; then
-    PATIENCE=200
     SPLIT="--val_sequential_split"
 elif [ "$DATA" = "IEEEPPG" ]; then
-    PATIENCE=200
     PATCH=16
     STRIDE=8
     SPLIT="--val_sequential_split"
@@ -63,45 +61,130 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
     SPLIT="--val_sequential_split"
 fi
 
+
 # OUTPUT FILE
-OUTPUT_DIR="./output/LADAA_20260220_NOMIXUP"
-OUTPUT_FILE="LADAA_20260220_NOMIXUP_${DATA}"
+OUTPUT_DIR="./output/LADAA3_20260223"
+OUTPUT_FILE="LADAA3_20260223_${DATA}"
 
 # TUNING
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 0.25 0.5 1
+    for CONVIT_SLOPE in 0.1 1 10
     do
-        for HEADS in 8 16
+        for HEADS in 16
         do
-            for NOISE in 0
+            for SMOOTH in 0 1e-3 
             do
-                for SEED in 0
+                for L1 in 0 1e-3
                 do
-                    # BASIC
-                    PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
-                    python main.py --output_dir "$OUTPUT_DIR" \
-                        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                        --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
-                        --data_dir $DATA_DIR --data_class tsra \
-                        --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                        --epochs 2000 --patience $PATIENCE \
-                        --lr $LR --batch_size $BS \
-                        --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                        --optimizer RAdam --task regression \
-                        --plot_loss --plot_accuracy \
-                        --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                        --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-                        --pool seqpool_cls --input_noise_std $NOISE
+                    for SEED in 0
+                    do
+                        # BASIC
+                        PARAM_STR="LR=${LR}_POOLSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+                        python main.py --output_dir "$OUTPUT_DIR" \
+                            --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                            --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                            --data_dir $DATA_DIR --data_class tsra \
+                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                            --epochs 2000 --patience $PATIENCE \
+                            --lr $LR --batch_size $BS \
+                            --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                            --optimizer RAdam --task regression \
+                            --plot_loss --plot_accuracy \
+                            --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                            --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
+                            --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
+                    done
                 done
             done
         done
     done
 done
+# #--alibi_min_slope 0.1 --alibi_max_slope 100 \
 
 # TEST
 python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
+
+
+# # OUTPUT FILE
+# OUTPUT_DIR="./output/LADAAREPRO_20260220_NOMIXUP"
+# OUTPUT_FILE="LADAAREPRO_20260220_NOMIXUP_${DATA}"
+
+# # TUNING
+# for LR in 1e-3 1e-2
+# do
+#     for CONVIT_SLOPE in 0.25
+#     do
+#         for HEADS in 16
+#         do
+#             for SMOOTH in 0 1e-2 1e-1
+#             do
+#                 for L1 in 0 1e-4
+#                 do
+#                     for SEED in 0
+#                     do
+#                         # BASIC
+#                         PARAM_STR="LR=${LR}_POOLSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+#                         python main.py --output_dir "$OUTPUT_DIR" \
+#                             --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+#                             --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+#                             --data_dir $DATA_DIR --data_class tsra \
+#                             --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                             --epochs 2000 --patience $PATIENCE \
+#                             --lr $LR --batch_size $BS \
+#                             --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+#                             --optimizer RAdam --task regression \
+#                             --plot_loss --plot_accuracy \
+#                             --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+#                             --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+#                             --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+#                             --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
+
+# # TEST
+# python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
+
+# # TUNING
+# for LR in 1e-3 1e-2
+# do
+#     for CONVIT_SLOPE in 0.25 0.5 1
+#     do
+#         for HEADS in 8 16
+#         do
+#             for NOISE in 0
+#             do
+#                 for SEED in 0
+#                 do
+#                     # BASIC
+#                     PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+#                     python main.py --output_dir "$OUTPUT_DIR" \
+#                         --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+#                         --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+#                         --data_dir $DATA_DIR --data_class tsra \
+#                         --pattern TRAIN --val_ratio 0.2 $SPLIT \
+#                         --epochs 2000 --patience $PATIENCE \
+#                         --lr $LR --batch_size $BS \
+#                         --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+#                         --optimizer RAdam --task regression \
+#                         --plot_loss --plot_accuracy \
+#                         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+#                         --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+#                         --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
+#                         --pool seqpool_cls --input_noise_std $NOISE
+#                 done
+#             done
+#         done
+#     done
+# done
+
+# # TEST
+# python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
 
 
 
