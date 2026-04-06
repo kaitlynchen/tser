@@ -102,7 +102,8 @@ def model_factory(config, data):
                           pre_norm=config['pre_norm'],
                           qkv_identity_init=config['qkv_identity_init'],
                           tied_qk=config['tied_qk'],
-                          key_bias=config['key_bias'])
+                          key_bias=config['key_bias'],
+                          residual_weight=config['residual_weight'])
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -185,6 +186,7 @@ class ClimaX(nn.Module):
         qkv_identity_init=False,
         tied_qk=False,
         key_bias=False,
+        residual_weight=False,
     ):
         super().__init__()
 
@@ -220,6 +222,7 @@ class ClimaX(nn.Module):
         self.feat_scale = feat_scale
         self.centered_attn = centered_attn
         self.pre_norm = pre_norm
+        self.residual_weight = residual_weight
 
         if self.where_to_add_abspos == "start_concat":
             content_embed_dim = embed_dim // 2
@@ -280,7 +283,7 @@ class ClimaX(nn.Module):
                 conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale,
                 krause_sigma_init=krause_sigma_init, krause_top_k=krause_top_k,
                 lambda_neutreno=lambda_neutreno, attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn, pre_norm=self.pre_norm,
-                qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias)
+                qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias, residual_weight=residual_weight)
         
         # Create TransformerEncoder with multiple layers
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
@@ -398,7 +401,9 @@ class ClimaX(nn.Module):
 
                 # Alibi heads
                 self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)  # torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
+
+                # NOTE Modified watch out
+                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)  # torch.linspace(0, -np.log2(seq_len/4), steps=self.alibi_heads, device=self.device)  # 
                 self.alibi_slopes = 2 ** log_slopes
                 self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
                 self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
@@ -466,61 +471,6 @@ class ClimaX(nn.Module):
                 bias_table_init = torch.cat([convit_biases, alibi_biases], dim=2)  # [L, 2T-1, H]
                 bias_table_init = torch.clamp(bias_table_init, min=-100)
 
-
-            elif relative_pos_encoding == "erpe_convalibi_init_quadratic":
-                # Convit heads
-                self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
-                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-                if self.causal_mask:
-                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
-                else:
-                    self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
-                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-                convit_biases = -1.0 * self.convit_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
-
-                # Alibi heads
-                self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
-                self.alibi_slopes = (2 ** log_slopes) ** 2
-                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
-                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
-                alibi_biases = -1.0 * self.alibi_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
-
-                # Combine
-                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
-
-                # Duplicate for each layer
-                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
-
-            elif relative_pos_encoding == "erpe_convalibi_init_quadratic_clamped":
-                # Convit heads
-                self.convit_heads = num_heads // 2
-                self.convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
-                self.convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
-                if self.causal_mask:
-                    self.convit_offsets = torch.tensor([-i-1 for i in range(self.convit_heads)], device=self.device)
-                else:
-                    self.convit_offsets = torch.tensor([-1 * (2.0 ** i) for i in range(self.convit_heads//2)] +
-                                                   [2.0 ** i for i in range(self.convit_heads//2)], device=self.device)
-                convit_biases = -1.0 * self.convit_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.convit_offsets)) + self.convit_intercepts  # Distance to "focus pixel", [2T-1, H]
-
-                # Alibi heads
-                self.alibi_heads = num_heads // 2
-                log_slopes = torch.linspace(np.log2(self.alibi_max_slope), np.log2(self.alibi_min_slope), steps=self.alibi_heads, device=self.device)
-                self.alibi_slopes = (2 ** log_slopes)
-                self.alibi_intercepts = torch.zeros((self.alibi_heads), device=self.device)  # Always 0 for now
-                self.alibi_offsets = torch.zeros((self.alibi_heads), device=self.device)
-                alibi_biases = -1.0 * self.alibi_slopes * torch.square(torch.arange(0, 2*self.seq_len-1, device=self.device).unsqueeze(1) - (self.seq_len-1+self.alibi_offsets)) + self.alibi_intercepts  # Distance to "zero", [2T-1, H]
-
-                # Combine
-                bias_table_init = torch.cat([convit_biases, alibi_biases], dim=1)  # [2T-1, H]
-                bias_table_init = torch.clamp(bias_table_init, min=-10)
-
-                # Duplicate for each layer
-                bias_table_init = bias_table_init.repeat(num_layers, 1, 1)  # [L, 2T-1, H]
-
-
             # Define a parameter table of relative position bias
             self.relative_bias_table = nn.Parameter(bias_table_init, requires_grad=True)  # Relative offsets range from (T-1) to -(T-1), inclusive. Shape: [L, 2T-1, H]
             self.relpos_temp = nn.Parameter(torch.ones((num_layers, 1, num_heads)))  # Temperature for relative positional softmax (divide pre-softmax by this value). [L, 1, H] so relative_bias_table can be divided by this.
@@ -572,7 +522,7 @@ class ClimaX(nn.Module):
 
             # Convit heads are initialized to focus attention around `convit_offsets`, with peak
             # intensity `convit_intercepts` and decay `convit_slopes`
-            convit_slopes = torch.tensor([1.0 for i in range(self.convit_heads)], device=self.device)
+            convit_slopes = torch.tensor([self.convit_slope for i in range(self.convit_heads)], device=self.device)
             convit_intercepts = torch.zeros((self.convit_heads), device=self.device)
             convit_offsets = torch.tensor([0] + [-1 * (3.0 ** i) for i in range(self.convit_heads//2)] +
                                           [3.0 ** i for i in range(self.convit_heads//2 - 1)], device=self.device)
@@ -634,6 +584,14 @@ class ClimaX(nn.Module):
                 nn.ReLU(),
                 nn.Linear(embed_dim, num_classes)
             )
+        elif self.pool == "seqpool_multihead_fc1":
+            self.attention_pool = nn.Sequential(
+                nn.Linear(pool_input_dim, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, num_heads)
+            )
+            self.pool_temp = nn.Parameter(torch.ones(num_heads))
+            self.fc = nn.Linear(pool_input_dim*num_heads, num_classes)
         elif self.pool == "seqpool_cls":
             self.pool_query = nn.Parameter(torch.randn(pool_input_dim), requires_grad=True)
             self.pool_key = nn.Linear(pool_input_dim, pool_input_dim)
@@ -643,8 +601,7 @@ class ClimaX(nn.Module):
                 nn.Linear(pool_input_dim, embed_dim),
                 nn.ReLU(),
                 nn.Linear(embed_dim, num_classes)
-            )
-        
+            )        
         elif self.pool == "average":
             self.fc = nn.Sequential(
                 nn.AdaptiveAvgPool1d(1),
@@ -894,7 +851,7 @@ class ClimaX(nn.Module):
             n_rows = min(5, batch_size) 
             # feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
             min_value, max_value = utils.approx_min_max(feature_distances_layers) #, torch_rng)
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
+            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained', squeeze=False)
             for r in range(n_rows):
                 for c in range(n_cols):
                     im = axeslist[r, c].imshow(feature_distances_layers[c][r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
@@ -916,7 +873,7 @@ class ClimaX(nn.Module):
             n_cols = len(similarity_matrix_layers)
             # similarity_matrix_layers = torch.stack(similarity_matrix_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
             min_value, max_value = utils.approx_min_max(similarity_matrix_layers) #, torch_rng)
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
+            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained', squeeze=False)
             for r in range(n_rows):
                 for c in range(n_cols):
                     im = axeslist[r, c].imshow(similarity_matrix_layers[c][r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
@@ -942,7 +899,7 @@ class ClimaX(nn.Module):
             n_cols = self.num_layers * 2
             matrix_indices = np.sort(np.random.choice(np.arange(n_matrices), n_cols, replace=False))
             # matrix_indices = np.sort(numpy_rng.choice(np.arange(n_matrices), n_cols, replace=False))  # Randomly choose which attention maps to plot, but keep the same ones across examples. Sorted for better visualization.
-            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
+            fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained", squeeze=False)
             for r in range(n_rows):
                 for c in range(n_cols):
                     m = matrix_indices[c]
@@ -974,7 +931,7 @@ class ClimaX(nn.Module):
                 # Line plots
                 n_rows = 2  # Pre-softmax and post-softmax
                 n_cols = self.num_layers
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 7*n_rows), layout="constrained")
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(7*n_cols, 7*n_rows), layout="constrained", squeeze=False)
                 timesteps = np.arange(bias_table.shape[1]) - (self.seq_len - 1)
                 for layer_idx in range(self.num_layers):
                     # Pre-softmax
@@ -1002,19 +959,19 @@ class ClimaX(nn.Module):
                 min_value, max_value = utils.approx_min_max(bias_table) #, torch_rng)
                 n_rows = 1
                 n_cols = self.num_layers
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*bias_table.shape[2]+3, 0.03*n_rows*bias_table.shape[1]), layout="constrained")
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(0.15*n_cols*bias_table.shape[2]+3, 0.03*n_rows*bias_table.shape[1]), layout="constrained", squeeze=False)
                 for c in range(n_cols):  # Loop through each layer
-                    im = axeslist[c].imshow(bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
-                    axeslist[c].set_xlabel("Head number")
-                    axeslist[c].set_ylabel("Relative offset (middle is 0)")
-                    axeslist[c].set_title(f"Layer {c}")
+                    im = axeslist[0, c].imshow(bias_table[c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value, aspect=0.2, interpolation='none')  # stretch each column horizontally 5x
+                    axeslist[0, c].set_xlabel("Head number")
+                    axeslist[0, c].set_ylabel("Relative offset (middle is 0)")
+                    axeslist[0, c].set_title(f"Layer {c}")
                 fig.colorbar(im, ax=axeslist, shrink=0.4)
                 fig.suptitle("Relative attention biases")
                 plt.savefig(os.path.join(plot_dir, 'relative_pos_offsets_colorbar.png'))
                 plt.close()
 
             # Visualize SeqPool attention weights
-            if self.pool in ["seqpool", "seqpool_multihead", "seqpool_multihead_smoothed"]:
+            if self.pool in ["seqpool", "seqpool_multihead", "seqpool_multihead_fc1", "seqpool_multihead_smoothed"]:
                 visualization_utils.visualize_pooling_attn(pooling_attn, plot_dir)
 
         if return_embeddings:
@@ -1080,7 +1037,7 @@ class ClimaX(nn.Module):
                 preds = torch.matmul(pooling_attn, preds).squeeze(-2)
                 preds = self.fc(preds)
 
-            elif self.pool == "seqpool_multihead":  #  or self.pool == "seqpool_multihead_posenc":
+            elif self.pool in ["seqpool_multihead", "seqpool_multihead_fc1"]:  #  or self.pool == "seqpool_multihead_posenc":
                 # Seqpool with multiple heads. Intuitively, different heads can
                 # focus on different parts of the sequence.
                 pooling_attn = rearrange(pooling_attn, 'b t h -> b h t')  # [B, H, T]
@@ -1461,7 +1418,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
                  where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False,
                  krause_sigma_init=1.0, krause_top_k=-1,
                  lambda_neutreno=0.0, attn_scale=False, feat_scale=False, centered_attn=False, pre_norm=False,
-                 qkv_identity_init=False, tied_qk=False, key_bias=False):
+                 qkv_identity_init=False, tied_qk=False, key_bias=False, residual_weight=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         # if where_to_add_relpos == "before":
         #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
@@ -1469,7 +1426,6 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         #     self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         #     assert conv_projection == False, "conv_projection is only supported for custom attention (Attention_Rel_Scl)"
         # else:
-
         if relative_pos_encoding == "rope":
             self.self_attn = AttentionWithRoPE(d_model, nhead, attn_drop=dropout, proj_drop=dropout)
         else:
@@ -1497,6 +1453,11 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         self.activation = F.gelu
         self.lambda_neutreno = lambda_neutreno
         self.pre_norm = pre_norm
+
+        # Residual weights
+        self.residual_weight = residual_weight
+        self.residual_weight_sa = torch.nn.Parameter(torch.tensor(1.0)) if residual_weight else 1
+        self.residual_weight_ff = torch.nn.Parameter(torch.tensor(1.0)) if residual_weight else 1
 
 
     def norm_wrapper(self, norm_layer):
@@ -1560,13 +1521,13 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         if self.pre_norm:
             sa_output, attn_output_weights = self._sa_block(
                 self.norm1_wrapped(x), src_mask, src_key_padding_mask, plot_dir=plot_dir, output0=output0)
-            x = x + sa_output
-            x = x + self._ff_block(self.norm2_wrapped(x))
+            x = self.residual_weight_sa * x + sa_output
+            x = self.residual_weight_ff * x + self._ff_block(self.norm2_wrapped(x))
         else:
             sa_output, attn_output_weights = self._sa_block(
                 x, src_mask, src_key_padding_mask, plot_dir=plot_dir, output0=output0)
-            x = self.norm1_wrapped(x + sa_output)
-            x = self.norm2_wrapped(x + self._ff_block(x))
+            x = self.norm1_wrapped(self.residual_weight_sa * x + sa_output)
+            x = self.norm2_wrapped(self.residual_weight_ff * x + self._ff_block(x))
         return x, attn_output_weights
 
 
@@ -1662,16 +1623,20 @@ class Attention_Rel_Scl(nn.Module):
                 ('linear', nn.Linear(emb_size, emb_size, bias=False))
             ]))
         else:
-            # Default: query/key/value are per-timestep linear projections
-            self.key = nn.Linear(emb_size, emb_size, bias=False)
-            self.value = nn.Linear(emb_size, emb_size, bias=False)
-            self.query = nn.Linear(emb_size, emb_size, bias=False)
-
-            # # TODO Not sure why this got added?
             if qkv_identity_init:
+                self.key = nn.Linear(emb_size, emb_size, bias=False)
+                self.value = nn.Linear(emb_size, emb_size, bias=False)
+                self.query = nn.Linear(emb_size, emb_size, bias=False)
+
+                # TODO Not sure why this got added?
                 self.key.weight.data.copy_(torch.eye(emb_size))
                 self.value.weight.data.copy_(torch.eye(emb_size))
                 self.query.weight.data.copy_(torch.eye(emb_size))
+            else:
+                # Default: query/key/value are per-timestep linear projections
+                self.key = nn.Linear(emb_size, emb_size)
+                self.value = nn.Linear(emb_size, emb_size)
+                self.query = nn.Linear(emb_size, emb_size)
 
         # If tied qk, reset key = query
         if tied_qk:
@@ -1699,7 +1664,7 @@ class Attention_Rel_Scl(nn.Module):
         (mean across all timesteps) and high-frequency (local differences from mean)
 
         Source: https://github.com/VITA-Group/ViT-Anti-Oversmoothing/blob/main/featscale.py
-        
+
         x should have shape [B, T, D]
         """
         x_d = torch.mean(x, -2, keepdim=True) # [B, 1, D]
@@ -1768,7 +1733,7 @@ class Attention_Rel_Scl(nn.Module):
                 n_rows = 5  # Examples to plot
                 n_cols = 6
                 min_value, max_value = utils.approx_min_max(dist_before_projection / dist_before_projection.mean(), torch_rng)
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained', squeeze=False)
                 for r in range(n_rows):
                     im = axeslist[r, 0].imshow((dist_before_projection[r, :, :] / dist_before_projection[r, :, :].mean()).detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     axeslist[r, 1].imshow((dist_after_projection[r, :, :] / dist_after_projection[r, :, :].mean()).detach().cpu().numpy(), vmin=min_value, vmax=max_value)
@@ -1854,7 +1819,7 @@ class Attention_Rel_Scl(nn.Module):
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads
                 n_rows = 8
                 n_cols = 3
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained")
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained", squeeze=False)
 
                 for r in range(n_rows):
                     head_num = r * (attn.shape[1] // n_rows)
@@ -1902,6 +1867,11 @@ class Attention_Rel_Scl(nn.Module):
             # Centered attention: Section 3.2 from https://arxiv.org/pdf/2306.01610
             attn_offset = -1 * torch.ones(attn.shape[-2:], device=attn.device) / T    # [T, T]
             attn = attn + attn_offset
+
+        # Attention dropout! TODO Check this!
+        # Note: I think dropout is applied after softmax in Pytorch's implentation (https://github.com/pytorch/pytorch/blob/main/torch/nn/functional.py#L6644)
+        # This does mean attn scores may not add to 1 during training (https://github.com/huggingface/transformers/issues/31468).
+        attn = self.dropout(attn)
 
         # Aggregate values using attention
         out = torch.matmul(attn, v)  # [B, H, T, T] * [B, H, T, d_head] -> [B, H, T, d_head]

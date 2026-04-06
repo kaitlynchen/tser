@@ -63,9 +63,9 @@ fi
 # Test abspos variants, seqpool_cls
 for CONV_TYPE in per_timestep
 do
-    for POOL in seqpool_cls seqpool_multihead
+    for POOL in seqpool_multihead
     do
-        for WHERE_ABSPOS in before_pool_concat start_concat
+        for WHERE_ABSPOS in start_concat
         do
             OUTPUT_DIR="./output/TIMESTEP_20260220"
             OUTPUT_FILE="TIMESTEP_20260220_NOMIXUP_${DATA}_${CONV_TYPE}_POOL=${POOL}_ABSPOS=${WHERE_ABSPOS}"

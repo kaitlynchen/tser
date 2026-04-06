@@ -62,17 +62,17 @@ elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
 fi
 
 
-OUTPUT_DIR="./output/ablation_relpos"
+OUTPUT_DIR="./output/ablation_relpos_init"
 
-for WHERE in before after_gating only_relpos
+for WHERE in only_relpos
 do
-    for RELPOS in erpe_convalibi_init
+    for RELPOS in erpe_uniform_init erpe_alibi_init
     do
-        OUTPUT_FILE="${DATA}_ABLATION_RELPOS=${RELPOS}_WHERE=${WHERE}"
+        OUTPUT_FILE="${DATA}_ABLATION_RELPOS_INIT=${RELPOS}_WHERE=${WHERE}"
 
         for LR in 1e-3 1e-2
         do
-            for CONVIT_SLOPE in 0.1 1 10
+            for CONVIT_SLOPE in 1
             do
                 for NOISE in 0
                 do
@@ -84,7 +84,7 @@ do
                             do
                                 for SEED in 0
                                 do
-                                    PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_LAM=${LAM}_L1=${L1}"
+                                    PARAM_STR="LR=${LR}_HEADS=${HEADS}_LAM=${LAM}_L1=${L1}"
 
                                     # Baseline, convalibi init relpos, before softmax
                                     python main.py --output_dir "$OUTPUT_DIR" \
@@ -108,6 +108,7 @@ do
                 done
             done
         done
+
         python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
 
     done

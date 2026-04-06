@@ -43,7 +43,7 @@ BS=128
 HEADS=16
 PATCH=1
 STRIDE=1
-PATIENCE=100
+PATIENCE=200
 
 # Dataset-specific overrides
 if [ "$DATA" = "AppliancesEnergy" ]; then
@@ -52,7 +52,6 @@ if [ "$DATA" = "AppliancesEnergy" ]; then
 elif [ "$DATA" = "BenzeneConcentration" ]; then
     PATIENCE=500
 elif [ "$DATA" = "IEEEPPG" ]; then
-    PATIENCE=200
     PATCH=4
     STRIDE=4
 elif [ "$DATA" = "LiveFuelMoistureContent" ]; then
@@ -96,7 +95,7 @@ fi
 
 # OUTPUT FILE
 OUTPUT_DIR="./output/LADAAREPRO_20260220_NOMIXUP"
-OUTPUT_FILE="${DATA}_LADAA_FINAL_QKVIDENTITY"
+OUTPUT_FILE="${DATA}_LADAA_FINAL"
 
 for SEED in 0 1 2
 do
@@ -115,6 +114,6 @@ do
         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
         --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
         --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE \
-        --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1v --qkv_identity_init
+        --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
 done
 
