@@ -1646,7 +1646,6 @@ class Attention_Rel_Scl(nn.Module):
         if self.key_bias:
             raise NotImplementedError("Key_bias not implemented")
             self.key_bias_table = nn.Parameter(torch.zeros(num_heads), requires_grad=True)  # [H]
-        print("Check", (not tied_qk) and (not self.key_bias) and not (qkv_identity_init))
 
         # Output projection
         self.out_proj = nn.Linear(emb_size, emb_size)

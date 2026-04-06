@@ -70,44 +70,45 @@ do
     do
         OUTPUT_FILE="${DATA}_ABLATION_RELPOS_INIT=${RELPOS}_WHERE=${WHERE}"
 
-        # for LR in 1e-3 1e-2
-        # do
-        #     for CONVIT_SLOPE in 1
-        #     do
-        #         for NOISE in 0
-        #         do
-        #             for HEADS in 16
-        #             do
-        #                 for LAM in 0 1e-3
-        #                 do
-        #                     for L1 in 0
-        #                     do
-        #                         for SEED in 0
-        #                         do
-        #                             PARAM_STR="LR=${LR}_HEADS=${HEADS}_LAM=${LAM}_L1=${L1}"
+        for LR in 1e-3 1e-2
+        do
+            for CONVIT_SLOPE in 1
+            do
+                for NOISE in 0
+                do
+                    for HEADS in 16
+                    do
+                        for LAM in 0 1e-3
+                        do
+                            for L1 in 0
+                            do
+                                for SEED in 0
+                                do
+                                    PARAM_STR="LR=${LR}_HEADS=${HEADS}_LAM=${LAM}_L1=${L1}"
 
-        #                             # Baseline, convalibi init relpos, before softmax
-        #                             python main.py --output_dir "$OUTPUT_DIR" \
-        #                                 --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-        #                                 --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
-        #                                 --data_dir $DATA_DIR --data_class tsra \
-        #                                 --pattern TRAIN --val_ratio 0.2 $SPLIT \
-        #                                 --epochs 2000 --patience $PATIENCE \
-        #                                 --lr $LR --batch_size $BS --input_noise_std $NOISE \
-        #                                 --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-        #                                 --optimizer RAdam --task regression \
-        #                                 --plot_loss --plot_accuracy \
-        #                                 --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-        #                                 --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
-        #                                 --relative_pos_encoding $RELPOS --where_to_add_relpos $WHERE --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
-        #                                 --pool seqpool_multihead --reg_lambda $LAM --reg_lambda_pool $LAM --l1 $L1
-        #                         done
-        #                     done
-        #                 done
-        #             done
-        #         done
-        #     done
-        # done
+                                    # Baseline, convalibi init relpos, before softmax
+                                    python main.py --output_dir "$OUTPUT_DIR" \
+                                        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                                        --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                                        --data_dir $DATA_DIR --data_class tsra \
+                                        --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                                        --epochs 2000 --patience $PATIENCE \
+                                        --lr $LR --batch_size $BS --input_noise_std $NOISE \
+                                        --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                                        --optimizer RAdam --task regression \
+                                        --plot_loss --plot_accuracy \
+                                        --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                                        --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
+                                        --relative_pos_encoding $RELPOS --where_to_add_relpos $WHERE --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
+                                        --pool seqpool_multihead --reg_lambda $LAM --reg_lambda_pool $LAM --l1 $L1
+                                done
+                            done
+                        done
+                    done
+                done
+            done
+        done
+
         python test_best.py --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls"
 
     done
