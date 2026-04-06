@@ -1578,7 +1578,6 @@ class Attention_Rel_Scl(nn.Module):
             self.scale = nn.Parameter(torch.tensor((emb_size / num_heads) ** -0.5), requires_grad=True)
         else:
             self.scale = (emb_size / num_heads) ** -0.5
-<<<<<<< HEAD
             # self.scale = emb_size ** -0.5 # ONLY PUTING HERE FOR REPRO TODO
         
         # Krause attention: learnable sigma per head for RBF kernel
@@ -1586,8 +1585,6 @@ class Attention_Rel_Scl(nn.Module):
             self.krause_sigma = nn.Parameter(
                 torch.full((num_heads,), krause_sigma_init), requires_grad=True
             )  # [H]
-=======
->>>>>>> f678579 (Add seqpool fc1, residual weight, fix alibi slope)
 
         # Attention/feature scaling: for mitigating oversmoothness
         self.attn_scale = attn_scale
