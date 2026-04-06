@@ -96,8 +96,8 @@ fi
 #         --plot_loss --plot_accuracy
 # done
 
-OUTPUT_DIR="./output/repro_zerveas_20260223_CLIMAX_ATTNDROPOUT"
-OUTPUT_FILE="${DATA}_repro_zerveas_20260223_CLIMAX_ATTNDROPOUT"
+OUTPUT_DIR="./output/repro_zerveas_20260406_CLIMAX_NOATTNDROPOUT"
+OUTPUT_FILE="${DATA}_repro_zerveas_20260406_CLIMAX_NOATTNDROPOUT_v2"
 
 for SEED in 0 1 2
 do

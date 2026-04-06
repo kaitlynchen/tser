@@ -1868,10 +1868,12 @@ class Attention_Rel_Scl(nn.Module):
             attn_offset = -1 * torch.ones(attn.shape[-2:], device=attn.device) / T    # [T, T]
             attn = attn + attn_offset
 
-        # Attention dropout! TODO Check this!
+        # Attention dropout: Zerveas includes this, but PyTorch's MultiheadAttention doesn't by default.
+        # With local mask = 0, attention dropout has a change of zeroing out all attention weights for
+        # some timesteps, which seems suboptimal, so we don't use attention dropout for now.
         # Note: I think dropout is applied after softmax in Pytorch's implentation (https://github.com/pytorch/pytorch/blob/main/torch/nn/functional.py#L6644)
         # This does mean attn scores may not add to 1 during training (https://github.com/huggingface/transformers/issues/31468).
-        attn = self.dropout(attn)
+        # attn = self.dropout(attn)
 
         # Aggregate values using attention
         out = torch.matmul(attn, v)  # [B, H, T, T] * [B, H, T, d_head] -> [B, H, T, d_head]
