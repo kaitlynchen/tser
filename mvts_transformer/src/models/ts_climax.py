@@ -1761,34 +1761,12 @@ class Attention_Rel_Scl(nn.Module):
 
             # If certain entries were masked out in attn_mask, also mask them out in content_attn. This is necessary if where_to_add_relpos is after_gating.
             mask_neginf = torch.isneginf(attn_mask)
-            if self.attention_type == 'krause':
-                content_attn = torch.where(mask_neginf, torch.zeros_like(content_attn), content_attn)
-            else:
-                content_attn = torch.where(mask_neginf, torch.full_like(content_attn, float('-inf')), content_attn)
+            content_attn = torch.where(mask_neginf, torch.full_like(content_attn, float('-inf')), content_attn)
 
         # Perform normalization
-        if self.attention_type == 'krause':
-            # Krause attention with optional relative position bias and top-k sparsity
-            
-            # Add relative position bias before top-k selection
-            # Adding full attn_mask (including -inf) ensures masked positions are never selected by top-k
-            if attn_mask is not None and self.where_to_add_relpos == 'before':
-                content_attn = content_attn + attn_mask
-            
-            if self.krause_top_k > 0:
-                B, H, T, _ = content_attn.shape
-                k = min(self.krause_top_k, T)                
-
-                topk_values, topk_indices = torch.topk(content_attn, k, dim=-1)  # [B, H, T, k]
-                sparse_attn = torch.full_like(content_attn, float('-inf'))
-                sparse_attn.scatter_(-1, topk_indices, topk_values)
-                content_attn = sparse_attn
-            
-            attn = F.softmax(content_attn, dim=-1)
-        elif (self.where_to_add_relpos in ['before', 'only_relpos']) and attn_mask is not None:
+        if (self.where_to_add_relpos in ['before', 'only_relpos']) and attn_mask is not None:
             # Add mask (relative position encoding) before softmax if specified
             attn = F.softmax(content_attn + attn_mask, dim=-1)
-
         else:
             # Take softmax of content attention first (relative position encoding added later)
             attn = F.softmax(content_attn, dim=-1) # [B, H, T, T]
@@ -1811,6 +1789,24 @@ class Attention_Rel_Scl(nn.Module):
                 # print("COMBINED", attn.shape, attn[0, 0, 0:8, 0:8])
                 # exit(1)
 
+        # Krause attention hard-top-k. NOTE: We are doing this after softmax, so we set the
+        # non-topk values to 0 instead of -inf, and then renormalize so rows sum to 1. 
+        attn_before_topk = attn
+        if self.attention_type == 'krause' and self.krause_top_k > 0:
+            B, H, T, _ = attn.shape
+            k = min(self.krause_top_k, T)                
+
+            topk_values, topk_indices = torch.topk(attn, k, dim=-1)  # [B, H, T, k]
+            sparse_attn = torch.zeros_like(attn)
+            sparse_attn.scatter_(-1, topk_indices, topk_values)
+            attn = sparse_attn / sparse_attn.sum(dim=-1, keepdim=True) # Renormalize so that rows sum to 1 after zeroing out some entries
+
+        print("content_attn", content_attn[6, 2, 30:40, 30:40])
+        print("attn mask", attn_mask[6, 2, 30:40, 30:40])
+        print("attn before hardtopk", attn_before_topk[6, 2, 30:40, 30:40])
+        print("attn after hardtopk", attn[6, 2, 30:40, 30:40])
+
+        if attn_mask is not None:
             if plot_dir is not None:
                 if self.where_to_add_relpos == "after_gating":
                     print("Gating (Pr position)", torch.sigmoid(self.gating_param))
@@ -1818,7 +1814,7 @@ class Attention_Rel_Scl(nn.Module):
                 # PLOTTING ONLY
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads
                 n_rows = 8
-                n_cols = 3
+                n_cols = 4 if self.attention_type == 'krause' else 3
                 fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained", squeeze=False)
 
                 for r in range(n_rows):
@@ -1829,10 +1825,12 @@ class Attention_Rel_Scl(nn.Module):
                         pos_attn_head = F.softmax(attn_mask[0, head_num, :, :], dim=-1)
                     else:
                         pos_attn_head = attn_mask[0, head_num, :, :]
-                    total_attn_head = attn[0, head_num, :, :]
+                    total_attn_head = attn_before_topk[0, head_num, :, :]
                     axeslist[r, 0].imshow(content_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
                     axeslist[r, 1].imshow(pos_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
                     im = axeslist[r, 2].imshow(total_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
+                    if self.attention_type == 'krause':
+                        im = axeslist[r, 3].imshow(attn[0, head_num, :, :].detach().cpu().numpy(), vmin=0, vmax=max_value)
                     if r == 0:
                         if self.where_to_add_relpos == "after_gating":
                             axeslist[r, 0].set_title("Content attn\n(post-softmax)")
@@ -1847,10 +1845,17 @@ class Attention_Rel_Scl(nn.Module):
                             axeslist[r, 0].set_title("Content attn\n(post-softmax)")
                             axeslist[r, 1].set_title("Position attn\n(unnormalized)")
                             axeslist[r, 2].set_title("Combined:\nsoftmax(Content) + Position")
+                        if self.attention_type == 'krause':
+                            axeslist[r, 3].set_title(f"After Krause top-{self.krause_top_k}")
                 fig.colorbar(im, ax=axeslist[r])
                 fig.suptitle("Attn breakdown, single example (each row is one head)")
                 plt.savefig(os.path.join(plot_dir, 'attention_breakdown.png'))
                 plt.close()
+
+        # Print attn
+                print("attn mask", attn_mask[6, 2, 30:40, 30:40])
+        print("content_attn", content_attn[6, 2, 30:40, 30:40])
+
 
         # AttnScale
         if self.attn_scale:
