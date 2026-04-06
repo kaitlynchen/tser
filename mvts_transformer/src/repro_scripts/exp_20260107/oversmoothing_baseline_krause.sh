@@ -69,11 +69,11 @@ fi
 # 5) L2 attn/learnable scale/prenorm
 
 OUTPUT_DIR="./output/oversmoothing_krause"
-OUTPUT_FILE="${DATA}_OVERSMOOTHING_KRAUSE"
+OUTPUT_FILE="${DATA}_OVERSMOOTHING_KRAUSE_CONVIT10"
 
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 1
+    for CONVIT_SLOPE in 10
     do
         for NOISE in 0
         do
@@ -104,11 +104,10 @@ do
                                         --plot_loss --plot_accuracy \
                                         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                                         --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
-                                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos before --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
+                                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
                                         --pool seqpool_multihead --attention_type krause \
                                         --krause_sigma_init $SIGMA_INIT --krause_top_k $TOPK \
                                         --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1
-                                    exit
                                 done
                             done
                         done

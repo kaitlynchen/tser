@@ -1801,11 +1801,6 @@ class Attention_Rel_Scl(nn.Module):
             sparse_attn.scatter_(-1, topk_indices, topk_values)
             attn = sparse_attn / sparse_attn.sum(dim=-1, keepdim=True) # Renormalize so that rows sum to 1 after zeroing out some entries
 
-        print("content_attn", content_attn[6, 2, 30:40, 30:40])
-        print("attn mask", attn_mask[6, 2, 30:40, 30:40])
-        print("attn before hardtopk", attn_before_topk[6, 2, 30:40, 30:40])
-        print("attn after hardtopk", attn[6, 2, 30:40, 30:40])
-
         if attn_mask is not None:
             if plot_dir is not None:
                 if self.where_to_add_relpos == "after_gating":
@@ -1851,11 +1846,6 @@ class Attention_Rel_Scl(nn.Module):
                 fig.suptitle("Attn breakdown, single example (each row is one head)")
                 plt.savefig(os.path.join(plot_dir, 'attention_breakdown.png'))
                 plt.close()
-
-        # Print attn
-                print("attn mask", attn_mask[6, 2, 30:40, 30:40])
-        print("content_attn", content_attn[6, 2, 30:40, 30:40])
-
 
         # AttnScale
         if self.attn_scale:

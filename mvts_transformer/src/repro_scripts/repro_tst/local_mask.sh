@@ -67,13 +67,13 @@ else
     continue
 fi
 
-OUTPUT_DIR="./output/debug_oversmoothing_metrics"
+OUTPUT_DIR="./output/local_mask_test"
 POOL="linear"
-for MASK in 0 
+for MASK in -1 0 4 8
 do
     OUTPUT_FILE="${DATA}_BS=${BS}_LOCALMASK=${MASK}_POOL=${POOL}"
 
-    for SEED in 1
+    for SEED in 0 1 2
     do
         PARAM_STR="SEED=${SEED}"
         python main.py --output_dir "$OUTPUT_DIR" \
