@@ -38,13 +38,15 @@ conda activate tser
 
 # ======================= HYPERPARAMETERS =========================
 BS=128
-EPOCHS=5000
-PATIENCE=5000
+EPOCHS=2000
+PATIENCE=2000
 
 # Dataset
 if [ "$DATA" = "AppliancesEnergy" ]; then
     D_MODEL=128
     D_FEEDFORWARD=512
+    EPOCHS=5000
+    PATIENCE=5000
 elif [ "$DATA" = "BenzeneConcentration" ]; then
     D_MODEL=128
     D_FEEDFORWARD=256
@@ -66,9 +68,10 @@ else
 fi
 
 OUTPUT_DIR="./output/debug_oversmoothing_metrics"
-for MASK in -1 0 2 4
+POOL="linear"
+for MASK in 0 
 do
-    OUTPUT_FILE="${DATA}_BS=128_LOCALMASK=${MASK}_SEQPOOL_MULTIHEAD"
+    OUTPUT_FILE="${DATA}_BS=${BS}_LOCALMASK=${MASK}_POOL=${POOL}"
 
     for SEED in 1
     do
@@ -84,7 +87,7 @@ do
             --optimizer RAdam --task regression \
             --model climax_smooth --patch_length 1 --stride 1 --smooth_attention \
             --pos_encoding learnable \
-            --local_mask $MASK --pool seqpool_multihead \
+            --local_mask $MASK --pool $POOL \
             --plot_loss --plot_accuracy --track_oversmoothing --oversmoothing_epoch_interval 50 --oversmoothing_log_interval 100
     done
 done

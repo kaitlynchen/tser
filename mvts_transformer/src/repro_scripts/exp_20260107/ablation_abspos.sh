@@ -93,7 +93,7 @@ do
                                 --plot_loss --plot_accuracy \
                                 --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                                 --pos_encoding $ABSPOS --where_to_add_abspos $WHERE \
-                                --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE \
+                                --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
                                 --pool seqpool_cls
                         done
                     done
