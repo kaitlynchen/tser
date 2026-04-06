@@ -19,6 +19,7 @@ import sklearn
 
 from utils import utils, analysis, visualization_utils
 from utils.oversmoothing import OverSmoothingMetrics
+from utils.hl_gauss import HLGaussLoss
 from models.loss import l1_reg_loss, l2_reg_loss
 from datasets.dataset import (
     ImputationDataset,
@@ -547,6 +548,8 @@ class SupervisedRunner(BaseRunner):
         else:
             self.classification = False
         
+        self.use_hl_gauss = isinstance(self.loss_module, HLGaussLoss)
+        
         self.oversmoothing_tracker = OverSmoothingMetrics()
 
     def train_epoch(self, config, epoch_num=None, keep_predictions=False, require_padding=False, use_smoothing=False, need_attn_weights=False):
@@ -605,16 +608,34 @@ class SupervisedRunner(BaseRunner):
                 else:
                     predictions = self.model(X, plot_dir=plot_dir)
 
-            if config['normalize_label']:
-                predictions = predictions * config["label_std"] + config["label_mean"]
-            all_predictions.append(predictions.detach().flatten())
+            if self.use_hl_gauss:
+                scalar_predictions = self.loss_module.predict(predictions)
+                if config['normalize_label']:
+                    scalar_predictions = scalar_predictions * config["label_std"] + config["label_mean"]
+                all_predictions.append(scalar_predictions.detach().flatten())
+            else:
+                if config['normalize_label']:
+                    predictions = predictions * config["label_std"] + config["label_mean"]
+                all_predictions.append(predictions.detach().flatten())
             all_targets.append(targets.detach().flatten())
 
-            # (B,) loss for each sample in the batch
-            loss = self.loss_module(predictions, targets)
-            batch_loss = torch.sum(loss)
-            # mean loss (over samples) used for optimization
-            mean_loss = batch_loss / len(loss)
+            batch_size = targets.shape[0]
+            if self.use_hl_gauss:
+                # HL-Gauss returns scalar mean loss directly
+                # Need to use un-normalized targets for loss computation
+                if config['normalize_label']:
+                    targets_for_loss = (targets - config["label_mean"]) / config["label_std"]
+                else:
+                    targets_for_loss = targets
+                mean_loss = self.loss_module(predictions, targets_for_loss)
+                batch_loss = mean_loss * batch_size
+            else:
+                # (B,) loss for each sample in the batch
+                loss = self.loss_module(predictions, targets)
+                batch_loss = torch.sum(loss)
+                batch_size = len(loss)
+                # mean loss (over samples) used for optimization
+                mean_loss = batch_loss / batch_size
 
             if self.l2_reg:
                 total_loss = mean_loss + self.l2_reg * l2_reg_loss(self.model)
@@ -644,15 +665,15 @@ class SupervisedRunner(BaseRunner):
                 attn_smoothness_loss = torch.tensor(0)
                 pool_smoothness_loss = torch.tensor(0)
 
-            supervised_smoothing_loss += (attn_smoothness_loss.item() * config["reg_lambda"] * len(loss))  # put in same scale as batch_loss
-            pool_smoothing_loss += (pool_smoothness_loss.item() * config["reg_lambda_pool"] * len(loss))  # put in same scale as batch_loss
+            supervised_smoothing_loss += (attn_smoothness_loss.item() * config["reg_lambda"] * batch_size)  # put in same scale as batch_loss
+            pool_smoothing_loss += (pool_smoothness_loss.item() * config["reg_lambda_pool"] * batch_size)  # put in same scale as batch_loss
 
             # Positional encoding smoothness loss. TODO - we should also save it so we can plot
             if (config["model"] == "climax_smooth") and (('learnable' in config['pos_encoding']) or ('erpe' in config['relative_pos_encoding']) or (config['relative_pos_encoding'] in ["convit", "convit_half"])):
                 # if config['lambda_posenc_smoothness'] > 0:
                 posenc_loss_batch = self.model.posenc_smoothness_loss(logger)
                 total_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch
-                posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * len(loss)  # put in same scale as batch_loss
+                posenc_loss += config['lambda_posenc_smoothness'] * posenc_loss_batch.item() * batch_size  # put in same scale as batch_loss
             else:
                 assert config['lambda_posenc_smoothness'] == 0
 
@@ -662,23 +683,23 @@ class SupervisedRunner(BaseRunner):
                     locality_loss_batch = self.model.locality_loss_erpe()
                 else:
                     locality_loss_batch = self.model.locality_loss_attention()
-                locality_loss += config["lambda_locality"] * locality_loss_batch.item() * len(loss)  # put in same scale as batch_loss
+                locality_loss += config["lambda_locality"] * locality_loss_batch.item() * batch_size  # put in same scale as batch_loss
                 total_loss += config["lambda_locality"] * locality_loss_batch 
 
             if config["lambda_erpe_linear"] > 0:
                 erpe_linear_loss_batch = self.model.erpe_linear_loss()
-                erpe_linear_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch.item() * len(loss)
+                erpe_linear_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch.item() * batch_size
                 total_loss += config["lambda_erpe_linear"] * erpe_linear_loss_batch
 
             if config["lambda_focus"] > 0:
                 focus_loss_batch = self.model.focus_loss()
-                focus_loss += config["lambda_focus"] * focus_loss_batch.item() * len(loss)
+                focus_loss += config["lambda_focus"] * focus_loss_batch.item() * batch_size
                 total_loss += config["lambda_focus"] * focus_loss_batch
 
             # Jacobian loss
             if config["lambda_jacobian"] > 0:
                 jacobian_loss_batch = self.model.jacobian_loss(X.to(self.device))
-                jacobian_loss += config["lambda_jacobian"] * jacobian_loss_batch.item() * len(loss)
+                jacobian_loss += config["lambda_jacobian"] * jacobian_loss_batch.item() * batch_size
                 total_loss += config["lambda_jacobian"] * jacobian_loss_batch
                 
 
@@ -696,7 +717,7 @@ class SupervisedRunner(BaseRunner):
             #     self.print_callback(i, metrics, prefix="Training " + ending)
 
             with torch.no_grad():
-                total_samples += len(loss)
+                total_samples += batch_size
                 epoch_loss += batch_loss.item()  # add total loss of batch
                 
                 if should_track_batch and embeddings_layers is not None and attn_weights_layers is not None:
@@ -763,19 +784,42 @@ class SupervisedRunner(BaseRunner):
                 else:
                     predictions = self.model(X.to(self.device), plot_dir=plot_dir)
 
-            if config['normalize_label']:
-                predictions = predictions * config["label_std"] + config["label_mean"]
-            all_predictions.append(predictions.flatten().cpu().detach().numpy())
+            if self.use_hl_gauss:
+                scalar_predictions = self.loss_module.predict(predictions)
+                if config['normalize_label']:
+                    scalar_predictions = scalar_predictions * config["label_std"] + config["label_mean"]
+                all_predictions.append(scalar_predictions.flatten().cpu().detach().numpy())
+                predictions_for_batch = scalar_predictions
+            else:
+                if config['normalize_label']:
+                    predictions = predictions * config["label_std"] + config["label_mean"]
+                all_predictions.append(predictions.flatten().cpu().detach().numpy())
+                predictions_for_batch = predictions
             all_targets.append(targets.flatten().cpu().detach().numpy())
 
-            # (batch_size,) loss for each sample in the batch
-            loss = self.loss_module(predictions, targets)
-            batch_loss = torch.sum(loss).cpu().item()
-            mean_loss = batch_loss / len(loss)  # mean loss (over samples)
+            if self.use_hl_gauss:
+                if config['normalize_label']:
+                    targets_for_loss = (targets - config["label_mean"]) / config["label_std"]
+                else:
+                    targets_for_loss = targets
+
+                mean_loss = self.loss_module(predictions, targets_for_loss).cpu().item()
+                batch_loss = mean_loss * targets.shape[0]
+                batch_size = targets.shape[0]
+            else:
+                # (batch_size,) loss for each sample in the batch
+                loss = self.loss_module(predictions, targets)
+                batch_loss = torch.sum(loss).cpu().item()
+                mean_loss = batch_loss / len(loss)  # mean loss (over samples)
+                batch_size = len(loss)
 
             per_batch["targets"].append(targets.cpu().numpy())
-            per_batch["predictions"].append(predictions.cpu().numpy())
-            per_batch["metrics"].append(loss.cpu().numpy())
+            per_batch["predictions"].append(predictions_for_batch.cpu().detach().numpy())
+            if self.use_hl_gauss:
+                per_batch["metrics"].append(np.full(batch_size, mean_loss))
+            else:
+                per_batch["metrics"].append(loss.cpu().numpy())
+
             per_batch["IDs"].append(np.array(IDs))
 
             metrics = {"loss": mean_loss}
@@ -783,7 +827,7 @@ class SupervisedRunner(BaseRunner):
             #     ending = "" if epoch_num is None else "Epoch {} ".format(epoch_num)
             #     self.print_callback(i, metrics, prefix="Evaluating " + ending)
 
-            total_samples += len(loss)
+            total_samples += batch_size
             epoch_loss += batch_loss  # add total loss of batch
 
         # average loss per element for whole epoch

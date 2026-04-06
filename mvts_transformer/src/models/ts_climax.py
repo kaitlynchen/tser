@@ -65,6 +65,11 @@ def model_factory(config, data):
         # dimensionality of labels
         num_labels = len(
             data.class_names) if task == "classification" else data.labels_df.shape[1]
+        
+        # For HL-Gauss regression, output num_bins instead of num_labels
+        if task == "regression" and config.get('regression_loss', 'mse') == 'hl_gauss':
+            num_labels = config['hl_gauss_num_bins']
+        
         if config['model'] == 'climax_smooth':
             return ClimaX(list([feat_dim]), device=config['device'], img_size=list(data.feature_df.shape), max_seq_len=max_seq_len, patch_size=config['patch_length'],
                           stride=config['stride'], embed_dim=config['d_model'], depth=config['num_layers'], decoder_depth=config['num_decoder_layers'],
@@ -85,10 +90,12 @@ def model_factory(config, data):
                           convit_slope=config['convit_slope'],
                           alibi_min_slope=config['alibi_min_slope'],
                           alibi_max_slope=config['alibi_max_slope'],
-                          pool=config['pool'],
-                          attention_type=config['attention_type'],
-                          learnable_scale=config.get('learnable_scale', False),
-                          lambda_neutreno=config['lambda_neutreno'],
+                         pool=config['pool'],
+                         attention_type=config['attention_type'],
+                         learnable_scale=config.get('learnable_scale', False),
+                         krause_sigma_init=config.get('krause_sigma_init', 1.0),
+                         krause_top_k=config.get('krause_top_k', -1),
+                         lambda_neutreno=config['lambda_neutreno'],
                           attn_scale=config['attn_scale'],
                           feat_scale=config['feat_scale'],
                           centered_attn=config['centered_attn'],
@@ -168,6 +175,8 @@ class ClimaX(nn.Module):
         alibi_min_slope=0.25,
         attention_type='dot',
         learnable_scale=False,
+        krause_sigma_init=1.0,
+        krause_top_k=-1,
         lambda_neutreno=0.,
         attn_scale=False,
         feat_scale=False,
@@ -204,6 +213,8 @@ class ClimaX(nn.Module):
         self.pool = pool
         self.attention_type = attention_type
         self.learnable_scale = learnable_scale
+        self.krause_sigma_init = krause_sigma_init
+        self.krause_top_k = krause_top_k
         self.lambda_neutreno = lambda_neutreno
         self.attn_scale = attn_scale
         self.feat_scale = feat_scale
@@ -267,6 +278,7 @@ class ClimaX(nn.Module):
             encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos,
                 conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale,
+                krause_sigma_init=krause_sigma_init, krause_top_k=krause_top_k,
                 lambda_neutreno=lambda_neutreno, attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn, pre_norm=self.pre_norm,
                 qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias)
         
@@ -877,14 +889,15 @@ class ClimaX(nn.Module):
 
             # Create a plot, where each row is an exmaple, and each column is a layer.
             # Plot distances between timestep feature vectors at each layer
-            n_rows = 5  # Examples to plot
             n_cols = len(feature_distances_layers)
+            batch_size = feature_distances_layers[0].shape[0]
+            n_rows = min(5, batch_size) 
             # feature_distances_layers = torch.stack(feature_distances_layers, dim=1)  # List of [B, T, T] -> [B, L, T, T]
             min_value, max_value = utils.approx_min_max(feature_distances_layers) #, torch_rng)
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
             for r in range(n_rows):
                 for c in range(n_cols):
-                    im = axeslist[r, c].imshow(feature_distances_layers[r][c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    im = axeslist[r, c].imshow(feature_distances_layers[c][r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     if r == 0:
                         if c == 0:
                             axeslist[r, c].set_title("Initial input")
@@ -906,7 +919,7 @@ class ClimaX(nn.Module):
             fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout='constrained')
             for r in range(n_rows):
                 for c in range(n_cols):
-                    im = axeslist[r, c].imshow(similarity_matrix_layers[r][c, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
+                    im = axeslist[r, c].imshow(similarity_matrix_layers[c][r, :, :].detach().cpu().numpy(), vmin=min_value, vmax=max_value)
                     if r == 0:
                         if c == 0:
                             axeslist[r, c].set_title("Initial input")
@@ -1446,6 +1459,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none',
                  where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False,
+                 krause_sigma_init=1.0, krause_top_k=-1,
                  lambda_neutreno=0.0, attn_scale=False, feat_scale=False, centered_attn=False, pre_norm=False,
                  qkv_identity_init=False, tied_qk=False, key_bias=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
@@ -1463,6 +1477,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection,
                                             where_to_add_relpos=where_to_add_relpos,
                                             attention_type=attention_type, learnable_scale=learnable_scale,
+                                            krause_sigma_init=krause_sigma_init, krause_top_k=krause_top_k,
                                             attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn,
                                             qkv_identity_init=qkv_identity_init, tied_qk=tied_qk)
 
@@ -1587,6 +1602,7 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 class Attention_Rel_Scl(nn.Module):
     def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos,
                  attention_type='dot', learnable_scale=False,
+                 krause_sigma_init=1.0, krause_top_k=-1,
                  attn_scale=False, feat_scale=False, centered_attn=False, 
                  qkv_identity_init=False, tied_qk=False, key_bias=False, **kwargs):
         super().__init__()
@@ -1595,11 +1611,19 @@ class Attention_Rel_Scl(nn.Module):
         self.where_to_add_relpos = where_to_add_relpos
         self.attention_type = attention_type
         self.learnable_scale = learnable_scale
+        self.krause_top_k = krause_top_k
+        
         if learnable_scale:
             self.scale = nn.Parameter(torch.tensor((emb_size / num_heads) ** -0.5), requires_grad=True)
         else:
             self.scale = (emb_size / num_heads) ** -0.5
             # self.scale = emb_size ** -0.5 # ONLY PUTING HERE FOR REPRO TODO
+        
+        # Krause attention: learnable sigma per head for RBF kernel
+        if attention_type == 'krause':
+            self.krause_sigma = nn.Parameter(
+                torch.full((num_heads,), krause_sigma_init), requires_grad=True
+            )  # [H]
 
         # Attention/feature scaling: for mitigating oversmoothness
         self.attn_scale = attn_scale
@@ -1719,6 +1743,17 @@ class Attention_Rel_Scl(nn.Module):
                 
                 # Negative squared L2 distance (higher similarity = smaller distance)
                 content_attn = -0.5 * (q_norm_sq + k_norm_sq - 2 * dot_product) * self.scale
+            elif self.attention_type == 'krause':
+                # ||q_i - k_j||^2 = ||q_i||^2 + ||k_j||^2 - 2*q_i^T*k_j
+                q_norm_sq = torch.sum(q**2, dim=-1, keepdim=True)  # [B, H, T, 1]
+                k_norm_sq = torch.sum(k**2, dim=-2, keepdim=True)  # [B, H, 1, T]
+                dot_product = torch.matmul(q, k)  # [B, H, T, T]
+                
+                dist_sq = q_norm_sq + k_norm_sq - 2 * dot_product  # [B, H, T, T]
+                
+                # RBF kernel: s_i,j = exp(-dist_sq / (2 * sigma^2))
+                sigma_sq = (self.krause_sigma ** 2).view(1, -1, 1, 1)  # [1, H, 1, 1]
+                content_attn = torch.exp(-dist_sq / (2 * sigma_sq + 1e-8))  # [B, H, T, T]
             else:
                 # Standard dot-product attention
                 content_attn = torch.einsum('bhlk,bhkt->bhlt', [q, k]) * self.scale  # [B, H, T, T]
@@ -1758,18 +1793,34 @@ class Attention_Rel_Scl(nn.Module):
         if attn_mask is not None:
             # Reshape attn_mask from [B*H, T, T] to [B, H, T, T]
             attn_mask = rearrange(attn_mask, '(b h) t0 t1 -> b h t0 t1', h=self.num_heads)
-            # print("ATTNMASK Offset mask", attn_mask.shape, attn_mask[0, 0, 0:8, 0:8])
-            # print("Offset mask", attn_mask[0, 1, 0:8, 0:8])
-            # print("Offset mask", attn_mask[0, 2, 0:8, 0:8])
-            # print("Offset mask", attn_mask[0, 3, 0:8, 0:8])
-            # print("Offset mask", attn_mask[0, 5, 0:8, 0:8])
-            # print("Offset mask", attn_mask[0, 7, 0:8, 0:8])
 
             # If certain entries were masked out in attn_mask, also mask them out in content_attn. This is necessary if where_to_add_relpos is after_gating.
-            content_attn[torch.isneginf(attn_mask)] = float('-inf')
+            mask_neginf = torch.isneginf(attn_mask)
+            if self.attention_type == 'krause':
+                content_attn = torch.where(mask_neginf, torch.zeros_like(content_attn), content_attn)
+            else:
+                content_attn = torch.where(mask_neginf, torch.full_like(content_attn, float('-inf')), content_attn)
 
-        # Perform softmax
-        if (self.where_to_add_relpos in ['before', 'only_relpos']) and attn_mask is not None:
+        # Perform normalization
+        if self.attention_type == 'krause':
+            # Krause attention with optional relative position bias and top-k sparsity
+            
+            # Add relative position bias before top-k selection
+            # Adding full attn_mask (including -inf) ensures masked positions are never selected by top-k
+            if attn_mask is not None and self.where_to_add_relpos == 'before':
+                content_attn = content_attn + attn_mask
+            
+            if self.krause_top_k > 0:
+                B, H, T, _ = content_attn.shape
+                k = min(self.krause_top_k, T)                
+
+                topk_values, topk_indices = torch.topk(content_attn, k, dim=-1)  # [B, H, T, k]
+                sparse_attn = torch.full_like(content_attn, float('-inf'))
+                sparse_attn.scatter_(-1, topk_indices, topk_values)
+                content_attn = sparse_attn
+            
+            attn = F.softmax(content_attn, dim=-1)
+        elif (self.where_to_add_relpos in ['before', 'only_relpos']) and attn_mask is not None:
             # Add mask (relative position encoding) before softmax if specified
             attn = F.softmax(content_attn + attn_mask, dim=-1)
 
