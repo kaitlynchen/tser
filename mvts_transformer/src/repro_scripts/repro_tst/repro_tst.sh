@@ -19,7 +19,7 @@
 # Request 1 V100 GPU
 #SBATCH --gpus v100:1
 # Request 4 CPU cores (8 hyperthreads).
-#SBATCH -c 8
+#SBATCH -c 4
 # Specify the resources should be assigned to a single task on one node.
 #SBATCH -N 1 -n 1
 # Request a total of 80GB RAM
@@ -97,7 +97,7 @@ fi
 # done
 
 OUTPUT_DIR="./output/repro_zerveas_20260406_CLIMAX_NOATTNDROPOUT"
-OUTPUT_FILE="${DATA}_repro_zerveas_20260406_CLIMAX_NOATTNDROPOUT_v2"
+OUTPUT_FILE="${DATA}_repro_zerveas_20260406_CLIMAX_NOATTNDROPOUT"
 
 for SEED in 0 1 2
 do

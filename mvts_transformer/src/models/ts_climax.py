@@ -1718,7 +1718,9 @@ class Attention_Rel_Scl(nn.Module):
                 
                 # RBF kernel: s_i,j = exp(-dist_sq / (2 * sigma^2))
                 sigma_sq = (self.krause_sigma ** 2).view(1, -1, 1, 1)  # [1, H, 1, 1]
-                content_attn = torch.exp(-dist_sq / (2 * sigma_sq + 1e-8))  # [B, H, T, T]
+
+                # NOTE: Removed exp, as the exp will be added back in the softmax
+                content_attn = -dist_sq / (2 * sigma_sq + 1e-8)  # [B, H, T, T]
             else:
                 # Standard dot-product attention
                 content_attn = torch.einsum('bhlk,bhkt->bhlt', [q, k]) * self.scale  # [B, H, T, T]
@@ -1805,12 +1807,20 @@ class Attention_Rel_Scl(nn.Module):
             if plot_dir is not None:
                 if self.where_to_add_relpos == "after_gating":
                     print("Gating (Pr position)", torch.sigmoid(self.gating_param))
+                    # print("attn mask without softmax", attn_mask[0, 4, 25:35, 25:35])
+                    # print("attn mask without softmax", attn_mask[0, 8, 25:35, 25:35])
+                    # print("attn mask without softmax", attn_mask[0, 10, 25:35, 25:35])
+                    # print("attn mask without softmax", attn_mask[0, 12, 25:35, 25:35])
+                    # print("Nonzero before topk", torch.count_nonzero(attn_before_topk[0, 8, :, :], dim=-1))
+                    # print("Nonzero", torch.count_nonzero(attn[0, 8, :, :], dim=-1))
+                    # print("Content attn", content_attn[0, 8, 0:10, 0:10])
+                    # exit(1)
 
                 # PLOTTING ONLY
                 # Plot attention breakdown (content/position) for a single example, 'n_rows' heads
                 n_rows = 8
                 n_cols = 4 if self.attention_type == 'krause' else 3
-                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows), layout="constrained", squeeze=False)
+                fig, axeslist = plt.subplots(n_rows, n_cols, figsize=(2.5*n_cols, 2*n_rows), layout="constrained", squeeze=False)
 
                 for r in range(n_rows):
                     head_num = r * (attn.shape[1] // n_rows)
@@ -1820,6 +1830,7 @@ class Attention_Rel_Scl(nn.Module):
                         pos_attn_head = F.softmax(attn_mask[0, head_num, :, :], dim=-1)
                     else:
                         pos_attn_head = attn_mask[0, head_num, :, :]
+
                     total_attn_head = attn_before_topk[0, head_num, :, :]
                     axeslist[r, 0].imshow(content_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
                     axeslist[r, 1].imshow(pos_attn_head.detach().cpu().numpy(), vmin=0, vmax=max_value)
@@ -1841,7 +1852,8 @@ class Attention_Rel_Scl(nn.Module):
                             axeslist[r, 1].set_title("Position attn\n(unnormalized)")
                             axeslist[r, 2].set_title("Combined:\nsoftmax(Content) + Position")
                         if self.attention_type == 'krause':
-                            axeslist[r, 3].set_title(f"After Krause top-{self.krause_top_k}")
+                            axeslist[r, 3].set_title(f"After top-{self.krause_top_k}")
+
                 fig.colorbar(im, ax=axeslist[r])
                 fig.suptitle("Attn breakdown, single example (each row is one head)")
                 plt.savefig(os.path.join(plot_dir, 'attention_breakdown.png'))

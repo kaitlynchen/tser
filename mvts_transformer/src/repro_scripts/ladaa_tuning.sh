@@ -20,11 +20,11 @@
 # Request 1 V100 GPU
 #SBATCH --gpus v100:1
 # Request 4 CPU cores (8 hyperthreads).
-#SBATCH -c 8
+#SBATCH -c 4
 # Specify the resources should be assigned to a single task on one node.
 #SBATCH -N 1 -n 1
 # Request a total of 80GB RAM
-#SBATCH --mem=20GB
+#SBATCH --mem=100GB
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
@@ -63,38 +63,41 @@ fi
 
 
 # OUTPUT FILE
-OUTPUT_DIR="./output/LADAA3_20260223"
-OUTPUT_FILE="LADAA3_20260223_${DATA}"
+OUTPUT_DIR="./output/LADAA4_20260407_STARTCONCAT"
+OUTPUT_FILE="LADAA4_20260407_STARTCONCAT_LAYERS_${DATA}"
 
 # TUNING
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 0.1 1 10
+    for CONVIT_SLOPE in 1
     do
-        for HEADS in 16
+        for LAYERS in 1 2
         do
-            for SMOOTH in 0 1e-3 
+            for HEADS in 16
             do
-                for L1 in 0 1e-3
+                for SMOOTH in 0 
                 do
-                    for SEED in 0
+                    for L1 in 0
                     do
-                        # BASIC
-                        PARAM_STR="LR=${LR}_POOLSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
-                        python main.py --output_dir "$OUTPUT_DIR" \
-                            --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                            --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
-                            --data_dir $DATA_DIR --data_class tsra \
-                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                            --epochs 2000 --patience $PATIENCE \
-                            --lr $LR --batch_size $BS \
-                            --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                            --optimizer RAdam --task regression \
-                            --plot_loss --plot_accuracy \
-                            --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                            --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
-                            --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1
+                        for SEED in 0
+                        do
+                            # BASIC
+                            PARAM_STR="LR=${LR}_POOLSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+                            python main.py --output_dir "$OUTPUT_DIR" \
+                                --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                                --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                                --data_dir $DATA_DIR --data_class tsra \
+                                --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                                --epochs 2000 --patience $PATIENCE \
+                                --lr $LR --batch_size $BS \
+                                --num_layers $LAYERS --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                                --optimizer RAdam --task regression \
+                                --plot_loss --plot_accuracy \
+                                --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                                --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
+                                --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 10 \
+                                --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1 --num_workers 4
+                        done
                     done
                 done
             done

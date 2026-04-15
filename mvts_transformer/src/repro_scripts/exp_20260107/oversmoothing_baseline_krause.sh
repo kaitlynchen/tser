@@ -19,11 +19,11 @@
 # Request 1 V100 GPU
 #SBATCH --gpus v100:1
 # Request 4 CPU cores (8 hyperthreads).
-#SBATCH -c 8
+#SBATCH -c 4
 # Specify the resources should be assigned to a single task on one node.
 #SBATCH -N 1 -n 1
-# Request a total of 80GB RAM
-#SBATCH --mem=80GB
+# Request a total of 120GB RAM
+#SBATCH --mem=120GB
 # Request a walltime limit of 72 hours
 #SBATCH -t 72:00:00
 
@@ -35,6 +35,7 @@ DATA_DIR="/mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/"  # TODO: Change thi
 # ========== ACTIVATE ENVIRONMENT (TODO: Change this!!!) ==========
 source ~/.bashrc
 conda activate tser
+
 # ======================= HYPERPARAMETERS =========================
 # Default settings
 BS=128
@@ -68,24 +69,24 @@ fi
 # 4) Attn smoothing
 # 5) L2 attn/learnable scale/prenorm
 
-OUTPUT_DIR="./output/oversmoothing_krause"
-OUTPUT_FILE="${DATA}_OVERSMOOTHING_KRAUSE_CONVIT10"
+OUTPUT_DIR="./output/krause_qkvidentity_2LAYER_20260407"
+OUTPUT_FILE="${DATA}_KRAUSE_QKVIDENTITY_2LAYER_20260407"
 
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 10
+    for CONVIT_SLOPE in 1
     do
         for NOISE in 0
         do
             for HEADS in 16
             do
-                for SMOOTH in 1e-3
+                for SMOOTH in 0 1e-4 1e-2
                 do
-                    for L1 in 0 
+                    for L1 in 0
                     do
-                        for SIGMA_INIT in 0.1 1 10
+                        for SIGMA_INIT in 3
                         do
-                            for TOPK in 8 16
+                            for TOPK in 4 16
                             do
                                 for SEED in 0
                                 do
@@ -99,15 +100,16 @@ do
                                         --pattern TRAIN --val_ratio 0.2 $SPLIT \
                                         --epochs 2000 --patience $PATIENCE \
                                         --lr $LR --batch_size $BS --input_noise_std $NOISE \
-                                        --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                                        --num_layers 2 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
                                         --optimizer RAdam --task regression \
                                         --plot_loss --plot_accuracy \
                                         --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
                                         --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
-                                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
+                                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating \
+                                        --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 10 \
                                         --pool seqpool_multihead --attention_type krause \
                                         --krause_sigma_init $SIGMA_INIT --krause_top_k $TOPK \
-                                        --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1
+                                        --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1 --qkv_identity_init --num_workers 4
                                 done
                             done
                         done
