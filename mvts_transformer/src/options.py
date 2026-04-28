@@ -180,8 +180,6 @@ class Options(object):
                                  help="""Only applicable for ClimaX. If set to a non-negative integer, restrict attention to tokens within this distance""")
         self.parser.add_argument('--causal_mask', action='store_true',
                                  help="""Only applicable for ClimaX. If set, uses causal mask in self-attention.""")
-        self.parser.add_argument('--residual_weight', action='store_true',
-                                 help="""Only applicable for ClimaX. If set, allows the model to learn how much of the residual connection to use, by multiplying the residual by a learnable parameter.""")
         self.parser.add_argument('--reg_lambda', type=float, default=0,
                                  help="""Regularizing weight for loss from attention smoothing.""")
         self.parser.add_argument('--reg_lambda_pool', type=float, default=0,
@@ -200,7 +198,7 @@ class Options(object):
                                  help="""Initial value for learnable sigma in Krause attention RBF kernel.""")
         self.parser.add_argument('--krause_top_k', type=int, default=-1,
                                  help="""Top-k sparsity for Krause attention. -1 means no sparsity (use all tokens in window). Combine with --local_mask for bounded-confidence behavior.""")
-        
+
         # Oversmoothing tracking
         self.parser.add_argument('--track_oversmoothing', action='store_true',
                                  help="Track oversmoothing metrics (effective rank, cosine similarity, attention entropy, high-freq ratio)")
@@ -210,6 +208,8 @@ class Options(object):
                                  help="Compute oversmoothing metrics every N epochs (default: 1)")
         self.parser.add_argument('--pre_norm', action='store_true',
                                  help="""If set, normalize before attention.""")
+        self.parser.add_argument('--residual_weight', action='store_true',
+                                 help="""Only applicable for ClimaX. If set, allows the model to learn how much of the residual connection to use, by multiplying the residual by a learnable parameter.""")
         self.parser.add_argument('--qkv_identity_init', action='store_true',
                                  help="""If set, initialize W_Q, W_K, and W_V matrices to identity, so that at the beginning of training, attention is simply dot product similarity between input tokens. Only applicable if not using conv_projection.""")
         self.parser.add_argument('--tied_qk', action='store_true',
