@@ -50,6 +50,10 @@ class Normalizer(object):
                 self.std = df.std()
             return (df - self.mean) / (self.std + np.finfo(float).eps)
 
+        elif self.norm_type == "standardization_per_timestep":
+            # Standardize according to the mean/std of EACH VARIABLE AT EACH TIMESTEP
+            pass
+
         elif self.norm_type == "minmax":
             if self.max_val is None:
                 self.max_val = df.max()

@@ -69,47 +69,50 @@ fi
 # 4) Attn smoothing
 # 5) L2 attn/learnable scale/prenorm
 
-OUTPUT_DIR="./output/krause_qkvidentity_2LAYER_20260407"
-OUTPUT_FILE="${DATA}_KRAUSE_QKVIDENTITY_2LAYER_20260407"
+OUTPUT_DIR="./output/krause_20260418"
+OUTPUT_FILE="${DATA}_KRAUSE_20260418"
 
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 1
+    for CONVIT_SLOPE in 1 10
     do
         for NOISE in 0
         do
             for HEADS in 16
             do
-                for SMOOTH in 0 1e-4 1e-2
+                for SMOOTH in 1e-3
                 do
                     for L1 in 0
                     do
-                        for SIGMA_INIT in 3
+                        for LAMBDA_INPUT_GRAD in 0 1e-4 1e-3 1e-2
                         do
-                            for TOPK in 4 16
+                            for SIGMA_INIT in 3
                             do
-                                for SEED in 0
+                                for TOPK in 8
                                 do
-                                    PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_LAM=${LAM}_HEADS=${HEADS}"
+                                    for SEED in 0
+                                    do
+                                        PARAM_STR="LR=${LR}_SLOPE=${CONVIT_SLOPE}_LAM=${LAM}_HEADS=${HEADS}_INPUTGRAD=${LAMBDA_INPUT_GRAD}"
 
-                                    # Baseline, convalibi init relpos, before softmax
-                                    python main.py --output_dir "$OUTPUT_DIR" \
-                                        --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                                        --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
-                                        --data_dir $DATA_DIR --data_class tsra \
-                                        --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                                        --epochs 2000 --patience $PATIENCE \
-                                        --lr $LR --batch_size $BS --input_noise_std $NOISE \
-                                        --num_layers 2 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                                        --optimizer RAdam --task regression \
-                                        --plot_loss --plot_accuracy \
-                                        --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                                        --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
-                                        --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating \
-                                        --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 10 \
-                                        --pool seqpool_multihead --attention_type krause \
-                                        --krause_sigma_init $SIGMA_INIT --krause_top_k $TOPK \
-                                        --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1 --qkv_identity_init --num_workers 4
+                                        # Baseline, convalibi init relpos, before softmax
+                                        python main.py --output_dir "$OUTPUT_DIR" \
+                                            --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                                            --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                                            --data_dir $DATA_DIR --data_class tsra \
+                                            --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                                            --epochs 2000 --patience $PATIENCE \
+                                            --lr $LR --batch_size $BS --input_noise_std $NOISE \
+                                            --num_layers 3 --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                                            --optimizer RAdam --task regression \
+                                            --plot_loss --plot_accuracy \
+                                            --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                                            --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
+                                            --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating \
+                                            --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
+                                            --pool seqpool_multihead --attention_type krause --qkv_identity_init \
+                                            --krause_sigma_init $SIGMA_INIT --krause_top_k $TOPK \
+                                            --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1 --lambda_input_grad $LAMBDA_INPUT_GRAD --num_workers 4 --centered_attn
+                                    done
                                 done
                             done
                         done

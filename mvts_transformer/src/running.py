@@ -557,7 +557,7 @@ class SupervisedRunner(BaseRunner):
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
-        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss = 0, 0, 0, 0, 0, 0, 0, 0
+        supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss, input_grad_loss = 0, 0, 0, 0, 0, 0, 0, 0, 0
         all_predictions, all_targets = [], []
         
         self.oversmoothing_tracker.reset()
@@ -701,7 +701,60 @@ class SupervisedRunner(BaseRunner):
                 jacobian_loss_batch = self.model.jacobian_loss(X.to(self.device))
                 jacobian_loss += config["lambda_jacobian"] * jacobian_loss_batch.item() * batch_size
                 total_loss += config["lambda_jacobian"] * jacobian_loss_batch
+
+            # Input gradient regularization (penalize gradient of prediction w.r.t. inputs)
+            # TODO May be the same thing as jacobian loss
+            if config["lambda_input_grad"] > 0:
+                # Create mixup-interpolated points between random pairs of samples in batch
+                batch_idx = torch.arange(batch_size, device=self.device)
+                # Randomly permute batch to create pairs
+                perm_idx = torch.randperm(batch_size, device=self.device)
+                X_pair = X[perm_idx]
                 
+                # Random mixing coefficients (alpha in [-0.5, 1.5])
+                alpha =  2* torch.rand(batch_size, 1, 1, device=self.device) - 0.5
+                X_mixed = alpha * X + (1 - alpha) * X_pair
+                X_mixed.requires_grad_(True)
+                
+                # Forward pass on mixed inputs
+                if require_padding:
+                    if need_attn_weights or should_track_batch:
+                        result = self.model(X_mixed, padding_masks, plot_dir=None, return_embeddings=False)
+                        if should_track_batch:
+                            pred_mixed = result[0]
+                        else:
+                            pred_mixed = result[0] if isinstance(result, tuple) else result
+                    else:
+                        pred_mixed = self.model(X_mixed, padding_masks)
+                else:
+                    if need_attn_weights or should_track_batch:
+                        result = self.model(X_mixed, plot_dir=None, return_embeddings=False)
+                        if should_track_batch:
+                            pred_mixed = result[0]
+                        else:
+                            pred_mixed = result[0] if isinstance(result, tuple) else result
+                    else:
+                        pred_mixed = self.model(X_mixed, plot_dir=None)
+                
+                # Compute mean prediction (scalar) for gradient computation
+                pred_mixed_mean = pred_mixed.mean()
+                
+                # Compute gradient of prediction w.r.t. input
+                grad_input = torch.autograd.grad(
+                    outputs=pred_mixed_mean,
+                    inputs=X_mixed,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True
+                )[0]
+                
+                # Regularization: penalize L2 norm of gradients
+                # Reduce over time and feature dimensions, average over batch
+                input_grad_norm = torch.norm(grad_input.view(batch_size, -1), p=2, dim=1).mean()
+                input_grad_loss_batch = input_grad_norm
+                
+                input_grad_loss += config["lambda_input_grad"] * input_grad_loss_batch.item() * batch_size
+                total_loss += config["lambda_input_grad"] * input_grad_loss_batch
 
             # Zero gradients, perform a backward pass, and update the weights.
             self.optimizer.zero_grad()
@@ -734,6 +787,7 @@ class SupervisedRunner(BaseRunner):
         erpe_linear_loss = erpe_linear_loss / total_samples
         focus_loss = focus_loss / total_samples
         jacobian_loss = jacobian_loss / total_samples
+        input_grad_loss = input_grad_loss / total_samples
 
         self.epoch_metrics["epoch"] = epoch_num
         self.epoch_metrics["loss"] = epoch_loss
@@ -741,7 +795,7 @@ class SupervisedRunner(BaseRunner):
         oversmoothing_summary = self.oversmoothing_tracker.get_epoch_summary() if track_oversmoothing else None
 
         if keep_predictions:
-            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss, oversmoothing_summary
+            return self.epoch_metrics, torch.cat(all_predictions, dim=0), torch.cat(all_targets, dim=0), supervised_loss, supervised_smoothing_loss, pool_smoothing_loss, posenc_loss, locality_loss, erpe_linear_loss, focus_loss, jacobian_loss, input_grad_loss, oversmoothing_summary
 
         return self.epoch_metrics
 

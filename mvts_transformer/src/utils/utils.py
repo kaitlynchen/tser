@@ -144,14 +144,17 @@ def get_batch_kde_mixup_idx(args, Batch_X, Batch_Y, device):
     return idx2
 
 def generate_mixup_data(args, X1, Y1, device):
-    # lambd = np.random.beta(args["mix_alpha"], args["mix_alpha"])
-    lambd = torch.distributions.beta.Beta(args["mix_alpha"], args["mix_alpha"]).sample((X1.shape[0],)).to(device)
+    lambd = np.random.beta(args["mix_alpha"], args["mix_alpha"]) # NOTE 
+    # lambd = torch.distributions.beta.Beta(args["mix_alpha"], args["mix_alpha"]).sample((X1.shape[0],)).to(device)
     idx2 = get_batch_kde_mixup_idx(args, X1, Y1, device)
     X2 = X1[idx2]
     Y2 = Y1[idx2]
     # print("mixup shapes", X1.shape, Y1.shape, X2.shape, Y2.shape, lambd.shape)
-    mixup_X = X1 * lambd[:, None, None] + X2 * (1 - lambd)[:, None, None]
-    mixup_Y = Y1 * lambd[:, None] + Y2 * (1 - lambd)[:, None]
+    # mixup_X = X1 * lambd[:, None, None] + X2 * (1 - lambd)[:, None, None]
+    # mixup_Y = Y1 * lambd[:, None] + Y2 * (1 - lambd)[:, None]
+
+    mixup_X = X1 * lambd + X2 * (1 - lambd)
+    mixup_Y = Y1 * lambd + Y2 * (1 - lambd)
     return mixup_X, mixup_Y
 
 ############################################################################################

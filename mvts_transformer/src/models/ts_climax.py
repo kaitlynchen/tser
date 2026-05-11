@@ -93,6 +93,7 @@ def model_factory(config, data):
                          pool=config['pool'],
                          attention_type=config['attention_type'],
                          learnable_scale=config.get('learnable_scale', False),
+                         old_scale=config.get('old_scale', False),
                          krause_sigma_init=config.get('krause_sigma_init', 1.0),
                          krause_top_k=config.get('krause_top_k', -1),
                          lambda_neutreno=config['lambda_neutreno'],
@@ -103,7 +104,8 @@ def model_factory(config, data):
                           qkv_identity_init=config['qkv_identity_init'],
                           tied_qk=config['tied_qk'],
                           key_bias=config['key_bias'],
-                          residual_weight=config['residual_weight'])
+                          residual_weight=config['residual_weight'],
+                          skip_out_proj=config.get('skip_out_proj', False))
     else:
         raise ValueError("Model class for task '{}' does not exist".format(task))
 
@@ -176,6 +178,7 @@ class ClimaX(nn.Module):
         alibi_min_slope=0.25,
         attention_type='dot',
         learnable_scale=False,
+        old_scale=False,
         krause_sigma_init=1.0,
         krause_top_k=-1,
         lambda_neutreno=0.,
@@ -187,6 +190,7 @@ class ClimaX(nn.Module):
         tied_qk=False,
         key_bias=False,
         residual_weight=False,
+        skip_out_proj=False,
     ):
         super().__init__()
 
@@ -215,6 +219,7 @@ class ClimaX(nn.Module):
         self.pool = pool
         self.attention_type = attention_type
         self.learnable_scale = learnable_scale
+        self.old_scale = old_scale
         self.krause_sigma_init = krause_sigma_init
         self.krause_top_k = krause_top_k
         self.lambda_neutreno = lambda_neutreno
@@ -280,10 +285,10 @@ class ClimaX(nn.Module):
         else:
             encoder_layer = TransformerBatchNormEncoderLayer(
                 embed_dim, num_heads, feedforward_dim, drop_rate * (1.0 - freeze), where_to_add_relpos=where_to_add_relpos,
-                conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale,
+                conv_projection=conv_projection, attention_type=attention_type, learnable_scale=learnable_scale, old_scale=old_scale,
                 krause_sigma_init=krause_sigma_init, krause_top_k=krause_top_k,
                 lambda_neutreno=lambda_neutreno, attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn, pre_norm=self.pre_norm,
-                qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias, residual_weight=residual_weight)
+                qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias, residual_weight=residual_weight, skip_out_proj=skip_out_proj)
         
         # Create TransformerEncoder with multiple layers
         self.transformer_encoder = TransformerEncoder(encoder_layer, depth)
@@ -704,7 +709,11 @@ class ClimaX(nn.Module):
                 x = rearrange(x, "b t_orig v -> b v t_orig")
                 x = x.unfold(dimension=-1, size=self.patch_size, step=self.stride) # [B, V, T (num_patches), P (patch_size)]
                 x = rearrange(x, "b v t p -> b t (v p)")  # [B, T, V*P]
-            x = self.embed_layer(x) * math.sqrt(self.content_embed_dim)  # [B, T, D]. TODO Changed to match ts_transformer
+            
+            if self.old_scale:
+                x = self.embed_layer(x)
+            else:
+                x = self.embed_layer(x) * math.sqrt(self.content_embed_dim)  # [B, T, D]. TODO Changed to match ts_transformer
 
         # Add ABSOLUTE pos embedding if using.
         # At this point, X should be [B, T, D], and pos_embed should be [T, D]. (T = number of patches along time dimension)
@@ -1415,10 +1424,10 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
     """
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, relative_pos_encoding='none',
-                 where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False,
+                 where_to_add_relpos='before', conv_projection=False, attention_type='dot', learnable_scale=False, old_scale=False,
                  krause_sigma_init=1.0, krause_top_k=-1,
                  lambda_neutreno=0.0, attn_scale=False, feat_scale=False, centered_attn=False, pre_norm=False,
-                 qkv_identity_init=False, tied_qk=False, key_bias=False, residual_weight=False):
+                 qkv_identity_init=False, tied_qk=False, key_bias=False, residual_weight=False, skip_out_proj=False):
         super(TransformerBatchNormEncoderLayer, self).__init__()
         # if where_to_add_relpos == "before":
         #     # PyTorch's implementation of MultiheadAttention only allows mask to be applied before softmax.
@@ -1432,10 +1441,10 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
             # Custom attention if we want relative position offset to be applied after softmax
             self.self_attn = Attention_Rel_Scl(d_model, nhead, dropout=dropout, conv_projection=conv_projection,
                                             where_to_add_relpos=where_to_add_relpos,
-                                            attention_type=attention_type, learnable_scale=learnable_scale,
+                                            attention_type=attention_type, learnable_scale=learnable_scale, old_scale=old_scale,
                                             krause_sigma_init=krause_sigma_init, krause_top_k=krause_top_k,
                                             attn_scale=attn_scale, feat_scale=feat_scale, centered_attn=centered_attn,
-                                            qkv_identity_init=qkv_identity_init, tied_qk=tied_qk)
+                                            qkv_identity_init=qkv_identity_init, tied_qk=tied_qk, key_bias=key_bias, skip_out_proj=skip_out_proj)
 
         # Implementation of Feedforward model
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -1562,23 +1571,26 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
 # ========================================================================================
 class Attention_Rel_Scl(nn.Module):
     def __init__(self, emb_size, num_heads, dropout, conv_projection, where_to_add_relpos,
-                 attention_type='dot', learnable_scale=False,
+                 attention_type='dot', learnable_scale=False, old_scale=False,
                  krause_sigma_init=1.0, krause_top_k=-1,
                  attn_scale=False, feat_scale=False, centered_attn=False, 
-                 qkv_identity_init=False, tied_qk=False, key_bias=False, **kwargs):
+                 qkv_identity_init=False, tied_qk=False, key_bias=False, skip_out_proj=False, **kwargs):
         super().__init__()
         self.num_heads = num_heads
         self.conv_projection = conv_projection
         self.where_to_add_relpos = where_to_add_relpos
         self.attention_type = attention_type
         self.learnable_scale = learnable_scale
+        self.old_scale = old_scale
         self.krause_top_k = krause_top_k
+        self.skip_out_proj = skip_out_proj
         
         if learnable_scale:
             self.scale = nn.Parameter(torch.tensor((emb_size / num_heads) ** -0.5), requires_grad=True)
+        elif old_scale:
+            self.scale = emb_size ** -0.5 # Old version
         else:
             self.scale = (emb_size / num_heads) ** -0.5
-            # self.scale = emb_size ** -0.5 # ONLY PUTING HERE FOR REPRO TODO
         
         # Krause attention: learnable sigma per head for RBF kernel
         if attention_type == 'krause':
@@ -1648,7 +1660,9 @@ class Attention_Rel_Scl(nn.Module):
             self.key_bias_table = nn.Parameter(torch.zeros(num_heads), requires_grad=True)  # [H]
 
         # Output projection
-        self.out_proj = nn.Linear(emb_size, emb_size)
+
+        if not self.skip_out_proj:
+            self.out_proj = nn.Linear(emb_size, emb_size)
         # if qkv_identity_init:
         #     self.out_proj.weight.data.copy_(torch.eye(emb_size))
         self.dropout = nn.Dropout(dropout)
@@ -1887,7 +1901,8 @@ class Attention_Rel_Scl(nn.Module):
         out = rearrange(out, 'b h t d_h -> b t (h d_h)')  # Reunify the heads, output is [B, T, D]
 
         # Output projection
-        out = self.out_proj(out) # [B, T, D]
+        if not self.skip_out_proj:
+            out = self.out_proj(out) # [B, T, D]
         # out = self.dropout(out)  # TODO No dropout for now
 
         # FeatScale

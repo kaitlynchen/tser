@@ -190,10 +190,14 @@ class Options(object):
         self.parser.add_argument('--lambda_erpe_linear', type=float, default=0, help="Weight for ERPE linear loss.")
         self.parser.add_argument('--lambda_focus', type=float, default=0, help="Weight for focus loss.")
         self.parser.add_argument('--lambda_jacobian', type=float, default=0, help="Weight for Jacobian reg loss.")
+        self.parser.add_argument('--lambda_input_grad', type=float, default=0, 
+                                 help="Weight for input gradient regularization (penalize gradient of prediction w.r.t. inputs)")
         self.parser.add_argument('--attention_type', choices=['dot', 'L2', 'krause'], default='dot',
                                  help="""Type of self-attention mechanism.""")
         self.parser.add_argument('--learnable_scale', action='store_true',
                                  help="""If set, the attention scale factor becomes a learnable parameter.""")
+        self.parser.add_argument('--old_scale', action='store_true',
+                                 help="""Backward compatibility: if set, Attention_Rel_Pos scale = emb_size^(-0.5), not (emb_size/num_heads)^(-0.5). output of embed_layer is not multiplied by sqrt(content_emb_dim).""")
         self.parser.add_argument('--krause_sigma_init', type=float, default=1.0,
                                  help="""Initial value for learnable sigma in Krause attention RBF kernel.""")
         self.parser.add_argument('--krause_top_k', type=int, default=-1,
@@ -216,6 +220,8 @@ class Options(object):
                                  help="""If set, use same matrix for W_Q and W_K.""")
         self.parser.add_argument('--key_bias', action='store_true',
                                  help="""If set, add bias (attention sink) as a column in key matrix.""")
+        self.parser.add_argument('--skip_out_proj', action='store_true',
+                                 help="""If set, skip the output projection in attention layer.""")
 
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
