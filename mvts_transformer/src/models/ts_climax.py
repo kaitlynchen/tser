@@ -298,7 +298,7 @@ class ClimaX(nn.Module):
         self.dropout1 = nn.Dropout(p=drop_rate)
 
         # TODO: Try not initializing weights and stick with default (Kaiming uniform)?
-        # self.initialize_weights()
+        self.initialize_weights()
 
         # Initialize pooling
         self.setup_pooling(embed_dim, num_heads, seq_len, num_classes)

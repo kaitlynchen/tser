@@ -69,26 +69,26 @@ fi
 # 4) Attn smoothing
 # 5) L2 attn/learnable scale/prenorm
 
-OUTPUT_DIR="./output/krause_20260418"
-OUTPUT_FILE="${DATA}_KRAUSE_20260418"
+OUTPUT_DIR="./output/krause_20260531_nocenteredattn_notopk_smooth_oldscale"
+OUTPUT_FILE="${DATA}_KRAUSE_20260531_nocenteredattn_notopk_smooth_oldscale"
 
 for LR in 1e-3 1e-2
 do
-    for CONVIT_SLOPE in 1 10
+    for CONVIT_SLOPE in 1
     do
         for NOISE in 0
         do
             for HEADS in 16
             do
-                for SMOOTH in 1e-3
+                for SMOOTH in 1e-1
                 do
                     for L1 in 0
                     do
-                        for LAMBDA_INPUT_GRAD in 0 1e-4 1e-3 1e-2
+                        for LAMBDA_INPUT_GRAD in 0 1e-4 1e-2 1
                         do
                             for SIGMA_INIT in 3
                             do
-                                for TOPK in 8
+                                for TOPK in -1
                                 do
                                     for SEED in 0
                                     do
@@ -109,9 +109,9 @@ do
                                             --pos_encoding learnable_sin_init --where_to_add_abspos start_concat \
                                             --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos after_gating \
                                             --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 100 \
-                                            --pool seqpool_multihead --attention_type krause --qkv_identity_init \
+                                            --pool seqpool_multihead --attention_type krause --qkv_identity_init --old_scale \
                                             --krause_sigma_init $SIGMA_INIT --krause_top_k $TOPK \
-                                            --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1 --lambda_input_grad $LAMBDA_INPUT_GRAD --num_workers 4 --centered_attn
+                                            --reg_lambda $SMOOTH --reg_lambda_pool $SMOOTH --l1_reg $L1 --lambda_input_grad $LAMBDA_INPUT_GRAD --num_workers 4
                                     done
                                 done
                             done

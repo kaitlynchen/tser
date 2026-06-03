@@ -65,8 +65,8 @@ fi
 # OUTPUT FILE
 # OUTPUT_DIR="./output/LADAA7_OLDSCALE_20260428_MIXUP_beforepoolconcat_qkv"
 # OUTPUT_FILE="LADAA7_OLDSCALE_20260428_MIXUP_beforepoolconcat_qkv${DATA}"
-OUTPUT_DIR="./output/LADAA7_OLDSCALE_20260502_MIXUP_beforepoolconcat_qkv"
-OUTPUT_FILE="LADAA7_OLDSCALE_20260502_MIXUP_beforepoolconcat_qkv${DATA}"
+OUTPUT_DIR="./output/LADAA7_OLDSCALE_ALIBISMALL_QKV_20260531"
+OUTPUT_FILE="LADAA7_OLDSCALE_ALIBISMALL_QKV_20260531_${DATA}"
 
 # TUNING
 for LR in 1e-3 1e-2
@@ -77,28 +77,32 @@ do
         do
             for HEADS in 16
             do
-                for SMOOTH in 1e-3 
+                for JAC in 0 1e-4 1e-2 1
                 do
-                    for L1 in 0
+                    for SMOOTH in 1e-2
                     do
-                        for SEED in 0
+                        for L1 in 0
                         do
-                            # BASIC
-                            PARAM_STR="LR=${LR}_POOLSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
-                            python main.py --output_dir "$OUTPUT_DIR" \
-                                --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
-                                --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
-                                --data_dir $DATA_DIR --data_class tsra \
-                                --pattern TRAIN --val_ratio 0.2 $SPLIT \
-                                --epochs 2000 --patience $PATIENCE \
-                                --lr $LR --batch_size $BS \
-                                --num_layers $LAYERS --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
-                                --optimizer RAdam --task regression \
-                                --plot_loss --plot_accuracy \
-                                --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
-                                --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
-                                --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.1 --alibi_max_slope 1 \
-                                --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1 --num_workers 4 --old_scale --mixtype kde --qkv_identity_init
+                            for SEED in 0
+                            do
+                                # BASIC
+                                PARAM_STR="LR=${LR}_POOLSMOOTH=${SMOOTH}_L1=${L1}_SLOPE=${CONVIT_SLOPE}_HEADS=${HEADS}_SEED=${SEED}"
+                                python main.py --output_dir "$OUTPUT_DIR" \
+                                    --seed $SEED --name "${OUTPUT_FILE}_${PARAM_STR}"  \
+                                    --records_file "${OUTPUT_DIR}/${OUTPUT_FILE}.xls" \
+                                    --data_dir $DATA_DIR --data_class tsra \
+                                    --pattern TRAIN --val_ratio 0.2 $SPLIT \
+                                    --epochs 2000 --patience $PATIENCE \
+                                    --lr $LR --batch_size $BS \
+                                    --num_layers $LAYERS --num_heads $HEADS --d_model 128 --dim_feedforward 256 \
+                                    --optimizer RAdam --task regression \
+                                    --plot_loss --plot_accuracy \
+                                    --model climax_smooth --patch_length $PATCH --stride $STRIDE --smooth_attention --normalize_label \
+                                    --pos_encoding learnable_sin_init --where_to_add_abspos before_pool_concat \
+                                    --relative_pos_encoding erpe_convalibi_init --where_to_add_relpos only_relpos --convit_slope $CONVIT_SLOPE --alibi_min_slope 0.01 --alibi_max_slope 1 \
+                                    --pool seqpool_multihead --reg_lambda_pool $SMOOTH --reg_lambda $SMOOTH --l1_reg $L1 --num_workers 4 --old_scale --qkv_identity_init \
+                                    --lambda_jacobian $JAC
+                            done
                         done
                     done
                 done

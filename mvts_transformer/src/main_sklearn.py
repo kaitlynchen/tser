@@ -309,6 +309,16 @@ def main(config):
             "learning_rate": loguniform(0.01, 0.1)  #loc=0.01, scale=0.1)
         }
         regressor = RandomizedSearchCV(model, search_params, cv=3, random_state=args.seed)
+    elif args.model == "mlp":
+        from sklearn.neural_network import MLPRegressor
+        model = MLPRegressor(random_state=args.seed, max_iter=500)
+        search_params = {
+            "hidden_layer_sizes": [(100,), (100, 50), (100, 100)],
+            "alpha": loguniform(0.0001, 0.1)  #loc=0.0001, scale=0.1)
+        }
+        regressor = RandomizedSearchCV(model, search_params, cv=3, random_state=args.seed)
+    else:
+        raise ValueError("Model not supported: {}".format(args.model))
     regressor = regressor.fit(X_train, Y_train)
     predictions_test = regressor.predict(X_test)
     rmse_test = np.sqrt(mean_squared_error(Y_test, predictions_test))

@@ -67,8 +67,8 @@ do
     do
         for WHERE_ABSPOS in start_concat
         do
-            OUTPUT_DIR="./output/TIMESTEP_20260220"
-            OUTPUT_FILE="TIMESTEP_20260220_NOMIXUP_${DATA}_${CONV_TYPE}_POOL=${POOL}_ABSPOS=${WHERE_ABSPOS}"
+            OUTPUT_DIR="./output/TIMESTEP_20260602"
+            OUTPUT_FILE="TIMESTEP_20260602_NOMIXUP_${DATA}_${CONV_TYPE}_POOL=${POOL}_ABSPOS=${WHERE_ABSPOS}"
 
             for LR in 1e-4 1e-3 1e-2
             do

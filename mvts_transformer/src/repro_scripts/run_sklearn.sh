@@ -36,11 +36,11 @@ source ~/.bashrc
 conda activate tser
 
 
-OUTPUT_DIR="./output/SIMPLE_AVGPOOL"
-OUTPUT_FILE="${DATA}_SIMPLE_AVGPOOL"
+OUTPUT_DIR="./output/SIMPLE_FLAT_MLP"
+OUTPUT_FILE="${DATA}_SIMPLE_FLAT_MLP"
 
 # for MODEL in lasso ridge xgboost random_forest
-for MODEL in xgboost
+for MODEL in mlp
 do
     for SEED in 0 1 2
     do
@@ -49,7 +49,6 @@ do
             --records_file "$OUTPUT_DIR/${OUTPUT_FILE}.xls" \
             --data_dir /mnt/beegfs/bulk/mirror/jyf6/datasets/TSER/$DATA/ --data_class tsra \
             --pattern TRAIN --test_pattern TEST --val_ratio 0  \
-            --task regression --model $MODEL --input_pooling_patch 6 --input_pooling_stride 6
-
+            --task regression --model $MODEL
     done
-done
+done #--input_pooling_patch 24 --input_pooling_stride 24

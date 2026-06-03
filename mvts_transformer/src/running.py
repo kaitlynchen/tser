@@ -698,7 +698,8 @@ class SupervisedRunner(BaseRunner):
 
             # Jacobian loss
             if config["lambda_jacobian"] > 0:
-                jacobian_loss_batch = self.model.jacobian_loss(X.to(self.device))
+                X_mixup, targets_mixup = utils.generate_mixup_data(config, X, targets, self.device)
+                jacobian_loss_batch = self.model.jacobian_loss(X_mixup.to(self.device))
                 jacobian_loss += config["lambda_jacobian"] * jacobian_loss_batch.item() * batch_size
                 total_loss += config["lambda_jacobian"] * jacobian_loss_batch
 
@@ -821,7 +822,7 @@ class SupervisedRunner(BaseRunner):
             # regression: (batch_size, num_labels); classification: (batch_size, num_classes) of logits
 
             # Plot dir if needed
-            if i == 0 and epoch_num % 200 == 0 and config is not None:
+            if i == 0 and epoch_num % 20 == 0 and config is not None:
                 plot_dir = os.path.join(config['plot_dir'], f'val_epoch{epoch_num}')
                 os.makedirs(plot_dir, exist_ok=True)
             else:
